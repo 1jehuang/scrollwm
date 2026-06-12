@@ -172,7 +172,24 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             UserDefaults.standard.set(400.0, forKey: positionKey)
         }
 
-        statusItem = NSStatusBar.system.statusItem(withLength: 50)
+        createStatusItem()
+
+        // Self-healing placement: on crowded/notched menu bars macOS silently
+        // parks items that don't fit (frame.x < 0). Detect and walk candidate
+        // positions until visible. Each retry recreates the item, because the
+        // preferred position is only read at creation time.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.ensureVisible()
+        }
+
+        engine.onLayoutChange = { [weak self] in
+            DispatchQueue.main.async { self?.refresh() }
+        }
+    }
+
+    private func createStatusItem() {
+        // Compact width: crowded menu bars may have very little free space.
+        statusItem = NSStatusBar.system.statusItem(withLength: 26)
         statusItem.autosaveName = NSStatusItem.AutosaveName(Self.autosaveName)
         statusItem.button?.imageScaling = .scaleNone
         refresh()
@@ -180,9 +197,31 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+    }
 
-        engine.onLayoutChange = { [weak self] in
-            DispatchQueue.main.async { self?.refresh() }
+    private var healAttempt = 0
+    private func ensureVisible() {
+        guard !isVisibleInMenuBar else {
+            if healAttempt > 0 {
+                print("menubar: item visible after \(healAttempt) placement attempt(s)")
+            }
+            return
+        }
+        // Candidate preferred positions (points from the right edge area);
+        // small values sit near the system cluster which is always visible.
+        let candidates: [Double] = [150, 200, 250, 100, 300, 350, 50, 450]
+        guard healAttempt < candidates.count else {
+            print("menubar: could not find visible slot (menu bar full). Use ⌃⌥esc to toggle; the app still works.")
+            return
+        }
+        let position = candidates[healAttempt]
+        healAttempt += 1
+
+        NSStatusBar.system.removeStatusItem(statusItem)
+        UserDefaults.standard.set(position, forKey: "NSStatusItem Preferred Position \(Self.autosaveName)")
+        createStatusItem()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.ensureVisible()
         }
     }
 
@@ -192,27 +231,27 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
 
     var isVisibleInMenuBar: Bool {
         guard statusItem.isVisible, let window = statusItem.button?.window else { return false }
-        let frame = window.frame
+        let frame = window.frame // AppKit coords, bottom-left origin
         guard frame.width > 0, frame.origin.x >= 0 else { return false }
-        if let screen = NSScreen.main,
-           let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
-            let notch = CGRect(x: left.maxX, y: frame.origin.y, width: right.minX - left.maxX, height: frame.height)
-            if frame.intersects(notch) { return false }
+        // On notched displays, real status items live RIGHT of the notch.
+        // Parked items get placed at the far left (x near 0) or offscreen.
+        if let screen = NSScreen.main, let right = screen.auxiliaryTopRightArea {
+            return frame.origin.x >= right.minX
         }
         return true
     }
 
     private func renderIcon() -> NSImage {
-        let size = NSSize(width: 46, height: 18)
+        let size = NSSize(width: 22, height: 18)
         let state = engine.stripState
         let managing = controller.isManaging
 
         return NSImage(size: size, flipped: false) { rect in
             guard managing, !state.slots.isEmpty else {
-                // Dormant: subtle strip glyph.
+                // Dormant: subtle strip glyph (2 dashed columns).
                 NSColor.secondaryLabelColor.setStroke()
-                for i in 0..<3 {
-                    let r = NSRect(x: 4 + CGFloat(i) * 14, y: 5, width: 10, height: rect.height - 10)
+                for i in 0..<2 {
+                    let r = NSRect(x: 3 + CGFloat(i) * 9, y: 5, width: 7, height: rect.height - 10)
                     let p = NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2)
                     p.setLineDash([2, 1.5], count: 2, phase: 0)
                     p.lineWidth = 1
@@ -330,41 +369,67 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
 
-    guard AXSource.isTrusted else {
+    func startController() {
+        let controller = ScrollWMController()
+        scrollWMControllerKeepAlive = controller
+        print("ScrollWM running (dormant). Use the menu bar item or ⌃⌥esc to arrange.")
+        if selftest { runScrollWMSelftest(controller: controller) }
+        if crashPhase == .crash { runCrashPhase(controller: controller) }
+    }
+
+    if AXSource.isTrusted {
+        startController()
+    } else {
         print("""
         ScrollWM needs Accessibility permission (its only permission).
         Grant it in: System Settings -> Privacy & Security -> Accessibility
-        Then relaunch.
+        Waiting for grant... (the app will start automatically)
         """)
         _ = AXSource.promptForTrustIfNeeded()
-        // Keep running so the user can grant + use the menu bar item without relaunching.
-        // Poll until trusted, then continue.
+
+        // Placeholder menu bar presence while waiting: hourglass icon with
+        // a menu that deep-links to the Accessibility pane.
+        let waitingItem = NSStatusBar.system.statusItem(withLength: 26)
+        waitingItem.button?.title = "⏳"
+        let waitingMenu = NSMenu()
+        let info = NSMenuItem(title: "ScrollWM: waiting for Accessibility permission", action: nil, keyEquivalent: "")
+        info.isEnabled = false
+        waitingMenu.addItem(info)
+        waitingMenu.addItem(NSMenuItem.separator())
+        let openSettings = NSMenuItem(title: "Open Accessibility Settings", action: #selector(NSApp.openAccessibilitySettings(_:)), keyEquivalent: "")
+        openSettings.target = NSApp
+        waitingMenu.addItem(openSettings)
+        let quit = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        waitingMenu.addItem(quit)
+        waitingItem.menu = waitingMenu
+
+        // Poll until trusted, then start WITHOUT requiring a relaunch.
         var waited = 0
         Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { timer in
             waited += 2
             if AXSource.isTrusted {
                 timer.invalidate()
-                print("Accessibility granted. Restart ScrollWM to begin.")
-                exit(0)
+                NSStatusBar.system.removeStatusItem(waitingItem)
+                print("Accessibility granted. Starting.")
+                startController()
+            } else if waited > 1800 {
+                print("No permission after 30 minutes; exiting.")
+                exit(2)
             }
-            if waited > 600 { exit(2) }
         }
-        app.run()
-        return
-    }
-
-    let controller = ScrollWMController()
-    print("ScrollWM running (dormant). Use the menu bar item or ⌃⌥esc to arrange.")
-
-    if selftest {
-        runScrollWMSelftest(controller: controller)
-    }
-    if crashPhase == .crash {
-        runCrashPhase(controller: controller)
     }
 
     app.run()
 }
+
+extension NSApplication {
+    @objc func openAccessibilitySettings(_ sender: Any?) {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+}
+
+/// Keeps the controller alive for the app lifetime (created in a closure).
+var scrollWMControllerKeepAlive: ScrollWMController?
 
 enum CrashTestPhase { case none, crash }
 
