@@ -34,9 +34,10 @@ final class TeleportEngine {
         }
     }
 
-    private(set) var slots: [Slot] = []
+    // Mutable internally (lifecycle extension lives in another file).
+    var slots: [Slot] = []
     private(set) var viewportX: CGFloat = 0
-    private(set) var focusIndex: Int = 0
+    var focusIndex: Int = 0
 
     let screenFrame: CGRect       // visible frame, AX coordinates (top-left origin)
     private let gap: CGFloat = 12
