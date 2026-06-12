@@ -160,6 +160,9 @@ case "teleport":
         spawn: args.contains("--spawn"),
         selftestSeconds: args.contains("--selftest") ? (numbers.dropFirst().first ?? 5) : nil
     )
+case "capturebench":
+    let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 5
+    runCaptureBench(seconds: seconds)
 default:
     print("""
     WindowLab - scrolling window manager reality-test harness
