@@ -142,6 +142,14 @@ case "scrollbench":
     )
 case "testwindow":
     runTestWindow(args: Array(args.dropFirst()))
+case "pan":
+    let numbers = args.dropFirst().compactMap { Int($0) }
+    runPan(
+        seconds: numbers.first ?? 15,
+        windowCount: numbers.dropFirst().first ?? 8,
+        spawn: args.contains("--spawn"),
+        selftest: args.contains("--selftest")
+    )
 default:
     print("""
     WindowLab - scrolling window manager reality-test harness
@@ -156,5 +164,8 @@ default:
       WindowLab scrollbench [n] [hz] [--spawn]
                                animate n real windows via AX moves, measure jank.
                                --spawn uses disposable test windows (default: your real ones)
+      WindowLab pan [secs] [n] [--spawn] [--selftest]
+                               v1 slice: ctrl+opt+scroll pans real windows on a
+                               virtual canvas with inertia. Windows restored after.
     """)
 }
