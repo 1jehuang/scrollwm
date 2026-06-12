@@ -1,6 +1,9 @@
 import Foundation
 import AppKit
 
+// Unbuffered stdout: progress lines must appear immediately even when piped.
+setbuf(stdout, nil)
+
 // WindowLab: reality-test harness for the scrolling window manager.
 //
 // Subcommands:
@@ -149,6 +152,13 @@ case "pan":
         windowCount: numbers.dropFirst().first ?? 8,
         spawn: args.contains("--spawn"),
         selftest: args.contains("--selftest")
+    )
+case "teleport":
+    let numbers = args.dropFirst().compactMap { Int($0) }
+    runTeleport(
+        windowCount: numbers.first ?? 8,
+        spawn: args.contains("--spawn"),
+        selftestSeconds: args.contains("--selftest") ? (numbers.dropFirst().first ?? 5) : nil
     )
 default:
     print("""
