@@ -163,6 +163,11 @@ case "teleport":
 case "capturebench":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 5
     runCaptureBench(seconds: seconds)
+case "run":
+    runScrollWM(
+        selftest: args.contains("--selftest"),
+        crashPhase: args.contains("--crashtest") ? .crash : .none
+    )
 default:
     print("""
     WindowLab - scrolling window manager reality-test harness
@@ -180,5 +185,9 @@ default:
       WindowLab pan [secs] [n] [--spawn] [--selftest]
                                v1 slice: ctrl+opt+scroll pans real windows on a
                                virtual canvas with inertia. Windows restored after.
+      WindowLab run [--selftest]
+                               ScrollWM production app: dormant menu bar agent.
+                               Arrange/release via menu or ctrl+opt+esc.
+                               Exact frame restore on release/quit/crash.
     """)
 }

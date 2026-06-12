@@ -119,7 +119,8 @@ extension TeleportEngine {
                 element: info.element,
                 pid: info.pid,
                 appName: info.appName,
-                title: info.title ?? "(untitled)"
+                title: info.title ?? "(untitled)",
+                originalFrame: info.frame
             ),
             canvasX: slots.isEmpty ? 0 : lastEdge + gap,
             width: width,

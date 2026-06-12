@@ -25,12 +25,15 @@ final class TeleportEngine {
         var appName: String
         var title: String
         var healthy = true
+        /// Frame the window had before WE first moved it. Ground truth for restore.
+        let originalFrame: CGRect
 
-        init(element: AXUIElement, pid: pid_t, appName: String, title: String) {
+        init(element: AXUIElement, pid: pid_t, appName: String, title: String, originalFrame: CGRect) {
             self.element = element
             self.pid = pid
             self.appName = appName
             self.title = title
+            self.originalFrame = originalFrame
         }
     }
 
@@ -69,7 +72,8 @@ final class TeleportEngine {
                     element: m.ax.element,
                     pid: m.ax.pid,
                     appName: m.ax.appName,
-                    title: m.ax.title ?? "(untitled)"
+                    title: m.ax.title ?? "(untitled)",
+                    originalFrame: m.ax.frame
                 ),
                 canvasX: x,
                 width: width,
@@ -181,5 +185,23 @@ final class TeleportEngine {
 
     func teleportStats() -> LatencyStats {
         LatencyStats(label: "teleport.full", samples: teleportLatencies)
+    }
+
+    /// Restore every managed window to its pre-adoption frame (position AND
+    /// size) and stop managing it. Returns the number of failures.
+    @discardableResult
+    func releaseAll() -> Int {
+        var failures = 0
+        for slot in slots {
+            let w = slot.window
+            let posErr = AXSource.setPoint(w.element, kAXPositionAttribute as String, w.originalFrame.origin)
+            let sizeErr = AXSource.setSize(w.element, kAXSizeAttribute as String, w.originalFrame.size)
+            if posErr != .success || sizeErr != .success { failures += 1 }
+        }
+        slots.removeAll()
+        focusIndex = 0
+        viewportX = 0
+        onLayoutChange?()
+        return failures
     }
 }
