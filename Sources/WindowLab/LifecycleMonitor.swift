@@ -57,9 +57,22 @@ final class LifecycleMonitor {
         observers.removeAll()
     }
 
+    /// True when the user session is active and unlocked. While locked,
+    /// AX queries fail with attributeUnsupported (-25205) for everything;
+    /// trusting them would mass-remove the strip and clobber restore data.
+    static func sessionIsActive() -> Bool {
+        guard let dict = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        let locked = (dict["CGSSessionScreenIsLocked"] as? Bool) ?? false
+        let onConsole = (dict[kCGSessionOnConsoleKey as String] as? Bool) ?? true
+        return !locked && onConsole
+    }
+
     /// Diff current AX reality against the strip.
     func resync() {
         let start = Clock.nowAbsNs()
+
+        // Guard 1: never resync while the session is locked/inactive.
+        guard Self.sessionIsActive() else { return }
         resyncCount += 1
 
         // Enumerate current standard windows.
@@ -74,6 +87,19 @@ final class LifecycleMonitor {
         }
         let standard = current.filter {
             $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen
+        }
+
+        // Guard 2: mass-removal protection. If AX suddenly reports most of
+        // the strip gone (>50% of 4+ windows), that is far more likely AX
+        // degradation (lock screen edge, login transition, WindowServer
+        // hiccup) than the user really closing everything at once. Skip and
+        // let a later healthy resync converge.
+        let matchedCount = engine.slots.filter { slot in
+            standard.contains { CFEqual($0.element, slot.window.element) }
+        }.count
+        let missingCount = engine.slots.count - matchedCount
+        if engine.slots.count >= 4 && missingCount * 2 > engine.slots.count {
+            return
         }
 
         // Removals: strip windows whose AX element no longer exists among

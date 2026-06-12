@@ -50,6 +50,10 @@ final class ScrollWMController: NSObject {
 
     func arrange(pidFilter: Set<pid_t>? = nil) {
         guard !isManaging else { return }
+        guard LifecycleMonitor.sessionIsActive() else {
+            print("arrange: session locked/inactive, refusing")
+            return
+        }
         let axWindows: [AXWindowInfo]
         if let pidFilter {
             // Direct PID enumeration: works for accessory apps (test windows).
@@ -363,6 +367,67 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
 }
 
 enum CrashTestPhase { case none, crash }
+
+/// Scripted real-window validation: snapshot -> arrange -> release -> verify.
+/// The only WindowLab mode that touches the user's real windows, and it
+/// holds them for ~3 seconds before exact restore.
+func runCycleTest() {
+    guard AXSource.isTrusted else {
+        print("needs Accessibility")
+        exit(2)
+    }
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+
+    let controller = ScrollWMController()
+
+    DispatchQueue.global().async {
+        Thread.sleep(forTimeInterval: 0.5)
+
+        // Snapshot real window frames before.
+        func snapshot() -> [(pid: pid_t, title: String, frame: CGRect)] {
+            AXSource.allWindows()
+                .filter { $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen }
+                .map { ($0.pid, $0.title ?? "", $0.frame) }
+                .sorted { ($0.pid, $0.title) < ($1.pid, $1.title) }
+        }
+        let before = snapshot()
+        print("[cycle] \(before.count) real windows before arrange")
+
+        print("[cycle] arranging real windows...")
+        DispatchQueue.main.sync { controller.arrange() }
+        Thread.sleep(forTimeInterval: 1.0)
+
+        print("[cycle] navigating strip...")
+        DispatchQueue.main.sync { controller.focusNext() }
+        Thread.sleep(forTimeInterval: 0.5)
+        DispatchQueue.main.sync { controller.focusPrevious() }
+        Thread.sleep(forTimeInterval: 0.5)
+
+        print("[cycle] releasing...")
+        DispatchQueue.main.sync { controller.release() }
+        Thread.sleep(forTimeInterval: 1.0)
+
+        let after = snapshot()
+        var mismatches = 0
+        for b in before {
+            guard let a = after.first(where: { $0.pid == b.pid && $0.title == b.title }) else {
+                print("[cycle] MISSING after: \(b.title)")
+                mismatches += 1
+                continue
+            }
+            if abs(a.frame.origin.x - b.frame.origin.x) > 2 || abs(a.frame.origin.y - b.frame.origin.y) > 2
+                || abs(a.frame.width - b.frame.width) > 2 || abs(a.frame.height - b.frame.height) > 2 {
+                print("[cycle] MISMATCH \(b.title): \(b.frame) -> \(a.frame)")
+                mismatches += 1
+            }
+        }
+        print("[cycle] verified \(before.count - mismatches)/\(before.count) windows restored exactly")
+        exit(mismatches == 0 ? 0 : 1)
+    }
+
+    app.run()
+}
 
 /// Phase 1 of the crash-recovery test: spawn DETACHED test windows (they
 /// outlive us), arrange them, then SIGKILL ourselves mid-management.

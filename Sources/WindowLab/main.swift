@@ -168,6 +168,8 @@ case "run":
         selftest: args.contains("--selftest"),
         crashPhase: args.contains("--crashtest") ? .crash : .none
     )
+case "cycle":
+    runCycleTest()
 default:
     print("""
     WindowLab - scrolling window manager reality-test harness

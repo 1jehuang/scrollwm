@@ -189,14 +189,29 @@ final class TeleportEngine {
 
     /// Restore every managed window to its pre-adoption frame (position AND
     /// size) and stop managing it. Returns the number of failures.
+    ///
+    /// Failures are determined by READBACK, not AX error codes: some windows
+    /// (e.g. fixed-size ones) return errors for no-op resizes while ending up
+    /// exactly where they belong.
     @discardableResult
     func releaseAll() -> Int {
         var failures = 0
         for slot in slots {
             let w = slot.window
-            let posErr = AXSource.setPoint(w.element, kAXPositionAttribute as String, w.originalFrame.origin)
-            let sizeErr = AXSource.setSize(w.element, kAXSizeAttribute as String, w.originalFrame.size)
-            if posErr != .success || sizeErr != .success { failures += 1 }
+            _ = AXSource.setPoint(w.element, kAXPositionAttribute as String, w.originalFrame.origin)
+            _ = AXSource.setSize(w.element, kAXSizeAttribute as String, w.originalFrame.size)
+
+            // Verify by reading back the actual frame.
+            if let pos = AXSource.copyPoint(w.element, kAXPositionAttribute as String),
+               let size = AXSource.copySize(w.element, kAXSizeAttribute as String) {
+                let ok = abs(pos.x - w.originalFrame.origin.x) <= 2
+                    && abs(pos.y - w.originalFrame.origin.y) <= 2
+                    && abs(size.width - w.originalFrame.width) <= 2
+                    && abs(size.height - w.originalFrame.height) <= 2
+                if !ok { failures += 1 }
+            } else {
+                failures += 1
+            }
         }
         slots.removeAll()
         focusIndex = 0
