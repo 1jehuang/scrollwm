@@ -41,6 +41,13 @@ enum Clock {
         return t * UInt64(timebase.numer) / UInt64(timebase.denom)
     }
 
+    /// mach_absolute_time in ns. CGEvent.timestamp uses this timebase,
+    /// so input-age math must use this clock, not the continuous one.
+    static func nowAbsNs() -> UInt64 {
+        let t = mach_absolute_time()
+        return t * UInt64(timebase.numer) / UInt64(timebase.denom)
+    }
+
     /// Run `block`, return elapsed milliseconds.
     @discardableResult
     static func measureMs(_ block: () -> Void) -> Double {

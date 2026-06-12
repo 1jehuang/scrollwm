@@ -130,6 +130,18 @@ case "bench":
 case "watch":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 10
     runWatch(seconds: seconds)
+case "overlay":
+    let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 15
+    runOverlay(seconds: seconds, selftest: args.contains("--selftest"))
+case "scrollbench":
+    let numbers = args.dropFirst().compactMap { Int($0) }
+    runScrollBench(
+        windows: numbers.first ?? 6,
+        hz: Double(numbers.dropFirst().first ?? 60),
+        spawn: args.contains("--spawn")
+    )
+case "testwindow":
+    runTestWindow(args: Array(args.dropFirst()))
 default:
     print("""
     WindowLab - scrolling window manager reality-test harness
@@ -138,5 +150,11 @@ default:
       WindowLab probe [-v]     enumerate CG+AX windows, match, report latency
       WindowLab bench          AX move/resize benchmark (windows restored after)
       WindowLab watch [secs]   repeated full resync loop with timing
+      WindowLab overlay [secs] [--selftest]
+                               Metal overlay; ctrl+opt+scroll pans fake canvas.
+                               --selftest posts synthetic scrolls and reports latency.
+      WindowLab scrollbench [n] [hz] [--spawn]
+                               animate n real windows via AX moves, measure jank.
+                               --spawn uses disposable test windows (default: your real ones)
     """)
 }
