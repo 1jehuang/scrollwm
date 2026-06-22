@@ -296,6 +296,65 @@ enum StripOpsTests {
             check("default file parses", false)
         }
 
+        // --- ResyncPlanner: Space-aware adoption/removal policy ---
+        // Tokens are opaque ints. currentSpaceIDs = windows on the Space the
+        // user is viewing; axIDs = all standard windows AX reports (all Spaces).
+
+        // Nothing managed yet, two windows on the current Space -> adopt both.
+        check("planner adopts current-Space windows on empty strip",
+              ResyncPlanner.decide(stripIDs: [], axIDs: [1, 2], currentSpaceIDs: [1, 2])
+                == .apply(remove: [], add: [1, 2]))
+
+        // Strip on current Space; a NEW window appears on ANOTHER Space (in AX
+        // but not on-screen). It must NOT be adopted (the core bug fix).
+        check("planner ignores new window on another Space",
+              ResyncPlanner.decide(stripIDs: [1], axIDs: [1, 2], currentSpaceIDs: [1])
+                == .apply(remove: [], add: []))
+
+        // Strip on current Space; a new window opens ON the current Space ->
+        // adopt only that one, not the other-Space window (id 3).
+        check("planner adopts only current-Space additions",
+              ResyncPlanner.decide(stripIDs: [1], axIDs: [1, 2, 3], currentSpaceIDs: [1, 2])
+                == .apply(remove: [], add: [2]))
+
+        // User switched to a Space with none of the managed windows -> freeze.
+        check("planner freezes on a different Space",
+              ResyncPlanner.decide(stripIDs: [1, 2], axIDs: [1, 2, 9], currentSpaceIDs: [9])
+                == .frozenDifferentSpace)
+
+        // While frozen, windows on the other Space are NOT removed even though
+        // they are absent from currentSpaceIDs (they still exist in AX).
+        check("planner does not drop strip windows while on another Space",
+              ResyncPlanner.decide(stripIDs: [1, 2], axIDs: [1, 2], currentSpaceIDs: [7])
+                == .frozenDifferentSpace)
+
+        // A genuinely-closed window (gone from AX) on the current Space is
+        // removed; sentinel -1 models "no longer in AX".
+        check("planner removes closed window",
+              ResyncPlanner.decide(stripIDs: [1, -1], axIDs: [1], currentSpaceIDs: [1])
+                == .apply(remove: [-1], add: []))
+
+        // Degradation guard: >50% of a 4+ window strip vanished from AX at once
+        // -> skip rather than mass-remove. Here 3 of 4 are gone.
+        check("planner skips on AX degradation",
+              ResyncPlanner.decide(stripIDs: [1, -2, -3, -4], axIDs: [1], currentSpaceIDs: [1])
+                == .skipDegraded)
+
+        // Exactly 50% missing on a 4-window strip is NOT degradation -> apply.
+        check("planner applies at exactly 50% missing",
+              ResyncPlanner.decide(stripIDs: [1, 2, -3, -4], axIDs: [1, 2], currentSpaceIDs: [1, 2])
+                == .apply(remove: [-3, -4], add: []))
+
+        // Small strips never trip the degradation guard (count < 4).
+        check("planner removes from small strip without degradation skip",
+              ResyncPlanner.decide(stripIDs: [-1, -2], axIDs: [], currentSpaceIDs: [])
+                == .apply(remove: [-1, -2], add: []))
+
+        // Simultaneous removal (closed) + addition (new on current Space).
+        check("planner handles concurrent remove+add",
+              ResyncPlanner.decide(stripIDs: [1, -2], axIDs: [1, 3], currentSpaceIDs: [1, 3])
+                == .apply(remove: [-2], add: [3]))
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

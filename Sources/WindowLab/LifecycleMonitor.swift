@@ -68,6 +68,12 @@ final class LifecycleMonitor {
     }
 
     /// Diff current AX reality against the strip.
+    ///
+    /// Space-aware (see `ResyncPlanner`): adoption is scoped to windows on the
+    /// Space the user is currently viewing, exactly like `arrange`. While the
+    /// user is on a different Space than the strip, this is inert, so native
+    /// Space switching never pulls foreign windows into the strip or teleports
+    /// the user around.
     func resync() {
         let start = Clock.nowAbsNs()
 
@@ -75,7 +81,7 @@ final class LifecycleMonitor {
         guard Self.sessionIsActive() else { return }
         resyncCount += 1
 
-        // Enumerate current standard windows.
+        // Enumerate current standard windows (AX spans ALL Spaces).
         let current: [AXWindowInfo]
         if let pids = pidFilter {
             current = pids.flatMap { pid -> [AXWindowInfo] in
@@ -89,33 +95,54 @@ final class LifecycleMonitor {
             $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen
         }
 
-        // Guard 2: mass-removal protection. If AX suddenly reports most of
-        // the strip gone (>50% of 4+ windows), that is far more likely AX
-        // degradation (lock screen edge, login transition, WindowServer
-        // hiccup) than the user really closing everything at once. Skip and
-        // let a later healthy resync converge.
-        let matchedCount = engine.slots.filter { slot in
-            standard.contains { CFEqual($0.element, slot.window.element) }
-        }.count
-        let missingCount = engine.slots.count - matchedCount
-        if engine.slots.count >= 4 && missingCount * 2 > engine.slots.count {
+        // Determine which standard windows are on the CURRENT Space. The
+        // WindowServer's on-screen list only contains current-Space windows;
+        // fuse it with AX exactly as `arrange` does (PID+frame+title scoring).
+        // A window we manage that sits on another Space still appears in `ax`
+        // but NOT here, which is precisely what drives the Space-freeze rule.
+        let cg = CGWindowSource.listWindows(onscreenOnly: true)
+        let matched = IdentityMatcher.match(axWindows: standard, cgWindows: cg)
+
+        // Map each window to an opaque token (= index into `standard`) so the
+        // pure planner can reason without touching AXUIElements.
+        let axIDs = Array(standard.indices)
+        var currentSpaceIDs = Set<Int>()
+        for (i, m) in matched.enumerated() where m.cg != nil { currentSpaceIDs.insert(i) }
+
+        // Strip tokens: managed windows that AX still reports map to their
+        // `standard` index; genuinely-closed ones get a negative sentinel that
+        // is never in `axIDs`/`currentSpaceIDs` (so they read as removed).
+        let stripIDs: [Int] = engine.slots.enumerated().map { (s, slot) in
+            standard.firstIndex { CFEqual($0.element, slot.window.element) } ?? -(s + 1)
+        }
+
+        let decision = ResyncPlanner.decide(
+            stripIDs: stripIDs,
+            axIDs: axIDs,
+            currentSpaceIDs: currentSpaceIDs
+        )
+        let addTokens: [Int]
+        switch decision {
+        case .frozenDifferentSpace, .skipDegraded:
+            // Strip belongs to another Space, or AX looks degraded: stay inert.
             return
+        case .apply(_, let add):
+            addTokens = add
         }
 
         // Removals: strip windows whose AX element no longer exists among
         // current standard windows. CFEqual matches AXUIElements of the same
-        // underlying window, so a closed window simply stops matching.
+        // underlying window, so a closed window simply stops matching. Windows
+        // merely on another Space still exist in AX, so they are NOT removed.
         let removed = engine.removeSlots { slot in
             !standard.contains { CFEqual($0.element, slot.window.element) }
         }
 
-        // Additions: AX windows not yet in the strip. Insert each one
-        // immediately to the RIGHT of the focused column (PaperWM/niri-style)
-        // rather than at the far right end of the strip, and focus the newest
-        // so the viewport follows the window the user just opened.
-        let newWindows = standard.filter { info in
-            !engine.slots.contains { CFEqual(info.element, $0.window.element) }
-        }
+        // Additions: new windows ON THE CURRENT SPACE (per the planner). Insert
+        // each immediately to the RIGHT of the focused column (PaperWM/niri
+        // style) and focus the newest so the viewport follows the window the
+        // user just opened. Cross-Space windows are intentionally skipped.
+        let newWindows = addTokens.map { standard[$0] }
         var lastInsertedIndex: Int?
         if !newWindows.isEmpty {
             // Insertion point sits just after the current focus. Inserting at
