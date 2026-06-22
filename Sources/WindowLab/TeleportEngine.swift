@@ -220,6 +220,14 @@ final class TeleportEngine {
     /// are written via AX. A no-op layout change (e.g. opening a window that
     /// fits to the right, leaving every other column put) therefore costs zero
     /// AX round-trips for the unchanged windows.
+    ///
+    /// Off-screen handling: macOS clamps any window position to keep ~40px on
+    /// screen at every edge, so a column scrolled fully past the viewport cannot
+    /// actually leave the screen via position alone - it would otherwise leave a
+    /// visible sliver at the edge (and several stacked columns leave several
+    /// slivers). To avoid that, columns whose on-screen rect does not intersect
+    /// the viewport are PARKED at a single shared off-screen corner, so they all
+    /// collapse to one unobtrusive 40x32px sliver instead of a row of them.
     @discardableResult
     func teleport() -> Int {
         let start = Clock.nowAbsNs()
@@ -231,10 +239,7 @@ final class TeleportEngine {
         for i in indices {
             let slot = slots[i]
             guard slot.window.healthy else { continue }
-            let target = CGPoint(
-                x: screenFrame.origin.x + slot.canvasX - viewportX,
-                y: slot.y
-            )
+            let target = onScreenTarget(for: slot)
             // Skip windows that are already where they should be (within a
             // sub-pixel tolerance): the AX write would be a wasted round-trip.
             if let last = slot.window.lastCommittedOrigin,
@@ -255,6 +260,32 @@ final class TeleportEngine {
         teleportLatencies.append(lastTeleportMs)
         return committed
     }
+
+    /// Where a slot's window should actually be placed. If the column is at
+    /// least partly within the viewport, that is its natural strip position.
+    /// If it is fully off-screen, return the shared parking corner so all
+    /// off-screen columns collapse into one sliver (see `teleport`).
+    func onScreenTarget(for slot: Slot) -> CGPoint {
+        let left = slot.canvasX - viewportX           // viewport-relative left
+        let right = left + slot.width
+        let fullyOffscreen = right <= 0 || left >= screenFrame.width
+        if fullyOffscreen {
+            return parkingPoint
+        }
+        return CGPoint(x: screenFrame.origin.x + slot.canvasX - viewportX, y: slot.y)
+    }
+
+    /// Shared off-screen parking point: far enough past the bottom-right that
+    /// macOS clamps every parked window to the SAME corner, stacking them into
+    /// a single minimal sliver rather than a row of peeking edges.
+    var parkingPoint: CGPoint {
+        CGPoint(x: screenFrame.origin.x + screenFrame.width + 4000,
+                y: screenFrame.origin.y + screenFrame.height + 4000)
+    }
+
+    /// Test seam: set the viewport offset directly (production code sets it via
+    /// `focus`/navigation). Used by unit tests for the parking logic.
+    func setViewportXForTest(_ x: CGFloat) { viewportX = x }
 
     private func commitOrder() -> [Int] {
         guard !slots.isEmpty else { return [] }

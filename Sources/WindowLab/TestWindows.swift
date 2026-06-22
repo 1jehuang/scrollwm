@@ -86,7 +86,11 @@ func spawnTestWindows(count: Int) -> [Process] {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)
         p.arguments = ["testwindow", "\(x)", "\(y)", "\(w)", "\(h)", "ScrollBench-\(i)"]
-        try? p.run()
+        do {
+            try p.run()
+        } catch {
+            FileHandle.standardError.write("spawnTestWindows: failed to launch '\(exe)': \(error)\n".data(using: .utf8)!)
+        }
         processes.append(p)
     }
     return processes

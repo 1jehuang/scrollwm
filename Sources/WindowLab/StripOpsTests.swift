@@ -328,9 +328,38 @@ enum StripOpsTests {
             check("default file parses", false)
         }
 
+        // --- Off-screen parking: fully-offscreen columns collapse to a corner ---
+        // macOS clamps positions to keep ~40px on screen, so columns scrolled
+        // fully past the viewport must be parked at one shared corner instead of
+        // leaving stacked slivers along the edge.
+        let ep = makeEngine(count: 3, width: 400, screenWidth: 1000)
+        // Slot fully within the viewport -> natural strip position.
+        ep.setViewportXForTest(0)
+        let inView = ep.slots[0] // canvasX=0,w=400 -> [0,400) visible
+        let inTarget = ep.onScreenTarget(for: inView)
+        check("in-view column placed at natural position",
+              abs(inTarget.x - (ep.screenFrame.origin.x + inView.canvasX - ep.viewportX)) < 0.5)
+        // A column scrolled fully off the right parks at the shared corner.
+        var off = ep.slots[1]
+        off.canvasX = 5000 // far right of any viewport
+        let offTarget = ep.onScreenTarget(for: off)
+        check("fully-offscreen column parks at corner", offTarget == ep.parkingPoint)
+        // A column scrolled fully off the LEFT also parks.
+        var offL = ep.slots[1]
+        offL.canvasX = 0
+        offL.width = 100
+        ep.setViewportXForTest(5000) // viewport far right -> column at [0,100) is off-left
+        check("fully-offscreen-left column parks at corner",
+              ep.onScreenTarget(for: offL) == ep.parkingPoint)
+        // A partially-visible column (last column overflowing right) is NOT parked.
+        ep.setViewportXForTest(0)
+        var partial = ep.slots[1]
+        partial.canvasX = 900 // [900,1300), viewport [0,1000): partly visible
+        partial.width = 400
+        check("partially-visible column is not parked",
+              ep.onScreenTarget(for: partial) != ep.parkingPoint)
+
         // --- ResyncPlanner: Space-aware adoption/removal policy ---
-        // Tokens are opaque ints. currentSpaceIDs = windows on the Space the
-        // user is viewing; axIDs = all standard windows AX reports (all Spaces).
 
         // Nothing managed yet, two windows on the current Space -> adopt both.
         check("planner adopts current-Space windows on empty strip",
