@@ -203,9 +203,10 @@ extension TeleportEngine {
     }
 
     /// Re-pack columns left-to-right, removing gaps left by closed windows.
+    /// Opens with a `gap` leading margin (symmetric with the trailing margin).
     func compactStrip() {
         let gap: CGFloat = 12
-        var x: CGFloat = 0
+        var x: CGFloat = gap
         for i in slots.indices {
             slots[i].canvasX = x
             x += slots[i].width + gap

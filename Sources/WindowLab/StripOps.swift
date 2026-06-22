@@ -14,13 +14,24 @@ extension TeleportEngine {
     /// Index maps to the Alt+1..4 hotkeys.
     static let widthPresets: [CGFloat] = [0.25, 0.50, 0.75, 1.0]
 
-    /// Width in points for a given fraction of the usable width (screen minus
-    /// the outer gaps that `adopt` reserves). Clamped to a sane minimum so a
-    /// window can never collapse to nothing.
+    /// Width in points for a given fraction of the viewport.
+    ///
+    /// The strip lays columns out as `gap | col | gap | col | ... | gap`, i.e.
+    /// a `gap` margin on both outer edges and a `gap` between every column. For
+    /// a fraction `f = 1/N` we want exactly `N` columns to tile the viewport:
+    ///
+    ///   leftMargin + N*w + (N-1)*gap + rightMargin = V,  margins == gap
+    ///     => N*w = V - (N+1)*gap
+    ///     => w   = f*(V - gap) - gap        (with f = 1/N)
+    ///
+    /// So `width(0.5)` fits exactly two columns (both with a `gap` on the
+    /// outside and a `gap` between them), `width(0.25)` fits four, and
+    /// `width(1.0) == V - 2*gap` fills the screen with a symmetric margin.
+    /// Clamped to a sane minimum so a window can never collapse to nothing.
     func width(forFraction fraction: CGFloat) -> CGFloat {
-        let usable = screenFrame.width - gap * 2
-        let clamped = max(0.1, min(1.0, fraction))
-        return max(minColumnWidth, (usable * clamped).rounded())
+        let clamped = max(0.05, min(1.0, fraction))
+        let w = clamped * (screenFrame.width - gap) - gap
+        return max(minColumnWidth, w.rounded())
     }
 
     /// Resize the focused column to a fraction of the usable width.
