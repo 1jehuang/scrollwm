@@ -53,6 +53,11 @@ func runSpawnLatencyTest() {
         DispatchQueue.main.sync { engine.adopt(matched: matched) }
         check("seed adopted", engine.slots.count == 1)
 
+        // Make the seed column narrow (25%) so a new window has room to the
+        // right and the strip does NOT need to scroll/move existing columns.
+        DispatchQueue.main.sync { _ = engine.setFocusedWidth(fraction: 0.25) }
+        Thread.sleep(forTimeInterval: 0.2)
+
         // Monitor with a deliberately SLOW poll so we measure the AX observer
         // fast path, not the safety-net poll. The observer registers on the
         // seed pid (set via pidFilter), so a NEW window in that process fires
@@ -66,6 +71,7 @@ func runSpawnLatencyTest() {
         // Open a SECOND window inside the already-observed seed process.
         print("[spawnlatency] opening a NEW window in the already-managed app...")
         let startCount = DispatchQueue.main.sync { engine.slots.count }
+        let commitsBefore = DispatchQueue.main.sync { engine.totalCommits }
         let t0 = Clock.nowAbsNs()
         for p in seed { kill(p.processIdentifier, SIGUSR1) }
 
@@ -79,12 +85,19 @@ func runSpawnLatencyTest() {
 
         if let adoptedNs {
             let ms = Double(adoptedNs &- t0) / 1e6
-            print(String(format: "[spawnlatency] adopted in %.0f ms", ms))
+            // Let the focus/teleport pass for the new window settle.
+            Thread.sleep(forTimeInterval: 0.15)
+            let commitsAfter = DispatchQueue.main.sync { engine.totalCommits }
+            let delta = commitsAfter - commitsBefore
+            print(String(format: "[spawnlatency] adopted in %.0f ms, %d AX commit(s) for the new window", ms, delta))
             check("new window adopted", true)
             // Old poll-only path: up to ~2000ms (default interval). Here the
             // poll is 5000ms, so anything under ~1000ms proves the AX observer
             // fast path drove the adoption, not the poll.
             check("adoption latency < 1000ms (AX observer fast path, not poll)", ms < 1000)
+            // Efficiency: the new window has room to the right, so ONLY it
+            // should move. The existing seed column must not be re-committed.
+            check("adoption committed only the new window (<= 1 move, got \(delta))", delta <= 1)
         } else {
             check("new window adopted", false)
         }

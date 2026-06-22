@@ -27,8 +27,12 @@ final class WindowEventObserver {
     /// One AXObserver per observed app PID.
     private var observers: [pid_t: AXObserver] = [:]
     private var workspaceObservers: [NSObjectProtocol] = []
-    private let onWindowCreated: () -> Void
+    /// Called with the set of PIDs that fired a window-created event since the
+    /// last delivery, so the monitor can do a SCOPED adoption (enumerate only
+    /// those apps) instead of a full all-apps sweep.
+    private let onWindowCreated: (Set<pid_t>) -> Void
     private var coalesceScheduled = false
+    private var pendingPIDs = Set<pid_t>()
 
     /// Small delay before reacting, so the WindowServer has a beat to register
     /// the new window as on-screen (the current-Space check reads the on-screen
@@ -49,7 +53,7 @@ final class WindowEventObserver {
 
     private var started = false
 
-    init(coalesceDelay: TimeInterval = 0.06, onWindowCreated: @escaping () -> Void) {
+    init(coalesceDelay: TimeInterval = 0.035, onWindowCreated: @escaping (Set<pid_t>) -> Void) {
         self.coalesceDelay = coalesceDelay
         self.onWindowCreated = onWindowCreated
     }
@@ -118,15 +122,19 @@ final class WindowEventObserver {
         guard pid > 0, !app.isTerminated, observers[pid] == nil else { return }
 
         var observer: AXObserver?
+        // The refcon carries a per-PID box so the C callback knows which app
+        // fired without enumerating anything.
         let callback: AXObserverCallback = { _, _, _, refcon in
             guard let refcon else { return }
-            let me = Unmanaged<WindowEventObserver>.fromOpaque(refcon).takeUnretainedValue()
-            me.scheduleCoalescedResync()
+            let box = Unmanaged<FireBox>.fromOpaque(refcon).takeUnretainedValue()
+            box.owner?.windowCreated(pid: box.pid)
         }
         guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
 
+        let box = FireBox(owner: self, pid: pid)
+        fireBoxes[pid] = box
         let appElement = AXUIElementCreateApplication(pid)
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        let refcon = Unmanaged.passUnretained(box).toOpaque()
         // Window created is the signal that matters for fast adoption.
         AXObserverAddNotification(observer, appElement, kAXWindowCreatedNotification as CFString, refcon)
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
@@ -136,19 +144,31 @@ final class WindowEventObserver {
     private func unregister(pid: pid_t) {
         guard let obs = observers.removeValue(forKey: pid) else { return }
         CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
+        fireBoxes[pid] = nil
     }
 
     // MARK: - Coalescing
 
-    /// Coalesce the burst of notifications a single new window emits into one
-    /// resync, slightly delayed so the WindowServer can mark it on-screen.
-    private func scheduleCoalescedResync() {
+    /// Per-PID refcon box so the C callback can report which app fired.
+    private final class FireBox {
+        weak var owner: WindowEventObserver?
+        let pid: pid_t
+        init(owner: WindowEventObserver, pid: pid_t) { self.owner = owner; self.pid = pid }
+    }
+    private var fireBoxes: [pid_t: FireBox] = [:]
+
+    /// A window was created in `pid`. Record it and schedule one coalesced
+    /// delivery carrying every PID that fired in the window.
+    private func windowCreated(pid: pid_t) {
+        pendingPIDs.insert(pid)
         if coalesceScheduled { return }
         coalesceScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + coalesceDelay) { [weak self] in
             guard let self else { return }
             self.coalesceScheduled = false
-            self.onWindowCreated()
+            let pids = self.pendingPIDs
+            self.pendingPIDs.removeAll(keepingCapacity: true)
+            self.onWindowCreated(pids)
         }
     }
 }

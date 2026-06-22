@@ -93,6 +93,10 @@ final class TeleportEngine {
     // Metrics
     private(set) var lastTeleportMs: Double = 0
     private(set) var teleportLatencies: [Double] = []
+    /// Cumulative count of AX position writes actually issued (no-op commits
+    /// are skipped). Lets tests assert that a layout change only moved the
+    /// windows that truly needed to move.
+    private(set) var totalCommits: Int = 0
 
     var onLayoutChange: (() -> Void)?
 
@@ -246,6 +250,7 @@ final class TeleportEngine {
             }
         }
 
+        totalCommits += committed
         lastTeleportMs = Double(Clock.nowAbsNs() &- start) / 1e6
         teleportLatencies.append(lastTeleportMs)
         return committed

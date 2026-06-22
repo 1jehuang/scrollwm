@@ -38,8 +38,10 @@ final class LifecycleMonitor {
     }
 
     func start() {
-        // Fast path: react to window-created events almost immediately.
-        let events = WindowEventObserver { [weak self] in self?.resync() }
+        // Fast path: when a window is created we get the firing PIDs, so we can
+        // adopt by enumerating ONLY those apps - no all-apps sweep, and immune
+        // to unrelated hung apps stalling us.
+        let events = WindowEventObserver { [weak self] pids in self?.fastAdopt(pids: pids) }
         events.pidFilter = pidFilter
         events.start()
         windowEvents = events
@@ -184,6 +186,82 @@ final class LifecycleMonitor {
             }
             onChange?(newWindows.count, removed)
         }
+    }
+
+    /// Low-latency adoption for a window-created event. Enumerates ONLY the
+    /// apps that fired (not all apps), so it is fast and immune to unrelated
+    /// hung apps. Purely additive: removals and the full reconciliation stay
+    /// with the safety-net `resync()` poll.
+    ///
+    /// Keeps the Space-freeze guarantee: a window is adopted only if it is on
+    /// the current Space AND the strip itself is currently on the current Space
+    /// (so we never mix windows from different Spaces). If anything is
+    /// ambiguous it simply does nothing and lets the poll converge.
+    private func fastAdopt(pids: Set<pid_t>) {
+        guard Self.sessionIsActive() else { return }
+        // Respect an explicit pid filter (sandbox/test mode); the observer only
+        // watches filtered pids anyway, so this is usually a no-op.
+        let targets: Set<pid_t> = pidFilter.map { pids.intersection($0) } ?? pids
+        guard !targets.isEmpty else { return }
+
+        // Enumerate ONLY the firing apps' standard windows.
+        let appWindows = targets.flatMap { pid -> [AXWindowInfo] in
+            guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return [] }
+            return AXSource.windows(for: app)
+        }.filter {
+            $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen
+        }
+        // Windows we do not already manage.
+        let unmanaged = appWindows.filter { info in
+            !engine.slots.contains { CFEqual(info.element, $0.window.element) }
+        }
+        guard !unmanaged.isEmpty else { return }
+
+        // Current-Space gate via the on-screen CG list (cheap, one syscall).
+        let cg = CGWindowSource.listWindows(onscreenOnly: true)
+        let matched = IdentityMatcher.match(axWindows: unmanaged, cgWindows: cg)
+        let onscreenNew = matched.enumerated()
+            .filter { $0.element.cg != nil }
+            .map { unmanaged[$0.offset] }
+        guard !onscreenNew.isEmpty else { return }
+
+        // If we already manage windows but none are on the current Space, the
+        // user is on another Space: defer to the poll (stay frozen).
+        if !engine.slots.isEmpty && !stripIsOnCurrentSpace(cg: cg) { return }
+
+        let start = Clock.nowAbsNs()
+        var insertAt = engine.slots.isEmpty ? 0 : engine.focusIndex + 1
+        var lastInsertedIndex = insertAt
+        for info in onscreenNew {
+            engine.insert(window: info, at: insertAt)
+            lastInsertedIndex = insertAt
+            insertAt += 1
+        }
+        adoptedCount += onscreenNew.count
+        engine.compactStrip()
+        // Reveal the newest. `focus` -> `teleport` now only moves windows whose
+        // position actually changed, so a window that fits to the right costs a
+        // single AX write (the new window) and no viewport change.
+        engine.focus(index: lastInsertedIndex)
+        lastResyncMs = Double(Clock.nowAbsNs() &- start) / 1e6
+        onChange?(onscreenNew.count, 0)
+    }
+
+    /// True if any managed window is currently on the user's Space, judged by
+    /// matching each slot's EXPECTED screen frame against the on-screen CG list.
+    /// One match is enough (windows do not all move at once).
+    private func stripIsOnCurrentSpace(cg: [CGWindowInfo]) -> Bool {
+        for slot in engine.slots {
+            let expectedX = engine.screenFrame.origin.x + slot.canvasX - engine.viewportX
+            let pid = slot.window.pid
+            let hit = cg.contains { c in
+                c.ownerPID == pid
+                    && abs(c.bounds.origin.x - expectedX) <= 8
+                    && abs(c.bounds.origin.y - slot.y) <= 8
+            }
+            if hit { return true }
+        }
+        return false
     }
 
 }
