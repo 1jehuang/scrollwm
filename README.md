@@ -27,8 +27,15 @@ ScrollWM is built around a "never break the desktop" rule:
 open ~/Applications/ScrollWM.app
 ```
 
-Grant Accessibility in System Settings → Privacy & Security → Accessibility,
-then relaunch.
+On first launch ScrollWM shows a one-step onboarding window explaining its
+single permission and opens the right Settings pane for you. Flip the
+**Accessibility** switch for ScrollWM and the app continues automatically —
+no relaunch. If permission is already granted, ScrollWM starts silently with
+no prompt and no waiting UI (it never asks when it doesn't need to).
+
+> Stuck? The onboarding window has a "Copy setup steps for my AI assistant"
+> button that puts plain instructions on your clipboard for any assistant you
+> already use. This is an optional escape hatch, never a dependency.
 
 ## Use
 
@@ -65,6 +72,8 @@ your viewport, blue is the focused window.
 ```
 Sources/WindowLab/
   AXSource.swift             timeout-protected Accessibility wrapper
+  AccessibilityPermission.swift  single source of truth for the AX grant
+  OnboardingWindow.swift     first-run permission onboarding UI
   CGWindowSource.swift       WindowServer enumeration (CGWindowList)
   IdentityMatcher.swift      AX<->CG window fusion (PID+frame+title scoring)
   TeleportEngine.swift       strip layout, viewport, prioritized commits

@@ -482,7 +482,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         help.isEnabled = false
         menu.addItem(help)
 
-        let axOK = AXSource.isTrusted
+        let axOK = AccessibilityPermission.shared.state.isGranted
         let perm = NSMenuItem(title: axOK ? "Accessibility: granted ✓" : "Accessibility: MISSING — click to open Settings",
                               action: axOK ? nil : #selector(openAXSettings), keyEquivalent: "")
         perm.target = self
@@ -506,7 +506,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     }
     @objc private func quitAction() { controller.quit() }
     @objc private func openAXSettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        AccessibilityPermission.shared.openSystemSettings()
     }
 }
 
@@ -524,86 +524,42 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         if crashPhase == .crash { runCrashPhase(controller: controller) }
     }
 
-    // AXIsProcessTrusted() can return a STALE `false` on the first call(s)
-    // right after launch, even when permission is actually granted. Trusting
-    // that single reading made the app flash the "waiting for Accessibility"
-    // UI (and fire a permission prompt) on every launch despite being granted.
-    //
-    // Fix: re-poll quickly for a short grace period before deciding we are
-    // genuinely untrusted. If trust shows up during the grace window, start
-    // immediately with no waiting UI and no prompt.
-    let graceDeadline = Date().addingTimeInterval(2.0)
-    func startWhenTrustedOrWait() {
-        if AXSource.isTrusted {
-            startController()
-            return
-        }
-        if Date() < graceDeadline {
-            // Still within the grace window: re-check shortly without showing
-            // any waiting UI or prompting.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                startWhenTrustedOrWait()
-            }
-            return
-        }
-        // Grace period elapsed and still untrusted: this is a genuine
-        // first-run / not-granted situation. Now show the waiting UI + prompt.
-        beginWaitingForPermission()
+    // Single source of truth for the Accessibility permission. It debounces the
+    // stale-`false` reading that `AXIsProcessTrusted()` returns right after
+    // launch, so a granted machine starts silently — no waiting UI, no prompt.
+    // Only after the grace window, if still genuinely untrusted, do we show the
+    // onboarding window. Once granted (now or later, with no relaunch), the
+    // controller starts automatically.
+    // onboarding window/controller (created lazily below).
+    var started = false
+    func startOnce() {
+        guard !started else { return }
+        started = true
+        startController()
     }
 
-    func beginWaitingForPermission() {
+    AccessibilityPermission.shared.resolveAtLaunch { state in
+        if state == .granted {
+            startOnce()
+            return
+        }
         print("""
         ScrollWM needs Accessibility permission (its only permission).
         Grant it in: System Settings -> Privacy & Security -> Accessibility
         Waiting for grant... (the app will start automatically)
         """)
-        _ = AXSource.promptForTrustIfNeeded()
-
-        // Placeholder menu bar presence while waiting: hourglass icon with
-        // a menu that deep-links to the Accessibility pane.
-        let waitingItem = NSStatusBar.system.statusItem(withLength: 26)
-        waitingItem.button?.title = "⏳"
-        let waitingMenu = NSMenu()
-        let info = NSMenuItem(title: "ScrollWM: waiting for Accessibility permission", action: nil, keyEquivalent: "")
-        info.isEnabled = false
-        waitingMenu.addItem(info)
-        waitingMenu.addItem(NSMenuItem.separator())
-        let openSettings = NSMenuItem(title: "Open Accessibility Settings", action: #selector(NSApp.openAccessibilitySettings(_:)), keyEquivalent: "")
-        openSettings.target = NSApp
-        waitingMenu.addItem(openSettings)
-        let quit = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        waitingMenu.addItem(quit)
-        waitingItem.menu = waitingMenu
-
-        // Poll until trusted, then start WITHOUT requiring a relaunch.
-        // Fast interval so a fresh grant starts the app near-instantly.
-        var waited = 0.0
-        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
-            waited += 0.5
-            if AXSource.isTrusted {
-                timer.invalidate()
-                NSStatusBar.system.removeStatusItem(waitingItem)
-                print("Accessibility granted. Starting.")
-                startController()
-            } else if waited > 1800 {
-                print("No permission after 30 minutes; exiting.")
-                exit(2)
-            }
-        }
+        let ob = OnboardingWindowController()
+        ob.onGranted = { startOnce() }
+        ob.present()
+        onboardingKeepAlive = ob
     }
 
-    startWhenTrustedOrWait()
     app.run()
 }
 
-extension NSApplication {
-    @objc func openAccessibilitySettings(_ sender: Any?) {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-    }
-}
-
-/// Keeps the controller alive for the app lifetime (created in a closure).
+/// Keep app-lifetime objects created inside closures from being deallocated.
 var scrollWMControllerKeepAlive: ScrollWMController?
+var onboardingKeepAlive: OnboardingWindowController?
 
 enum CrashTestPhase { case none, crash }
 
