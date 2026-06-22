@@ -60,3 +60,18 @@ func spawnTestWindows(count: Int) -> [Process] {
     }
     return processes
 }
+
+/// Spawn a single test window with a hard `contentMinSize` (mimics apps like
+/// Apple Music that refuse to shrink below a minimum). Used by the integration
+/// test to verify the strip model tracks the real clamped width.
+func spawnTestWindowWithMin(width: Double, height: Double, minWidth: Double, minHeight: Double = 200, title: String = "MinWidthApp") -> Process {
+    let exe = Bundle.main.executablePath ?? CommandLine.arguments.first ?? ""
+    let screen = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1470, height: 956)
+    let x = 60.0
+    let y = screen.height - 120.0 - height
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: exe)
+    p.arguments = ["testwindow", "\(x)", "\(y)", "\(width)", "\(height)", title, "\(minWidth)", "\(minHeight)"]
+    try? p.run()
+    return p
+}
