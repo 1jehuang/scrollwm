@@ -37,6 +37,27 @@ no prompt and no waiting UI (it never asks when it doesn't need to).
 > button that puts plain instructions on your clipboard for any assistant you
 > already use. This is an optional escape hatch, never a dependency.
 
+## Updating
+
+To run the latest code after a change:
+
+```bash
+./scripts/update.sh             # rebuild, reinstall in place, relaunch
+```
+
+By default the build is **ad-hoc signed**, so macOS sees each rebuild as a new
+app and drops the Accessibility grant (you must re-enable it after every
+update). To keep the permission across updates, create a stable self-signed
+identity **once**:
+
+```bash
+./scripts/setup-signing.sh      # one-time: makes a local code-signing cert
+./scripts/update.sh             # now installs signed with the stable identity
+```
+
+After granting Accessibility one more time post-setup, future `update.sh` runs
+keep the permission (the app's signing identity no longer changes per build).
+
 ## Use
 
 | Control | Action |

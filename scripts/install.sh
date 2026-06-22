@@ -62,9 +62,20 @@ exec "$DIR/ScrollWM.bin" "$@"
 WRAPPER
 chmod +x "$APP/Contents/MacOS/ScrollWM"
 
-echo "==> signing (ad-hoc, stable identifier)"
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP/Contents/MacOS/ScrollWM.bin"
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
+echo "==> signing (stable identity if available, else ad-hoc)"
+# A stable self-signed identity (see scripts/setup-signing.sh) keeps the app's
+# designated requirement constant across rebuilds, so macOS preserves the
+# Accessibility grant through updates. Ad-hoc (-) changes identity every build,
+# which forces re-granting. Prefer the stable identity when present.
+SIGN_ID="-"
+SIGN_NOTE="ad-hoc (Accessibility may need re-granting after updates)"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "ScrollWM Self-Signed"; then
+    SIGN_ID="ScrollWM Self-Signed"
+    SIGN_NOTE="stable self-signed (Accessibility persists across updates)"
+fi
+echo "    using: $SIGN_NOTE"
+codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP/Contents/MacOS/ScrollWM.bin"
+codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 
 echo "==> verifying"
 codesign --verify --deep "$APP" && echo "    signature ok"
