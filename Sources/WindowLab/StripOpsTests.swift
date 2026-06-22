@@ -164,6 +164,43 @@ enum StripOpsTests {
               TeleportEngine.FocusMode(rawValue: "fit") == .fit)
         check("FocusMode has 2 cases", TeleportEngine.FocusMode.allCases.count == 2)
 
+        // --- insert(window:at:): new windows land where requested ---
+        func synthInfo(_ n: Int) -> AXWindowInfo {
+            AXWindowInfo(
+                pid: pid_t(80000 + n),
+                appName: "New\(n)",
+                element: AXUIElementCreateApplication(pid_t(80000 + n)),
+                title: "New\(n)",
+                role: kAXWindowRole as String,
+                subrole: kAXStandardWindowSubrole as String,
+                frame: CGRect(x: 0, y: 0, width: 400, height: 300),
+                isMinimized: false,
+                isFullscreen: false
+            )
+        }
+
+        // A new window inserted to the right of the focused column lands at
+        // focusIndex+1, not at the far right end of the strip.
+        let ei = makeEngine(count: 3) // Win0,Win1,Win2
+        ei.focusIndex = 1
+        ei.insert(window: synthInfo(9), at: ei.focusIndex + 1)
+        ei.compactStrip()
+        check("insert right-of-focus lands at focusIndex+1",
+              ei.slots.map { $0.window.title } == ["Win0", "Win1", "New9", "Win2"])
+        check("strip compact after insert", isCompact(ei))
+
+        // append still goes to the far right (used as the empty/fallback path).
+        let ea = makeEngine(count: 2)
+        ea.append(window: synthInfo(8))
+        check("append lands at far right",
+              ea.slots.map { $0.window.title } == ["Win0", "Win1", "New8"])
+
+        // Inserting into an empty strip places it at index 0.
+        let ez = makeEngine(count: 0)
+        ez.insert(window: synthInfo(7), at: 0)
+        check("insert into empty strip lands at index 0",
+              ez.slots.map { $0.window.title } == ["New7"])
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

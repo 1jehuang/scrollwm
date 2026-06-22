@@ -76,6 +76,47 @@ func runStripOpsIntegrationTest() {
         } else { check("width 100%: live readback available", false) }
         check("strip compact after resizes", StripOpsTests.isCompact(engine))
 
+        // --- MIN-SIZE CLAMP: a window with a hard minimum (like Apple Music)
+        // refuses to shrink below it, yet AX reports success. The model MUST
+        // track the real (clamped) width, not the request, or the strip layout
+        // corrupts. We spawn a dedicated window with a large contentMinSize and
+        // adopt a fresh engine over just it.
+        let bigMin = 900.0
+        let clampProc = spawnTestWindowWithMin(width: 1000, height: 600, minWidth: bigMin, title: "MinWidthApp")
+        Thread.sleep(forTimeInterval: 1.5)
+        let clampPid = clampProc.processIdentifier
+        func clampWindows() -> [AXWindowInfo] {
+            guard let a = NSRunningApplication(processIdentifier: clampPid), !a.isTerminated else { return [] }
+            return AXSource.windows(for: a)
+        }
+        let clampEngine = TeleportEngine(screenFrame: axFrame)
+        let clampMatched = IdentityMatcher.match(
+            axWindows: clampWindows(),
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+        ).filter { $0.ax.pid == clampPid }
+        DispatchQueue.main.sync { clampEngine.adopt(matched: clampMatched) }
+        Thread.sleep(forTimeInterval: 0.4)
+        if clampEngine.slots.count == 1 {
+            // Ask for a width that is BELOW the window's hard minimum.
+            let requested = clampEngine.width(forFraction: 0.25)
+            check("min-clamp: requested width is below the window minimum", requested < bigMin)
+            DispatchQueue.main.sync { _ = clampEngine.setFocusedWidth(fraction: 0.25) }
+            Thread.sleep(forTimeInterval: 0.3)
+            let liveClamped = clampWindows().first?.frame.size.width ?? 0
+            // The real window stays at its minimum; the model must match the
+            // real width (within AX rounding), NOT the smaller request.
+            check("min-clamp: real window did not shrink below its minimum", liveClamped >= bigMin - 6)
+            check("min-clamp: model width matches the real (clamped) width",
+                  abs(clampEngine.slots[0].width - liveClamped) <= 6)
+            check("min-clamp: model did NOT store the (smaller) requested width",
+                  clampEngine.slots[0].width > requested + 6)
+            check("min-clamp: strip stays compact", StripOpsTests.isCompact(clampEngine))
+            DispatchQueue.main.sync { _ = clampEngine.releaseAll() }
+        } else {
+            check("min-clamp: adopted the min-width window", false)
+        }
+        clampProc.terminate()
+
         // --- MOVE: reorder focused column right, verify model order ---
         engine.focusIndex = 0
         let before = engine.slots.map { $0.window.title }

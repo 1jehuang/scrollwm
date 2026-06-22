@@ -524,9 +524,34 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         if crashPhase == .crash { runCrashPhase(controller: controller) }
     }
 
-    if AXSource.isTrusted {
-        startController()
-    } else {
+    // AXIsProcessTrusted() can return a STALE `false` on the first call(s)
+    // right after launch, even when permission is actually granted. Trusting
+    // that single reading made the app flash the "waiting for Accessibility"
+    // UI (and fire a permission prompt) on every launch despite being granted.
+    //
+    // Fix: re-poll quickly for a short grace period before deciding we are
+    // genuinely untrusted. If trust shows up during the grace window, start
+    // immediately with no waiting UI and no prompt.
+    let graceDeadline = Date().addingTimeInterval(2.0)
+    func startWhenTrustedOrWait() {
+        if AXSource.isTrusted {
+            startController()
+            return
+        }
+        if Date() < graceDeadline {
+            // Still within the grace window: re-check shortly without showing
+            // any waiting UI or prompting.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                startWhenTrustedOrWait()
+            }
+            return
+        }
+        // Grace period elapsed and still untrusted: this is a genuine
+        // first-run / not-granted situation. Now show the waiting UI + prompt.
+        beginWaitingForPermission()
+    }
+
+    func beginWaitingForPermission() {
         print("""
         ScrollWM needs Accessibility permission (its only permission).
         Grant it in: System Settings -> Privacy & Security -> Accessibility
@@ -551,9 +576,10 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         waitingItem.menu = waitingMenu
 
         // Poll until trusted, then start WITHOUT requiring a relaunch.
-        var waited = 0
-        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { timer in
-            waited += 2
+        // Fast interval so a fresh grant starts the app near-instantly.
+        var waited = 0.0
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+            waited += 0.5
             if AXSource.isTrusted {
                 timer.invalidate()
                 NSStatusBar.system.removeStatusItem(waitingItem)
@@ -566,6 +592,7 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         }
     }
 
+    startWhenTrustedOrWait()
     app.run()
 }
 

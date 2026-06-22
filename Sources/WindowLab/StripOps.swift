@@ -25,26 +25,36 @@ extension TeleportEngine {
 
     /// Resize the focused column to a fraction of the usable width.
     /// Returns false when there is nothing focused.
+    ///
+    /// Many apps enforce a minimum window size (e.g. Apple Music, Calendar,
+    /// System Settings) and silently clamp any `setSize` smaller than their
+    /// floor. Crucially, AX usually still reports `.success` for the set: the
+    /// attribute write "succeeded", the app just overrode the value afterward.
+    /// So we cannot trust either the requested width OR the AX error code.
+    /// Instead we ALWAYS read back the real size and store that, so the strip
+    /// model never diverges from reality (which would otherwise make compacted
+    /// columns overlap and the viewport mini-map drift).
     @discardableResult
     func setFocusedWidth(fraction: CGFloat) -> Bool {
         guard slots.indices.contains(focusIndex) else { return false }
-        let newWidth = width(forFraction: fraction)
-        slots[focusIndex].width = newWidth
+        let requestedWidth = width(forFraction: fraction)
+        // Optimistically update the model so a missing readback (hung/unhealthy
+        // app) still reflects the user's intent.
+        slots[focusIndex].width = requestedWidth
 
         let slot = slots[focusIndex]
         if slot.window.healthy {
-            let err = AXSource.setSize(
+            _ = AXSource.setSize(
                 slot.window.element,
                 kAXSizeAttribute as String,
-                CGSize(width: newWidth, height: slot.height)
+                CGSize(width: requestedWidth, height: slot.height)
             )
-            if err != .success {
-                // Some windows clamp/refuse a size; read back so the model
-                // reflects reality rather than our request.
-                if let actual = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
-                    slots[focusIndex].width = actual.width
-                    slots[focusIndex].height = actual.height
-                }
+            // Always reconcile against the live frame: an app that clamps to its
+            // own minimum reports success but keeps a larger size. Trusting the
+            // request here would corrupt the strip layout.
+            if let actual = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
+                slots[focusIndex].width = actual.width
+                slots[focusIndex].height = actual.height
             }
         }
 

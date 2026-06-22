@@ -109,12 +109,24 @@ final class LifecycleMonitor {
             !standard.contains { CFEqual($0.element, slot.window.element) }
         }
 
-        // Additions: AX windows not yet in the strip.
+        // Additions: AX windows not yet in the strip. Insert each one
+        // immediately to the RIGHT of the focused column (PaperWM/niri-style)
+        // rather than at the far right end of the strip, and focus the newest
+        // so the viewport follows the window the user just opened.
         let newWindows = standard.filter { info in
             !engine.slots.contains { CFEqual(info.element, $0.window.element) }
         }
-        for info in newWindows {
-            engine.append(window: info)
+        var lastInsertedIndex: Int?
+        if !newWindows.isEmpty {
+            // Insertion point sits just after the current focus. Inserting at
+            // focusIndex+1 never shifts the focused window's own index, so the
+            // anchor stays valid as we insert successive new windows in order.
+            var insertAt = engine.slots.isEmpty ? 0 : engine.focusIndex + 1
+            for info in newWindows {
+                engine.insert(window: info, at: insertAt)
+                lastInsertedIndex = insertAt
+                insertAt += 1
+            }
         }
 
         adoptedCount += newWindows.count
@@ -123,7 +135,12 @@ final class LifecycleMonitor {
 
         if removed > 0 || !newWindows.isEmpty {
             engine.compactStrip()
-            engine.teleport()
+            if let lastInsertedIndex {
+                // Focus + scroll the viewport to reveal the newly opened window.
+                engine.focus(index: lastInsertedIndex)
+            } else {
+                engine.teleport()
+            }
             onChange?(newWindows.count, removed)
         }
     }
@@ -133,14 +150,16 @@ final class LifecycleMonitor {
 // MARK: - TeleportEngine lifecycle extensions
 
 extension TeleportEngine {
-    /// Append a newly discovered window to the right end of the strip.
-    func append(window info: AXWindowInfo) {
+    /// Insert a newly discovered window into the strip at array index `at`
+    /// (clamped into range). `canvasX` here is provisional; callers re-pack
+    /// with `compactStrip()` so the only thing that matters for ordering is
+    /// the array position.
+    func insert(window info: AXWindowInfo, at index: Int) {
         AXSource.setTimeout(info.element, seconds: 0.08)
-        let lastEdge = slots.map { $0.canvasX + $0.width }.max() ?? 0
         let gap: CGFloat = 12
         let width = min(info.frame.width, screenFrame.width - gap * 2)
         let height = min(info.frame.height, screenFrame.height)
-        slots.append(Slot(
+        let slot = Slot(
             window: ManagedWindowRef(
                 element: info.element,
                 pid: info.pid,
@@ -148,12 +167,19 @@ extension TeleportEngine {
                 title: info.title ?? "(untitled)",
                 originalFrame: info.frame
             ),
-            canvasX: slots.isEmpty ? 0 : lastEdge + gap,
+            canvasX: 0,
             width: width,
             y: screenFrame.origin.y,
             height: height
-        ))
+        )
+        let clamped = max(0, min(index, slots.count))
+        slots.insert(slot, at: clamped)
         onLayoutChange?()
+    }
+
+    /// Append a newly discovered window to the right end of the strip.
+    func append(window info: AXWindowInfo) {
+        insert(window: info, at: slots.count)
     }
 
     /// Remove slots matching the predicate. Returns count removed.
