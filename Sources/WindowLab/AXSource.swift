@@ -100,6 +100,12 @@ enum AXSource {
         return AXUIElementSetAttributeValue(element, attribute as CFString, value)
     }
 
+    /// Set a boolean AX attribute (e.g. kAXMainAttribute / kAXFocusedAttribute).
+    @discardableResult
+    static func setBool(_ element: AXUIElement, _ attribute: String, _ value: Bool) -> AXError {
+        AXUIElementSetAttributeValue(element, attribute as CFString, value as CFBoolean)
+    }
+
     /// Enumerate AX windows for one application.
     static func windows(for app: NSRunningApplication, timeoutSeconds: Float = 0.15) -> [AXWindowInfo] {
         let pid = app.processIdentifier
