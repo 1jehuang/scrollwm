@@ -192,6 +192,9 @@ private struct Flourish {
 /// viewport and reflowing columns both read as continuous motion.
 private final class VisualSlot {
     let id: UInt64
+    /// App identity, used to tint the column (kept fresh on reconcile so a
+    /// terminal that switches to a different agent recolors live).
+    var appColor: NSColor = NSColor.secondaryLabelColor
     var x: Spring               // canvasX (left edge)
     var width: Spring
     var focus = Spring(0, response: 0.26, dampingFraction: 0.9)
@@ -342,8 +345,10 @@ final class MenuBarStripView: NSView {
 
         var rebuilt: [VisualSlot] = []
         for s in state.slots {
+            let tint = AppColors.color(appName: s.appName, title: s.title)
             if let existing = byID[s.id] {
                 existing.exiting = false
+                existing.appColor = tint
                 existing.x.target = Double(s.canvasX)
                 existing.width.target = Double(s.width)
                 existing.presence.target = 1
@@ -354,6 +359,7 @@ final class MenuBarStripView: NSView {
                     id: s.id, canvasX: Double(s.canvasX), width: Double(s.width),
                     present: firstApply ? 1 : 0, enter: !firstApply
                 )
+                v.appColor = tint
                 v.health.reset(to: s.healthy ? 1 : 0)
                 rebuilt.append(v)
             }
@@ -537,10 +543,26 @@ final class MenuBarStripView: NSView {
 
             let focus = s.focus.value
             let health = s.health.value
-            let base = blend(NSColor.secondaryLabelColor, NSColor.controlAccentColor, CGFloat(focus))
-            let color = blend(base, NSColor.systemRed, CGFloat(1 - health) * 0.7)
-            color.withAlphaComponent(CGFloat(present) * alpha).setFill()
+
+            // Neutral pill body. The top stays uncolored; focus brightens it.
+            let bodyWhite = 0.42 + 0.40 * focus
+            let body = NSColor(white: CGFloat(bodyWhite), alpha: 1)
+            body.withAlphaComponent(CGFloat(present) * alpha).setFill()
             path.fill()
+
+            // App color tints only the BOTTOM HALF, as a gradient fading up to
+            // the middle. Unhealthy windows shift toward red; unfocused dim.
+            var tint = blend(s.appColor, NSColor.systemRed, CGFloat(1 - health) * 0.8)
+            if focus < 0.5 { tint = blend(tint, NSColor(white: 0.30, alpha: 1), CGFloat(0.45 * (1 - focus))) }
+            let tintTopAlpha = CGFloat((0.78 + 0.22 * focus) * present) * alpha
+
+            NSGraphicsContext.saveGraphicsState()
+            path.addClip()
+            let half = NSRect(x: r.minX, y: r.minY, width: r.width, height: r.height * 0.5)
+            let gradient = NSGradient(colors: [tint.withAlphaComponent(tintTopAlpha),
+                                               tint.withAlphaComponent(0)])
+            gradient?.draw(in: half, angle: 90) // bottom -> up, fading at mid
+            NSGraphicsContext.restoreGraphicsState()
         }
 
         // 3. Viewport frame.

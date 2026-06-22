@@ -10,13 +10,28 @@ import AppKit
 enum MenuBarAnimationRender {
 
     /// A synthetic strip state builder (mirrors the engine's gap layout).
+    /// IDs map to realistic app identities so the app-color tinting is exercised
+    /// in the rendered contact sheet.
+    private static func identity(_ id: UInt64) -> (app: String, title: String) {
+        switch id {
+        case 1: return ("kitty", "claude — repo")
+        case 2: return ("kitty", "codex session")
+        case 3: return ("Google Chrome", "GitHub — PR")
+        case 4: return ("Firefox", "Hacker News")
+        case 5: return ("kitty", "nvim main.swift")
+        case 6: return ("Spotify", "Lofi beats")
+        default: return ("Discord", "general")
+        }
+    }
+
     private static func state(_ ids: [UInt64], focus: Int, widths: [CGFloat]? = nil,
                               viewportX: CGFloat = 0, viewportWidth: CGFloat = 1600) -> TeleportEngine.StripState {
         var x: CGFloat = 12
         var slots: [(id: UInt64, appName: String, title: String, canvasX: CGFloat, width: CGFloat, healthy: Bool)] = []
         for (i, id) in ids.enumerated() {
             let w = widths?[i] ?? 360
-            slots.append((id: id, appName: "App\(id)", title: "Win\(id)", canvasX: x, width: w, healthy: true))
+            let who = identity(id)
+            slots.append((id: id, appName: who.app, title: who.title, canvasX: x, width: w, healthy: true))
             x += w + 12
         }
         return TeleportEngine.StripState(slots: slots, viewportX: viewportX,
