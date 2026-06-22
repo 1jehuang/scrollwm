@@ -102,6 +102,31 @@ func runSpawnLatencyTest() {
             check("new window adopted", false)
         }
 
+        // --- Close latency: close the new window and time the gap closing. ---
+        // The poll is 5s, so adoption-removal under ~1s proves the destroy
+        // observer (kAXUIElementDestroyed) drove it, not the poll.
+        let countBeforeClose = DispatchQueue.main.sync { engine.slots.count }
+        if countBeforeClose >= 2 {
+            print("[spawnlatency] closing the new window...")
+            let tc0 = Clock.nowAbsNs()
+            for p in seed { kill(p.processIdentifier, SIGUSR2) }
+            var closedNs: UInt64?
+            let cdeadline = Clock.nowAbsNs() + 6_000_000_000
+            while Clock.nowAbsNs() < cdeadline {
+                let count = DispatchQueue.main.sync { engine.slots.count }
+                if count < countBeforeClose { closedNs = Clock.nowAbsNs(); break }
+                usleep(5_000)
+            }
+            if let closedNs {
+                let ms = Double(closedNs &- tc0) / 1e6
+                print(String(format: "[spawnlatency] gap closed in %.0f ms", ms))
+                check("closed window removed", true)
+                check("close latency < 1000ms (destroy observer, not poll)", ms < 1000)
+            } else {
+                check("closed window removed", false)
+            }
+        }
+
         DispatchQueue.main.sync { monitor.stop(); engine.releaseAll() }
         for p in seed { p.terminate() }
 

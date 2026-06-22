@@ -31,7 +31,11 @@ final class WindowEventObserver {
     /// last delivery, so the monitor can do a SCOPED adoption (enumerate only
     /// those apps) instead of a full all-apps sweep.
     private let onWindowCreated: (Set<pid_t>) -> Void
+    /// Called (coalesced) when a UI element was destroyed, so the monitor can
+    /// reconcile removals promptly instead of waiting for the poll.
+    private let onWindowDestroyed: () -> Void
     private var coalesceScheduled = false
+    private var destroyScheduled = false
     private var pendingPIDs = Set<pid_t>()
 
     /// Small delay before reacting, so the WindowServer has a beat to register
@@ -53,9 +57,12 @@ final class WindowEventObserver {
 
     private var started = false
 
-    init(coalesceDelay: TimeInterval = 0.035, onWindowCreated: @escaping (Set<pid_t>) -> Void) {
+    init(coalesceDelay: TimeInterval = 0.035,
+         onWindowCreated: @escaping (Set<pid_t>) -> Void,
+         onWindowDestroyed: @escaping () -> Void) {
         self.coalesceDelay = coalesceDelay
         self.onWindowCreated = onWindowCreated
+        self.onWindowDestroyed = onWindowDestroyed
     }
 
     func start() {
@@ -124,10 +131,10 @@ final class WindowEventObserver {
         var observer: AXObserver?
         // The refcon carries a per-PID box so the C callback knows which app
         // fired without enumerating anything.
-        let callback: AXObserverCallback = { _, _, _, refcon in
+        let callback: AXObserverCallback = { _, _, notification, refcon in
             guard let refcon else { return }
             let box = Unmanaged<FireBox>.fromOpaque(refcon).takeUnretainedValue()
-            box.owner?.windowCreated(pid: box.pid)
+            box.owner?.eventFired(pid: box.pid, notification: notification as String)
         }
         guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
 
@@ -135,8 +142,11 @@ final class WindowEventObserver {
         fireBoxes[pid] = box
         let appElement = AXUIElementCreateApplication(pid)
         let refcon = Unmanaged.passUnretained(box).toOpaque()
-        // Window created is the signal that matters for fast adoption.
+        // Window created -> fast adoption. Window destroyed (fired on the app
+        // element for a child window's teardown) -> fast removal, so a closed
+        // window's gap closes immediately instead of lingering until the poll.
         AXObserverAddNotification(observer, appElement, kAXWindowCreatedNotification as CFString, refcon)
+        AXObserverAddNotification(observer, appElement, kAXUIElementDestroyedNotification as CFString, refcon)
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         observers[pid] = observer
     }
@@ -157,6 +167,24 @@ final class WindowEventObserver {
     }
     private var fireBoxes: [pid_t: FireBox] = [:]
 
+    /// Routed from the C callback (AXObserver runloop -> main). A created event
+    /// drives scoped adoption; a destroyed event drives a (cheap, off-main)
+    /// reconciliation so a closed window's gap closes immediately. Destroyed
+    /// fires for ANY element teardown, so it is coalesced and only triggers the
+    /// general resync (which no-ops when nothing actually changed).
+    private func eventFired(pid: pid_t, notification: String) {
+        // Already on the AXObserver's runloop source (main runloop here), but
+        // hop explicitly to be safe about thread-confined state.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if notification == (kAXWindowCreatedNotification as String) {
+                self.windowCreated(pid: pid)
+            } else {
+                self.windowMaybeDestroyed()
+            }
+        }
+    }
+
     /// A window was created in `pid`. Record it and schedule one coalesced
     /// delivery carrying every PID that fired in the window.
     private func windowCreated(pid: pid_t) {
@@ -169,6 +197,18 @@ final class WindowEventObserver {
             let pids = self.pendingPIDs
             self.pendingPIDs.removeAll(keepingCapacity: true)
             self.onWindowCreated(pids)
+        }
+    }
+
+    /// Something was destroyed; reconcile soon (coalesced). Drives the general
+    /// resync, which removes any managed window AX no longer reports.
+    private func windowMaybeDestroyed() {
+        if destroyScheduled { return }
+        destroyScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + coalesceDelay) { [weak self] in
+            guard let self else { return }
+            self.destroyScheduled = false
+            self.onWindowDestroyed()
         }
     }
 }

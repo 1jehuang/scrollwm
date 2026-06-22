@@ -603,15 +603,42 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
             startOnce()
             return
         }
+        func presentOnboarding() {
+            let ob = OnboardingWindowController()
+            ob.onGranted = { startOnce() }
+            ob.present()
+            onboardingKeepAlive = ob
+        }
+
+        // If Accessibility has ever been granted on this machine, a launch-time
+        // `false` is almost certainly a stale/transient TCC reading (signature
+        // re-eval after an update, WindowServer hiccup), NOT a real revocation.
+        // Wait silently (no UI, no prompt) and start the instant trust returns.
+        // Only if it stays untrusted well past any plausible stale window do we
+        // surface onboarding — and even then it will NOT fire the system modal,
+        // because we've prompted before (see OnboardingWindow). This is the core
+        // of "never ask the user when it's already on".
+        if AccessibilityPermission.shared.hasEverBeenGranted {
+            print("ScrollWM: Accessibility not yet readable at launch; waiting silently (no prompt).")
+            let silentDeadline = Date().addingTimeInterval(8.0)
+            AccessibilityPermission.shared.observe { state in
+                if state == .granted {
+                    startOnce()
+                } else if !started && Date() >= silentDeadline && onboardingKeepAlive == nil {
+                    // Genuinely still off after the extended grace: show help
+                    // (troubleshooting copy, no modal) so a real revocation
+                    // isn't an invisible dead end.
+                    presentOnboarding()
+                }
+            }
+            return
+        }
         print("""
         ScrollWM needs Accessibility permission (its only permission).
         Grant it in: System Settings -> Privacy & Security -> Accessibility
         Waiting for grant... (the app will start automatically)
         """)
-        let ob = OnboardingWindowController()
-        ob.onGranted = { startOnce() }
-        ob.present()
-        onboardingKeepAlive = ob
+        presentOnboarding()
     }
 
     app.run()

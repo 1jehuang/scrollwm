@@ -387,6 +387,19 @@ enum StripOpsTests {
               ResyncPlanner.decide(stripIDs: [1, -2], axIDs: [1, 3], currentSpaceIDs: [1, 3])
                 == .apply(remove: [-2], add: [3]))
 
+        // --- Accessibility prompt policy -------------------------------------
+        // The macOS system modal must auto-fire ONLY on a genuine first run.
+        // This is the guard against "ScrollWM keeps asking to turn on
+        // Accessibility" when it is already enabled.
+        check("autoprompt: genuine first run (untrusted, never asked) -> prompt",
+              AccessibilityPermission.shouldAutoPrompt(isTrusted: false, hasPrompted: false) == true)
+        check("autoprompt: already trusted -> never prompt (even if not yet asked)",
+              AccessibilityPermission.shouldAutoPrompt(isTrusted: true, hasPrompted: false) == false)
+        check("autoprompt: already trusted + asked before -> never prompt",
+              AccessibilityPermission.shouldAutoPrompt(isTrusted: true, hasPrompted: true) == false)
+        check("autoprompt: untrusted but asked before -> never re-prompt (deep-link instead)",
+              AccessibilityPermission.shouldAutoPrompt(isTrusted: false, hasPrompted: true) == false)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

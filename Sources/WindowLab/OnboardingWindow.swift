@@ -37,8 +37,12 @@ final class OnboardingWindowController: NSObject {
             return
         }
         buildWindow()
-        // Fire the system prompt once so ScrollWM appears in the list.
-        if permission.state != .granted {
+        // Fire the system modal ONLY on a genuine first run (untrusted and
+        // never asked before). On any later launch we deep-link to Settings and
+        // poll instead, so a stale-`false` reading or a TCC hiccup can never
+        // re-spam the "turn on Accessibility" dialog when it's already enabled.
+        if AccessibilityPermission.shouldAutoPrompt(isTrusted: permission.isTrustedNow,
+                                                    hasPrompted: permission.hasPrompted) {
             _ = permission.requestSystemPrompt()
         }
         // React live: the moment trust appears, finish onboarding.

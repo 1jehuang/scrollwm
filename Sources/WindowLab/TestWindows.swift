@@ -53,6 +53,17 @@ func runTestWindow(args: [String]) {
     }
     sigSrc.resume()
 
+    // SIGUSR2 -> close the most-recently-opened extra window WITHOUT exiting the
+    // process, so the close-latency test exercises the kAXUIElementDestroyed
+    // observer (not app termination).
+    signal(SIGUSR2, SIG_IGN)
+    let sigSrc2 = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+    sigSrc2.setEventHandler {
+        guard let last = extraWindows.popLast() else { return }
+        last.close()
+    }
+    sigSrc2.resume()
+
     app.run()
 }
 

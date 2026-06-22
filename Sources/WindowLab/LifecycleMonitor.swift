@@ -20,6 +20,13 @@ final class LifecycleMonitor {
     private var windowEvents: WindowEventObserver?
     private let interval: TimeInterval
 
+    /// Off-main queue for the heavy cross-process AX/CG enumeration, so a slow
+    /// app can never hitch the main thread (hotkeys / teleport / menu).
+    private let enumerateQueue = DispatchQueue(label: "scrollwm.resync.enumerate", qos: .userInitiated)
+    /// True while a background enumeration is in flight (main-thread only).
+    /// Coalesces overlapping poll/event triggers into one enumeration.
+    private var enumerating = false
+
     /// Restrict adoption to these PIDs (test mode). Nil = all regular apps.
     var pidFilter: Set<pid_t>? {
         didSet { windowEvents?.pidFilter = pidFilter }
@@ -40,8 +47,12 @@ final class LifecycleMonitor {
     func start() {
         // Fast path: when a window is created we get the firing PIDs, so we can
         // adopt by enumerating ONLY those apps - no all-apps sweep, and immune
-        // to unrelated hung apps stalling us.
-        let events = WindowEventObserver { [weak self] pids in self?.fastAdopt(pids: pids) }
+        // to unrelated hung apps stalling us. A destroyed event triggers the
+        // (cheap, off-main) resync so a closed window's gap closes promptly.
+        let events = WindowEventObserver(
+            onWindowCreated: { [weak self] pids in self?.fastAdopt(pids: pids) },
+            onWindowDestroyed: { [weak self] in self?.resync() }
+        )
         events.pidFilter = pidFilter
         events.start()
         windowEvents = events
@@ -90,33 +101,58 @@ final class LifecycleMonitor {
     /// user is on a different Space than the strip, this is inert, so native
     /// Space switching never pulls foreign windows into the strip or teleports
     /// the user around.
+    ///
+    /// Performance: the expensive part is the cross-process AX/CG enumeration
+    /// (10ms typical, but up to ~260ms when an app is cold or busy). That runs
+    /// on a background queue so it never blocks the main thread; only the cheap
+    /// diff + engine mutation (sub-millisecond) runs on main. So hotkeys,
+    /// teleport, and the menu stay responsive even during a slow enumeration.
     func resync() {
-        let start = Clock.nowAbsNs()
-
         // Guard 1: never resync while the session is locked/inactive.
         guard Self.sessionIsActive() else { return }
-        resyncCount += 1
+        // Coalesce: never run two enumerations at once. A pending poll/event
+        // while one is in flight is dropped; the next tick (or the in-flight
+        // result) covers it.
+        if enumerating { return }
+        enumerating = true
 
-        // Enumerate current standard windows (AX spans ALL Spaces).
-        let current: [AXWindowInfo]
-        if let pids = pidFilter {
-            current = pids.flatMap { pid -> [AXWindowInfo] in
-                guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return [] }
-                return AXSource.windows(for: app)
+        let pids = pidFilter
+        enumerateQueue.async { [weak self] in
+            guard let self else { return }
+            // --- Background: heavy cross-process enumeration ---
+            let current: [AXWindowInfo]
+            if let pids {
+                current = pids.flatMap { pid -> [AXWindowInfo] in
+                    guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return [] }
+                    return AXSource.windows(for: app)
+                }
+            } else {
+                current = AXSource.allWindows()
             }
-        } else {
-            current = AXSource.allWindows()
+            let standard = current.filter {
+                $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen
+            }
+            let cg = CGWindowSource.listWindows(onscreenOnly: true)
+
+            // --- Main: cheap diff + apply against the live engine ---
+            DispatchQueue.main.async {
+                self.enumerating = false
+                self.applyResync(standard: standard, cg: cg)
+            }
         }
-        let standard = current.filter {
-            $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen
-        }
+    }
+
+    /// Apply an enumerated snapshot to the engine. MUST run on the main thread
+    /// (mutates engine state). Cheap: matching/diff over a handful of windows.
+    private func applyResync(standard: [AXWindowInfo], cg: [CGWindowInfo]) {
+        let start = Clock.nowAbsNs()
+        resyncCount += 1
 
         // Determine which standard windows are on the CURRENT Space. The
         // WindowServer's on-screen list only contains current-Space windows;
         // fuse it with AX exactly as `arrange` does (PID+frame+title scoring).
         // A window we manage that sits on another Space still appears in `ax`
         // but NOT here, which is precisely what drives the Space-freeze rule.
-        let cg = CGWindowSource.listWindows(onscreenOnly: true)
         let matched = IdentityMatcher.match(axWindows: standard, cgWindows: cg)
 
         // Map each window to an opaque token (= index into `standard`) so the

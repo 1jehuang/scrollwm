@@ -51,6 +51,26 @@ final class AccessibilityPermission {
         state = Self.resolveImmediate(hasPrompted: hasPrompted)
     }
 
+    /// Live trust reading, bypassing the cached `state` (which only updates on
+    /// the poll tick). Use this anywhere a decision must reflect *right now*,
+    /// especially before doing anything that could surface the system modal.
+    var isTrustedNow: Bool { AXIsProcessTrusted() }
+
+    // MARK: - Prompt policy (pure, unit-tested)
+
+    /// Should onboarding auto-fire the one-time system Accessibility modal?
+    ///
+    /// Only on a *genuine first run*: currently untrusted AND never prompted
+    /// before on this machine. This is the single guard that stops the
+    /// "ScrollWM keeps asking me to turn on Accessibility" dialog spam:
+    ///   - Trusted already   -> never (the modal must never appear when we
+    ///     don't actually need the user; a stale-`false` must not trigger it).
+    ///   - Already prompted  -> never auto-fire again; deep-link to Settings
+    ///     and poll instead, so repeat launches are silent.
+    static func shouldAutoPrompt(isTrusted: Bool, hasPrompted: Bool) -> Bool {
+        !isTrusted && !hasPrompted
+    }
+
     // MARK: - Persisted "we have prompted" marker
 
     /// A zero-byte marker file written the first time we surface the system
@@ -68,6 +88,24 @@ final class AccessibilityPermission {
         set { if newValue { try? Data().write(to: Self.promptedMarkerURL, options: .atomic) } }
     }
 
+    /// A zero-byte marker written the first time trust is ever observed. Its
+    /// presence means "Accessibility has been granted on this machine before",
+    /// which lets us treat a launch-time `false` as a stale/transient reading
+    /// (TCC not yet attached, a signature re-evaluation, a WindowServer hiccup)
+    /// rather than a real denial — so we wait silently instead of popping any
+    /// onboarding UI or prompt.
+    private static var grantedMarkerURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ScrollWM", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("ax-granted")
+    }
+
+    private(set) var hasEverBeenGranted: Bool {
+        get { FileManager.default.fileExists(atPath: Self.grantedMarkerURL.path) }
+        set { if newValue { try? Data().write(to: Self.grantedMarkerURL, options: .atomic) } }
+    }
+
     // MARK: - State resolution
 
     private static func resolveImmediate(hasPrompted: Bool) -> State {
@@ -79,6 +117,7 @@ final class AccessibilityPermission {
     @discardableResult
     private func refresh() -> State {
         let next = Self.resolveImmediate(hasPrompted: hasPrompted)
+        if next == .granted && !hasEverBeenGranted { hasEverBeenGranted = true }
         if next != state {
             state = next
             for observer in observers { observer(next) }
@@ -129,8 +168,19 @@ final class AccessibilityPermission {
 
     /// Fire the one-time system Accessibility prompt (adds ScrollWM to the
     /// list and flips the per-app switch into view). Records that we've asked.
+    ///
+    /// Hardened so it can never become a source of repeated modals:
+    ///   - If we're already trusted, this is a no-op (returns `true`) and the
+    ///     modal is never requested. macOS would not draw the dialog when
+    ///     trusted anyway, but we refuse to even ask, defensively.
+    ///   - The "prompted" marker is only written when we actually fire, so a
+    ///     short-circuit here never burns the genuine first-run prompt.
     @discardableResult
     func requestSystemPrompt() -> Bool {
+        if isTrustedNow {
+            refresh()
+            return true
+        }
         hasPrompted = true
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
