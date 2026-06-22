@@ -6,7 +6,10 @@ import AppKit
 /// drops closed ones, reacts to app launch/termination.
 ///
 /// Strategy (validated by `watch`: full resync ~9ms p50):
-///   - NSWorkspace launch/terminate notifications -> immediate resync
+///   - AX `kAXWindowCreated` observer (see `WindowEventObserver`) -> near
+///     instant resync when a window opens in any app, so it is adopted before
+///     the user perceives a misplacement (this is the fast path)
+///   - NSWorkspace launch/terminate notifications -> resync on app changes
 ///   - periodic reconciliation every `interval` seconds as the safety net
 ///     (AX notifications can be missed; polling cannot)
 /// Identity: AXUIElement supports CFEqual for the same underlying window.
@@ -14,10 +17,13 @@ final class LifecycleMonitor {
     private let engine: TeleportEngine
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
+    private var windowEvents: WindowEventObserver?
     private let interval: TimeInterval
 
     /// Restrict adoption to these PIDs (test mode). Nil = all regular apps.
-    var pidFilter: Set<pid_t>?
+    var pidFilter: Set<pid_t>? {
+        didSet { windowEvents?.pidFilter = pidFilter }
+    }
 
     private(set) var adoptedCount = 0
     private(set) var removedCount = 0
@@ -32,6 +38,12 @@ final class LifecycleMonitor {
     }
 
     func start() {
+        // Fast path: react to window-created events almost immediately.
+        let events = WindowEventObserver { [weak self] in self?.resync() }
+        events.pidFilter = pidFilter
+        events.start()
+        windowEvents = events
+
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification,
                      NSWorkspace.didTerminateApplicationNotification] {
@@ -53,6 +65,8 @@ final class LifecycleMonitor {
     func stop() {
         timer?.invalidate()
         timer = nil
+        windowEvents?.stop()
+        windowEvents = nil
         for o in observers { NSWorkspace.shared.notificationCenter.removeObserver(o) }
         observers.removeAll()
     }

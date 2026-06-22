@@ -33,6 +33,26 @@ func runTestWindow(args: [String]) {
     window.backgroundColor = NSColor(hue: hue, saturation: 0.5, brightness: 0.8, alpha: 1.0)
     window.orderFrontRegardless()
 
+    // SIGUSR1 -> open a SECOND window in THIS already-running process. This lets
+    // the spawn-latency test model the common case ("open another window in an
+    // app the strip already observes") rather than a brand-new app launch.
+    var extraWindows: [NSWindow] = [] // retain so they are not deallocated
+    signal(SIGUSR1, SIG_IGN)
+    let sigSrc = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+    sigSrc.setEventHandler {
+        let extra = NSWindow(
+            contentRect: NSRect(x: x + 60, y: y - 60, width: w, height: h),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        extra.title = "\(title)-2"
+        extra.backgroundColor = NSColor(hue: hue, saturation: 0.6, brightness: 0.7, alpha: 1.0)
+        extra.orderFrontRegardless()
+        extraWindows.append(extra)
+    }
+    sigSrc.resume()
+
     app.run()
 }
 

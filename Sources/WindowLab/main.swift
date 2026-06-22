@@ -179,6 +179,8 @@ case "animrender":
     exit(MenuBarAnimationRender.run(outPath: out) ? 0 : 1)
 case "opstest":
     runStripOpsIntegrationTest()
+case "spawnlatency":
+    runSpawnLatencyTest()
 case "e2etest":
     runE2EKeybindingTest()
 case "hotkeyprobe":
