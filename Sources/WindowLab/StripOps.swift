@@ -72,7 +72,59 @@ extension TeleportEngine {
         compactStrip()
         focus(index: focusIndex) // re-centers viewport on the resized column
         onLayoutChange?()
+
+        // Many apps resize ASYNCHRONOUSLY (and some animate), so the readback
+        // above can still report the OLD size: AX returns `.success` for the
+        // set, but the new frame is not visible until a later run-loop turn. If
+        // we trusted only the immediate readback, a window that grows wider than
+        // the viewport would never get the viewport scrolled to reveal it (the
+        // model still thinks it is small, so `fit` sees no overflow). So we
+        // re-read the live size shortly after and, if it changed, re-pack and
+        // re-fit the viewport to the focused column. This is what makes the
+        // viewport follow a grown window to full visibility.
+        if slot.window.healthy {
+            scheduleWidthReconcile(for: slot.window)
+        }
         return true
+    }
+
+    /// After an async resize, re-read the real size of `window` and, if it no
+    /// longer matches the model, update the model, re-pack the strip, and (when
+    /// the window is still focused) re-fit the viewport so it follows the new
+    /// size. Polls a few times because different apps settle at different rates.
+    private func scheduleWidthReconcile(for window: ManagedWindowRef,
+                                        attemptsRemaining: Int = 4,
+                                        delay: TimeInterval = 0.08) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
+            guard let self, let window, window.healthy else { return }
+            guard let idx = self.slots.firstIndex(where: { $0.window === window }) else { return }
+            guard let actual = AXSource.copySize(window.element, kAXSizeAttribute as String) else { return }
+
+            let changed = abs(self.slots[idx].width - actual.width) > 1
+                || abs(self.slots[idx].height - actual.height) > 1
+            if changed {
+                self.slots[idx].width = actual.width
+                self.slots[idx].height = actual.height
+                self.compactStrip()
+                // Re-fit only when this window is the focused one; otherwise just
+                // re-pack/teleport so the layout stays consistent.
+                if idx == self.focusIndex {
+                    self.refitViewportToFocused()
+                } else {
+                    self.teleport()
+                    self.onLayoutChange?()
+                }
+            }
+
+            // Keep watching for the rest of the budget: animated/slow apps can
+            // still be mid-resize, and the size may even change between two
+            // polls, so we always run the full (short) window of attempts.
+            if attemptsRemaining > 1 {
+                self.scheduleWidthReconcile(for: window,
+                                            attemptsRemaining: attemptsRemaining - 1,
+                                            delay: delay)
+            }
+        }
     }
 
     /// Move the focused column one position toward `delta` (negative = left,

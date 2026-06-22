@@ -35,6 +35,11 @@ final class TeleportEngine {
         var healthy = true
         /// Frame the window had before WE first moved it. Ground truth for restore.
         let originalFrame: CGRect
+        /// Last screen-space origin we actually committed via AX. Used to skip
+        /// redundant `setPoint` calls (each is a ~0.4ms cross-process round-trip),
+        /// so a layout change only pays for windows that genuinely move. `nil`
+        /// until the first commit, which forces an initial placement.
+        var lastCommittedOrigin: CGPoint?
 
         init(element: AXUIElement, pid: pid_t, appName: String, title: String, originalFrame: CGRect) {
             Self.nextID += 1
@@ -148,6 +153,20 @@ final class TeleportEngine {
         onLayoutChange?()
     }
 
+    /// Re-fit the viewport to the currently focused column WITHOUT re-raising
+    /// or re-activating its app. Recomputes the viewport target for the current
+    /// focus mode and teleports. Used after an asynchronous resize settles so
+    /// the viewport follows the window to full visibility, without the focus
+    /// flicker / app reactivation that `focus(index:)` would cause (the window
+    /// is already focused; we only need to scroll the strip).
+    func refitViewportToFocused() {
+        guard slots.indices.contains(focusIndex) else { return }
+        let slot = slots[focusIndex]
+        viewportX = viewportTarget(for: slot, mode: focusMode, currentViewportX: viewportX)
+        teleport()
+        onLayoutChange?()
+    }
+
     /// Compute where the viewport's left edge should sit so that `slot` is
     /// shown according to `mode`. Pure function (no side effects) so it can be
     /// unit-tested directly.
@@ -192,12 +211,19 @@ final class TeleportEngine {
 
     /// Recommit every window to its strip position minus viewport offset.
     /// This IS the teleport: one synchronous pass, prioritized smartly.
-    func teleport() {
+    ///
+    /// Only windows whose target origin actually changed since the last commit
+    /// are written via AX. A no-op layout change (e.g. opening a window that
+    /// fits to the right, leaving every other column put) therefore costs zero
+    /// AX round-trips for the unchanged windows.
+    @discardableResult
+    func teleport() -> Int {
         let start = Clock.nowAbsNs()
 
         // Commit order: focused first (user is looking at it), then
         // on-screen left-to-right, then off-screen.
         let indices = commitOrder()
+        var committed = 0
         for i in indices {
             let slot = slots[i]
             guard slot.window.healthy else { continue }
@@ -205,14 +231,24 @@ final class TeleportEngine {
                 x: screenFrame.origin.x + slot.canvasX - viewportX,
                 y: slot.y
             )
+            // Skip windows that are already where they should be (within a
+            // sub-pixel tolerance): the AX write would be a wasted round-trip.
+            if let last = slot.window.lastCommittedOrigin,
+               abs(last.x - target.x) < 0.5, abs(last.y - target.y) < 0.5 {
+                continue
+            }
             let err = AXSource.setPoint(slot.window.element, kAXPositionAttribute as String, target)
             if err != .success {
                 slot.window.healthy = false
+            } else {
+                slot.window.lastCommittedOrigin = target
+                committed += 1
             }
         }
 
         lastTeleportMs = Double(Clock.nowAbsNs() &- start) / 1e6
         teleportLatencies.append(lastTeleportMs)
+        return committed
     }
 
     private func commitOrder() -> [Int] {

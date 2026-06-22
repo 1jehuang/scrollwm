@@ -150,6 +150,38 @@ enum StripOpsTests {
         check("close last window leaves empty strip", e4.slots.isEmpty)
         check("closeFocused on empty == false", e4.closeFocused() == false)
 
+        // --- refitViewportToFocused follows a window that GREW past the edge ---
+        // Reproduces the async-resize bug: an app reports the new (larger) size
+        // only on a later run-loop turn, so the model width is updated AFTER the
+        // initial focus(). Without a re-fit, the viewport would stay put and the
+        // grown window would hang off the right edge. After updating the model
+        // width and re-fitting, the viewport must scroll to reveal it fully.
+        let eg = makeEngine(count: 3, width: 300, screenWidth: 1600)
+        eg.focusMode = .fit
+        eg.focus(index: 2) // canvasX=2*(300+12)+12=636, right=936: fully visible, no scroll
+        check("grow-refit: viewport initially unmoved (column fits)", eg.viewportX == 0)
+        // Simulate the app finally growing the focused column to near-full width.
+        let grown = eg.width(forFraction: 1.0) // 1576 on a 1600 strip
+        eg.slots[eg.focusIndex].width = grown
+        eg.compactStrip()
+        eg.refitViewportToFocused()
+        let gslot = eg.slots[eg.focusIndex]
+        // The focused column must now be fully visible within the viewport.
+        let visibleLeft = gslot.canvasX - eg.viewportX
+        let visibleRight = visibleLeft + gslot.width
+        check("grow-refit: viewport scrolled so grown column is visible", eg.viewportX > 0)
+        check("grow-refit: grown column fully within viewport",
+              visibleLeft >= -0.5 && visibleRight <= eg.screenFrame.width + 0.5)
+
+        // A column that grows but still fits must NOT move the viewport.
+        let eg2 = makeEngine(count: 3, width: 300, screenWidth: 1600)
+        eg2.focusMode = .fit
+        eg2.focus(index: 0) // at left edge, viewportX stays 0
+        eg2.slots[0].width = 360 // slightly wider, still well within the screen
+        eg2.compactStrip()
+        eg2.refitViewportToFocused()
+        check("grow-refit: no scroll when grown column still fits", eg2.viewportX == 0)
+
         // --- viewportTarget: centered mode always centers ---
         let ec = makeEngine(count: 5, width: 400, screenWidth: 1600)
         let slot2 = ec.slots[2] // canvasX = 2*(400+12) = 824
