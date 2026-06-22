@@ -181,6 +181,9 @@ case "opstest":
     runStripOpsIntegrationTest()
 case "spawnlatency":
     runSpawnLatencyTest()
+case "sandbox":
+    let n = args.dropFirst().compactMap { Int($0) }.first ?? 4
+    runSandbox(windowCount: n)
 case "e2etest":
     runE2EKeybindingTest()
 case "hotkeyprobe":

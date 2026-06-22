@@ -15,9 +15,14 @@ enum RestoreStore {
         let x: Double, y: Double, w: Double, h: Double
     }
 
+    /// Subdirectory under Application Support. Sandbox mode points this at a
+    /// separate folder so its crash-recovery file can never clobber or trigger
+    /// recovery of the user's REAL managed windows.
+    static var subdirectory = "ScrollWM"
+
     static var fileURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ScrollWM", isDirectory: true)
+            .appendingPathComponent(subdirectory, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("restore.json")
     }

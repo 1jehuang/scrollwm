@@ -25,6 +25,12 @@ final class ScrollWMController: NSObject {
 
     private(set) var isManaging = false
 
+    /// Sandbox lock. When set, the controller can ONLY ever adopt/manage these
+    /// PIDs: `toggle()` and the menu/hotkey arrange path force this filter, so
+    /// no code path can touch the user's real windows. Used by `sandbox` mode
+    /// (spawned disposable windows) to test safely against a live session.
+    var sandboxPIDs: Set<pid_t>?
+
     /// All user settings, loaded from the config file (single source of truth).
     private(set) var config: ScrollWMConfig
 
@@ -128,10 +134,15 @@ final class ScrollWMController: NSObject {
             print("arrange: session locked/inactive, refusing")
             return
         }
+        // Sandbox lock takes precedence: if a sandbox PID set is configured, the
+        // controller may ONLY ever see those PIDs, no matter how arrange was
+        // invoked (menu, hotkey, or direct call). This guarantees the user's
+        // real windows are never enumerated or moved while sandboxing.
+        let effectiveFilter = sandboxPIDs ?? pidFilter
         let axWindows: [AXWindowInfo]
-        if let pidFilter {
+        if let effectiveFilter {
             // Direct PID enumeration: works for accessory apps (test windows).
-            axWindows = pidFilter.flatMap { pid -> [AXWindowInfo] in
+            axWindows = effectiveFilter.flatMap { pid -> [AXWindowInfo] in
                 guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return [] }
                 return AXSource.windows(for: app)
             }
@@ -155,7 +166,7 @@ final class ScrollWMController: NSObject {
         isManaging = true
 
         let monitor = LifecycleMonitor(engine: engine)
-        monitor.pidFilter = pidFilter
+        monitor.pidFilter = effectiveFilter
         monitor.onChange = { [weak self] _, _ in
             guard let self else { return }
             RestoreStore.save(engine: self.engine)

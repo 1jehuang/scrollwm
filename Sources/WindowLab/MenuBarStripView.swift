@@ -389,8 +389,7 @@ final class MenuBarStripView: NSView {
             for v in slots { v.focus.target = (v.id == toID) ? 1 : 0 }
             if let v = slots.first(where: { $0.id == toID }) {
                 v.pop.kick(7.5) // gentle scale pop on the newly focused column
-                flourishes.append(Flourish(kind: .focusPulse, canvasX: v.x.target + v.width.target / 2,
-                                           birth: now, duration: 0.4, hue: .controlAccentColor))
+                // (Blue focus-pulse ring removed.)
             }
 
         case .added(let ids):
@@ -520,20 +519,8 @@ final class MenuBarStripView: NSView {
         let top = rect.minY + vInset
         let bottomH = rect.height - vInset * 2
 
-        // 1. Focus glow: a soft accent halo behind the focused column. Wider
-        //    while the selector is moving fast, giving a motion-blur streak.
-        let glowSpeed = min(abs(focusGlow.velocity) / 1400.0, 1.0)
-        if focusGlowActive {
-            let cx = mapX(focusGlow.value)
-            let halfBase = max(rect.width * 0.10, 4)
-            let half = halfBase + CGFloat(glowSpeed) * rect.width * 0.5
-            let g = NSRect(x: cx - half, y: top - 1, width: half * 2, height: bottomH + 2)
-            let path = NSBezierPath(roundedRect: g, xRadius: half, yRadius: g.height / 2)
-            NSColor.controlAccentColor
-                .withAlphaComponent((0.16 + 0.22 * glowSpeed) * alpha)
-                .setFill()
-            path.fill()
-        }
+        // (Focus glow halo removed: the focused column is highlighted directly
+        // in the column pass below, so no traveling accent halo is drawn.)
 
         // 2. Columns.
         for s in slots {
