@@ -60,30 +60,47 @@ keep the permission (the app's signing identity no longer changes per build).
 
 ## Use
 
+Default keys (all rebindable in the config file, see below):
+
 | Control | Action |
 |---|---|
 | menu bar icon → Arrange | adopt current-Space windows into the strip |
 | `⌃⌥←` / `⌃⌥→` | focus previous/next column |
 | `⌃⌥1`..`⌃⌥9` | jump to column N |
-| `⌥1` / `⌥2` / `⌥3` / `⌥4` | set focused column width to 25% / 50% / 75% / 100% |
-| `⌘H` / `⌘L` | move focused column left / right |
+| `⌘H` / `⌘L` | focus left / right column |
+| `⌘⇧H` / `⌘⇧L` | move focused column left / right |
+| `⌥1`..`⌥4` or `⌘1`..`⌘4` | set focused column width to 25% / 50% / 75% / 100% |
 | `⌘Q` | close focused window |
 | `⌃⌥esc` | toggle arrange/release |
 | menu bar icon → window | jump to that window |
+| menu → How to Use ScrollWM… | open the in-app tutorial |
 | menu → Release | restore all windows, go dormant |
 | menu → Quit | restore all windows and exit |
 
-The width/move/close keys are **only active while managing**, and are torn down
-on Release so the desktop behaves normally (`⌘Q` quits apps, `⌘H` hides them)
-when ScrollWM is dormant.
+A first run pops the tutorial automatically. The width/focus/move/close keys
+are **only active while managing**, and are torn down on Release so the desktop
+behaves normally (`⌘Q` quits apps, `⌘H` hides them) when ScrollWM is dormant.
 
-> **Implementation note.** `⌥1-4` (width) and `⌘Q` (close) use permission-free
-> Carbon global hotkeys. `⌘H`/`⌘L` cannot: macOS reserves `⌘H` for "Hide" and
-> never delivers it to a Carbon hotkey (verified via `WindowLab hotkeyprobe`).
-> So the move keys ride a keyboard `CGEventTap`, which works with the
-> Accessibility permission the app already holds (verified via `keytapprobe`).
-> No Input Monitoring permission is required.
+## Settings & keybindings (config file only)
 
+All settings live in one human-editable file (the single source of truth):
+
+```
+~/Library/Application Support/ScrollWM/config.json
+```
+
+It's commented JSON. Open it from the menu (**Open Config File**), edit it, then
+choose **Reload Config** — changes apply live, no relaunch. You can set the
+column gap, minimum column width, width presets, focus mode (`fit`/`centered`),
+and every keybinding.
+
+> **Keybinding channels.** Always-on keys (navigation, jump, arrange/release
+> toggle) use permission-free Carbon global hotkeys, which cannot capture `⌘H`
+> or `⌘M` (macOS reserves them; verified via `WindowLab hotkeyprobe`). The
+> while-managing keys (focus/move/width/close) ride a keyboard `CGEventTap`,
+> which works with the Accessibility permission the app already holds (verified
+> via `keytapprobe`) and can bind any chord, including `⌘H`/`⌘L`. No Input
+> Monitoring permission is required. The default config documents this inline.
 
 The menu bar icon is a live mini-map: columns are windows, the outline is
 your viewport, blue is the focused window.
@@ -95,6 +112,8 @@ Sources/WindowLab/
   AXSource.swift             timeout-protected Accessibility wrapper
   AccessibilityPermission.swift  single source of truth for the AX grant
   OnboardingWindow.swift     first-run permission onboarding UI
+  Config.swift               config file (settings + rebindable keys)
+  TutorialWindow.swift       in-app tutorial / cheat sheet (config-driven)
   CGWindowSource.swift       WindowServer enumeration (CGWindowList)
   IdentityMatcher.swift      AX<->CG window fusion (PID+frame+title scoring)
   TeleportEngine.swift       strip layout, viewport, prioritized commits

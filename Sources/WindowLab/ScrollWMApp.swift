@@ -18,7 +18,15 @@ final class ScrollWMController: NSObject {
     /// Keyboard tap for the move bindings (Cmd+H/L) that Carbon cannot grab.
     private var moveTap: KeyboardEventTap?
 
+    /// Lazily-created tutorial window controller (config-driven cheat sheet).
+    private lazy var tutorial = TutorialWindowController(configProvider: { [weak self] in
+        self?.config ?? .default
+    })
+
     private(set) var isManaging = false
+
+    /// All user settings, loaded from the config file (single source of truth).
+    private(set) var config: ScrollWMConfig
 
     override init() {
         guard let screen = NSScreen.main else { fatalError("no screen") }
@@ -29,14 +37,11 @@ final class ScrollWMController: NSObject {
             width: vf.width,
             height: vf.height
         )
+        config = ScrollWMConfig.load()
         engine = TeleportEngine(screenFrame: axFrame)
         super.init()
 
-        // Restore the persisted focus mode (defaults to .fit).
-        if let raw = UserDefaults.standard.string(forKey: Self.focusModeKey),
-           let mode = TeleportEngine.FocusMode(rawValue: raw) {
-            engine.focusMode = mode
-        }
+        applyConfigToEngine()
 
         menuBar = ProductionMenuBar(controller: self, engine: engine)
         installHotkeys()
@@ -52,6 +57,67 @@ final class ScrollWMController: NSObject {
                 print("recovered \(result.restored)/\(result.total) windows from previous session")
             }
         }
+    }
+
+    /// Push layout/focus settings from the config into the live engine.
+    private func applyConfigToEngine() {
+        engine.gap = config.layout.columnGap
+        engine.minColumnWidth = config.layout.minColumnWidth
+        engine.widthPresets = config.layout.widthPresets
+        engine.focusMode = config.focusMode
+    }
+
+    /// Re-read the config file and apply it live. Keybindings are reinstalled
+    /// so edits take effect without a relaunch. If currently managing, the
+    /// strip is re-laid-out so layout changes (gap/width) show immediately.
+    func reloadConfig() {
+        config = ScrollWMConfig.load()
+        applyConfigToEngine()
+        // Reinstall global hotkeys with the new chords.
+        hotkeys.unregisterAll()
+        installHotkeys()
+        if isManaging {
+            unregisterManagementHotkeys()
+            registerManagementHotkeys()
+            engine.compactStrip()
+            engine.focus(index: engine.focusIndex)
+        }
+        menuBar.refresh()
+        print("config reloaded from \(ScrollWMConfig.fileURL.path)")
+    }
+
+    // MARK: - Tutorial / config UX
+
+    /// Show the in-app tutorial window (config-driven cheat sheet).
+    func showTutorial() { tutorial.present() }
+
+    /// Open the config file in the user's editor, creating the documented
+    /// default first if it doesn't exist yet.
+    func openConfigFile() {
+        ScrollWMConfig.writeDefaultFileIfMissing()
+        NSWorkspace.shared.open(ScrollWMConfig.fileURL)
+    }
+
+    /// Auto-show the tutorial exactly once on a genuine first run, so a new
+    /// user always learns the basics. Marker lives next to the config.
+    func showTutorialOnFirstRunIfNeeded() {
+        let marker = ScrollWMConfig.dirURL.appendingPathComponent("tutorial-seen")
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+        try? Data().write(to: marker, options: .atomic)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.showTutorial()
+        }
+    }
+
+    /// One-line cheat sheet built from the live config, for the menu.
+    var cheatSheetLine: String {
+        func k(_ a: KeyAction) -> String {
+            (config.keybindings[a] ?? KeyAction.defaultChords[a] ?? [])
+                .first.map(TutorialWindowController.pretty) ?? "—"
+        }
+        return "\(k(.focusPrevious))/\(k(.focusNext)) navigate · \(k(.jumpModifier))+1-9 jump · "
+            + "\(k(.width25))… width · \(k(.focusLeft))/\(k(.focusRight)) focus · "
+            + "\(k(.closeWindow)) close · \(k(.toggleArrange)) toggle"
     }
 
     // MARK: - Arrange / Release
@@ -132,10 +198,10 @@ final class ScrollWMController: NSObject {
 
     // MARK: - Window operations passthrough
 
-    /// Resize focused column to a width preset (Alt+1..4 -> 25/50/75/100%).
+    /// Resize focused column to a width preset (width keys -> presets[i]).
     func setWidthPreset(_ index: Int) {
-        guard isManaging, TeleportEngine.widthPresets.indices.contains(index) else { return }
-        engine.setFocusedWidth(fraction: TeleportEngine.widthPresets[index])
+        guard isManaging, engine.widthPresets.indices.contains(index) else { return }
+        engine.setFocusedWidth(fraction: engine.widthPresets[index])
         menuBar.refresh()
     }
     /// Move focused column left/right within the strip (Cmd+H / Cmd+L).
@@ -151,16 +217,16 @@ final class ScrollWMController: NSObject {
 
     var focusMode: TeleportEngine.FocusMode { engine.focusMode }
 
-    /// Switch how the viewport follows focus (centered vs fit) and persist it.
+    /// Switch how the viewport follows focus (centered vs fit) and persist it
+    /// to the config file (the single source of truth).
     func setFocusMode(_ mode: TeleportEngine.FocusMode) {
         engine.focusMode = mode
-        UserDefaults.standard.set(mode.rawValue, forKey: Self.focusModeKey)
+        config.focusMode = mode
+        config.save()
         // Re-apply to the current focus so the change is visible immediately.
         if isManaging { engine.focus(index: engine.focusIndex) }
         menuBar.refresh()
     }
-
-    static let focusModeKey = "ScrollWMFocusMode"
 
     // MARK: - Debug accessors (for the e2e keybinding test)
 
@@ -177,76 +243,69 @@ final class ScrollWMController: NSObject {
 
     // MARK: - Hotkeys
 
+    /// Install the always-on global hotkeys (navigation, jump, toggle) from the
+    /// config's chords via permission-free Carbon hotkeys.
     private func installHotkeys() {
         hotkeys.install()
-        hotkeys.register(.right) { [weak self] in self?.focusNext() }
-        hotkeys.register(.left) { [weak self] in self?.focusPrevious() }
-        for (i, key) in HotkeyManager.Key.digits.enumerated() {
-            hotkeys.register(key) { [weak self] in self?.focus(index: i) }
+
+        for chord in config.chords(for: .focusNext) where chord.hasKey {
+            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in self?.focusNext() }
         }
-        // ctrl+opt+escape: toggle arrange/release (panic switch).
-        hotkeys.register(.escape) { [weak self] in self?.toggle() }
+        for chord in config.chords(for: .focusPrevious) where chord.hasKey {
+            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in self?.focusPrevious() }
+        }
+        for chord in config.chords(for: .toggleArrange) where chord.hasKey {
+            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in self?.toggle() }
+        }
+        // Jump: the modifier-only `jumpModifier` chord + digit keys 1-9.
+        if let jump = config.chords(for: .jumpModifier).first {
+            for (i, key) in HotkeyManager.Key.digits.enumerated() {
+                hotkeys.registerRaw(keyCode: key.rawValue, modifiers: jump.carbonModifiers) { [weak self] in self?.focus(index: i) }
+            }
+        }
     }
 
     /// Hotkeys that only make sense while managing, and that would otherwise
-    /// shadow system shortcuts (Cmd+Q quit, Cmd+H hide). Registered on Arrange,
-    /// unregistered on Release so the desktop behaves normally when dormant.
-    private var managementHotkeyIDs: [UInt32] = []
-
+    /// shadow system shortcuts (e.g. Cmd+Q quit, Cmd+H hide). Registered on
+    /// Arrange, torn down on Release so the desktop behaves normally when
+    /// dormant. All of these ride the keyboard tap (see `registerManagementHotkeys`).
     private func registerManagementHotkeys() {
-        guard managementHotkeyIDs.isEmpty else { return }
-        var ids: [UInt32] = []
-        // Alt+1..4 -> 25/50/75/100% width (Carbon delivers these reliably).
-        let widthKeys: [HotkeyManager.Key] = [.one, .two, .three, .four]
-        for (i, key) in widthKeys.enumerated() {
-            if let id = hotkeys.register(key, modifiers: HotkeyManager.opt, handler: { [weak self] in
-                self?.setWidthPreset(i)
-            }) { ids.append(id) }
-        }
-        // Cmd+Q -> close focused window (Carbon delivers this reliably).
-        if let id = hotkeys.register(.q, modifiers: HotkeyManager.cmd, handler: { [weak self] in
-            self?.closeFocused()
-        }) { ids.append(id) }
-        managementHotkeyIDs = ids
-
-        // Cmd+H / Cmd+L      -> focus left / right
-        // Cmd+Shift+H / L    -> move focused column left / right
-        // Carbon CANNOT grab Cmd+H (macOS reserves it for Hide), so these ride
-        // a keyboard event tap, which the app's Accessibility permission allows.
+        guard moveTap == nil else { return }
         let tap = KeyboardEventTap()
-        tap.addCombo(keyCode: HotkeyManager.Key.h.rawValueInt64, flags: [.maskCommand]) { [weak self] in
-            self?.focusPrevious()
-        }
-        tap.addCombo(keyCode: HotkeyManager.Key.l.rawValueInt64, flags: [.maskCommand]) { [weak self] in
-            self?.focusNext()
-        }
-        tap.addCombo(keyCode: HotkeyManager.Key.h.rawValueInt64, flags: [.maskCommand, .maskShift]) { [weak self] in
-            self?.moveFocused(by: -1)
-        }
-        tap.addCombo(keyCode: HotkeyManager.Key.l.rawValueInt64, flags: [.maskCommand, .maskShift]) { [weak self] in
-            self?.moveFocused(by: 1)
-        }
-        // Cmd+1..4 -> 25/50/75/100% width, in addition to Alt+1..4. Cmd+digits
-        // are otherwise claimed by apps (e.g. Ghostty tab switching), so route
-        // them through the tap, which suppresses them while managing.
-        let digitKeys: [HotkeyManager.Key] = [.one, .two, .three, .four]
-        for (i, key) in digitKeys.enumerated() {
-            tap.addCombo(keyCode: key.rawValueInt64, flags: [.maskCommand]) { [weak self] in
-                self?.setWidthPreset(i)
+
+        // All management chords ride the keyboard tap. The tap is head-insert
+        // in the session and active only while managing, so it intercepts
+        // every chord ahead of apps and suppresses it — including the ones
+        // Carbon cannot deliver: Cmd+H/Cmd+M (macOS-reserved) and Cmd+digit
+        // (claimed by the frontmost app). Using one channel for all management
+        // keys keeps behavior uniform and rebindable to any chord. It works
+        // with the Accessibility permission we already hold (verified via
+        // `keytapprobe`); no extra permission. Dormant => no tap => the desktop
+        // behaves normally (Cmd+Q quits, Cmd+H hides).
+        func bind(_ action: KeyAction, _ handler: @escaping () -> Void) {
+            for chord in config.chords(for: action) where chord.hasKey {
+                tap.addCombo(keyCode: Int64(chord.keyCode), flags: chord.cgFlags, handler: handler)
             }
         }
+
+        let widthActions: [KeyAction] = [.width25, .width50, .width75, .width100]
+        for (i, action) in widthActions.enumerated() {
+            bind(action) { [weak self] in self?.setWidthPreset(i) }
+        }
+        bind(.closeWindow) { [weak self] in self?.closeFocused() }
+        bind(.focusLeft) { [weak self] in self?.focusPrevious() }
+        bind(.focusRight) { [weak self] in self?.focusNext() }
+        bind(.moveColumnLeft) { [weak self] in self?.moveFocused(by: -1) }
+        bind(.moveColumnRight) { [weak self] in self?.moveFocused(by: 1) }
+
         if tap.start() {
             moveTap = tap
         } else {
-            print("warning: could not start keyboard tap; Cmd+H/L focus/move disabled")
+            print("warning: could not start keyboard tap; management keys disabled")
         }
     }
 
     private func unregisterManagementHotkeys() {
-        if !managementHotkeyIDs.isEmpty {
-            hotkeys.unregister(ids: managementHotkeyIDs)
-            managementHotkeyIDs.removeAll()
-        }
         moveTap?.stop()
         moveTap = nil
     }
@@ -478,9 +537,24 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
 
 
         menu.addItem(.separator())
-        let help = NSMenuItem(title: "⌃⌥←/→ navigate · ⌃⌥1-9 jump · ⌥1-4 or ⌘1-4 width · ⌘H/⌘L focus · ⌘⇧H/⌘⇧L move · ⌘Q close · ⌃⌥esc toggle", action: nil, keyEquivalent: "")
+
+        // Help + settings (config-file only). The cheat sheet line is built
+        // from the live config so it always matches the real bindings.
+        let help = NSMenuItem(title: controller.cheatSheetLine, action: nil, keyEquivalent: "")
         help.isEnabled = false
         menu.addItem(help)
+
+        let tutorial = NSMenuItem(title: "How to Use ScrollWM…", action: #selector(showTutorial), keyEquivalent: "")
+        tutorial.target = self
+        menu.addItem(tutorial)
+
+        let openConfig = NSMenuItem(title: "Open Config File", action: #selector(openConfigFile), keyEquivalent: "")
+        openConfig.target = self
+        menu.addItem(openConfig)
+
+        let reload = NSMenuItem(title: "Reload Config", action: #selector(reloadConfigAction), keyEquivalent: "")
+        reload.target = self
+        menu.addItem(reload)
 
         let axOK = AccessibilityPermission.shared.state.isGranted
         let perm = NSMenuItem(title: axOK ? "Accessibility: granted ✓" : "Accessibility: MISSING — click to open Settings",
@@ -508,6 +582,9 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     @objc private func openAXSettings() {
         AccessibilityPermission.shared.openSystemSettings()
     }
+    @objc private func showTutorial() { controller.showTutorial() }
+    @objc private func openConfigFile() { controller.openConfigFile() }
+    @objc private func reloadConfigAction() { controller.reloadConfig() }
 }
 
 // MARK: - Entry
@@ -519,7 +596,8 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
     func startController() {
         let controller = ScrollWMController()
         scrollWMControllerKeepAlive = controller
-        print("ScrollWM running (dormant). Use the menu bar item or ⌃⌥esc to arrange.")
+        print("ScrollWM running (dormant). Use the menu bar item or the toggle key to arrange.")
+        controller.showTutorialOnFirstRunIfNeeded()
         if selftest { runScrollWMSelftest(controller: controller) }
         if crashPhase == .crash { runCrashPhase(controller: controller) }
     }

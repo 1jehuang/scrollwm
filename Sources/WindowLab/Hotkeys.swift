@@ -59,13 +59,21 @@ final class HotkeyManager {
     /// `unregister`), or nil if Carbon refused the registration.
     @discardableResult
     func register(_ key: Key, modifiers: UInt32 = HotkeyManager.ctrlOpt, handler: @escaping Handler) -> UInt32? {
+        registerRaw(keyCode: key.rawValue, modifiers: modifiers, handler: handler)
+    }
+
+    /// Register a global hotkey by raw virtual keycode (config-driven chords).
+    /// Returns the assigned id, or nil if Carbon refused the registration
+    /// (e.g. a chord macOS reserves, like Cmd+H).
+    @discardableResult
+    func registerRaw(keyCode: UInt32, modifiers: UInt32, handler: @escaping Handler) -> UInt32? {
         let id = nextID
         nextID += 1
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x53574D31), id: id) // 'SWM1'
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
-            key.rawValue, modifiers, hotKeyID,
+            keyCode, modifiers, hotKeyID,
             GetApplicationEventTarget(), 0, &ref
         )
         if status == noErr, let ref {
@@ -73,7 +81,7 @@ final class HotkeyManager {
             refs[id] = ref
             return id
         } else {
-            print("warning: hotkey registration failed for key \(key) (status \(status))")
+            print("warning: hotkey registration failed for keyCode \(keyCode) mods \(modifiers) (status \(status))")
             return nil
         }
     }

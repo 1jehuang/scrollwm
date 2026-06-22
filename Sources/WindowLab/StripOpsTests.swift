@@ -36,9 +36,10 @@ enum StripOpsTests {
         return engine
     }
 
-    /// canvasX values must be a gap-separated left-to-right packing.
+    /// canvasX values must be a gap-separated left-to-right packing that opens
+    /// with a leading `gap` margin (symmetric with the trailing margin).
     static func isCompact(_ engine: TeleportEngine) -> Bool {
-        var x: CGFloat = 0
+        var x: CGFloat = engine.gap
         for slot in engine.slots {
             if abs(slot.canvasX - x) > 0.5 { return false }
             x += slot.width + engine.gap
@@ -54,15 +55,47 @@ enum StripOpsTests {
         }
 
         // --- width(forFraction:) math ---
+        // The strip lays out as `gap | col | gap | col | ... | gap`. A fraction
+        // f = 1/N must size a column so exactly N of them tile the viewport V:
+        //   w(f) = f*(V - gap) - gap
         let e = makeEngine(count: 3)
-        let usable = e.screenFrame.width - e.gap * 2 // 1576
-        check("width 25% == usable*0.25", abs(e.width(forFraction: 0.25) - (usable * 0.25).rounded()) < 0.5)
-        check("width 50% == usable*0.50", abs(e.width(forFraction: 0.50) - (usable * 0.50).rounded()) < 0.5)
-        check("width 75% == usable*0.75", abs(e.width(forFraction: 0.75) - (usable * 0.75).rounded()) < 0.5)
-        check("width 100% == usable",     abs(e.width(forFraction: 1.0) - usable.rounded()) < 0.5)
+        let V = e.screenFrame.width            // 1600
+        let g = e.gap                          // 12
+        func expectedWidth(_ f: CGFloat) -> CGFloat { (f * (V - g) - g).rounded() }
+        check("width 25% gap-correct", abs(e.width(forFraction: 0.25) - expectedWidth(0.25)) < 0.5)
+        check("width 50% gap-correct", abs(e.width(forFraction: 0.50) - expectedWidth(0.50)) < 0.5)
+        check("width 75% gap-correct", abs(e.width(forFraction: 0.75) - expectedWidth(0.75)) < 0.5)
+        check("width 100% == V - 2*gap",  abs(e.width(forFraction: 1.0) - (V - 2 * g)) < 0.5)
         check("width clamps to minColumnWidth", e.width(forFraction: 0.001) == e.minColumnWidth)
-        check("width clamps fraction >1 to 100%", e.width(forFraction: 5.0) == usable.rounded())
+        check("width clamps fraction >1 to 100%", e.width(forFraction: 5.0) == (V - 2 * g).rounded())
         check("presets are [0.25,0.5,0.75,1.0]", TeleportEngine.widthPresets == [0.25, 0.5, 0.75, 1.0])
+
+        // --- tiling invariant: exactly N columns at fraction 1/N fill V ---
+        // Build N columns each sized to 1/N, pack them with a leading gap, and
+        // assert the strip's right edge lands at V - gap (symmetric margins),
+        // and the next column would start beyond V (so N is the exact maximum).
+        func tilingFits(_ n: Int) -> Bool {
+            let eng = makeEngine(count: n)
+            let w = eng.width(forFraction: 1.0 / CGFloat(n))
+            for i in eng.slots.indices { eng.slots[i].width = w }
+            eng.compactStrip()
+            let last = eng.slots.last!
+            let rightEdge = last.canvasX + last.width          // should be ~ V - gap
+            let nextStart = rightEdge + eng.gap                // an (N+1)th column start
+            // N columns end one gap short of the screen's right edge ...
+            let exactRight = abs(rightEdge - (V - g)) < 1.0
+            // ... and an extra column would overflow the viewport.
+            let noRoomForMore = nextStart + eng.minColumnWidth > V
+            return exactRight && noRoomForMore
+        }
+        check("2 columns @ 50% tile exactly", tilingFits(2))
+        check("4 columns @ 25% tile exactly", tilingFits(4))
+        check("1 column @ 100% tiles exactly", tilingFits(1))
+
+        // --- compactStrip opens with a leading gap margin (symmetric) ---
+        let eMargin = makeEngine(count: 2)
+        eMargin.compactStrip()
+        check("strip starts at leading gap margin", abs(eMargin.slots[0].canvasX - eMargin.gap) < 0.5)
 
         // --- setFocusedWidth resizes focused column and recompacts ---
         let e1 = makeEngine(count: 3)
@@ -200,6 +233,68 @@ enum StripOpsTests {
         ez.insert(window: synthInfo(7), at: 0)
         check("insert into empty strip lands at index 0",
               ez.slots.map { $0.window.title } == ["New7"])
+
+        // --- Config: chord parsing ---
+        if let c = Chord(string: "cmd+shift+h") {
+            check("chord cmd+shift+h keyCode is H (4)", c.keyCode == 4)
+            check("chord cmd+shift+h has cmd flag", c.cgFlags.contains(.maskCommand))
+            check("chord cmd+shift+h has shift flag", c.cgFlags.contains(.maskShift))
+            check("chord cmd+shift+h has key", c.hasKey)
+        } else { check("chord cmd+shift+h parses", false) }
+
+        check("chord ctrl+opt+left parses", Chord(string: "ctrl+opt+left")?.keyCode == 123)
+        check("modifier-only chord has no key", Chord(string: "ctrl+opt")?.hasKey == false)
+        check("unknown key rejected", Chord(string: "cmd+squimbus") == nil)
+        check("double key rejected", Chord(string: "a+b") == nil)
+        check("symbol modifiers parse", Chord(string: "⌘⇧l")?.keyCode == 37)
+
+        // --- Config: JSONC parsing (comments + overrides) ---
+        let jsonc = """
+        {
+          // a comment with a fake "key": value inside a string-ish // sequence
+          "layout": { "columnGap": 20, "minColumnWidth": 150,
+                      "widthPresets": [0.3, 0.6, 0.9] },
+          "focusMode": "centered",
+          "keybindings": {
+            "focusNext": "ctrl+opt+k",           // override
+            "width25": ["opt+1", "cmd+1"]
+          }
+        }
+        """
+        do {
+            let parsed = try ScrollWMConfig.parse(jsonc: jsonc)
+            check("config columnGap parsed", parsed.layout.columnGap == 20)
+            check("config minColumnWidth parsed", parsed.layout.minColumnWidth == 150)
+            check("config widthPresets parsed", parsed.layout.widthPresets == [0.3, 0.6, 0.9])
+            check("config focusMode parsed", parsed.focusMode == .centered)
+            check("config keybinding override", parsed.keybindings[.focusNext] == ["ctrl+opt+k"])
+            check("config keybinding array", parsed.keybindings[.width25] == ["opt+1", "cmd+1"])
+            // Untouched bindings keep their defaults.
+            check("config default kept for unset action",
+                  parsed.keybindings[.toggleArrange] == KeyAction.defaultChords[.toggleArrange])
+        } catch {
+            check("config JSONC parses", false)
+        }
+
+        // Malformed JSON throws (caller falls back to defaults).
+        var threw = false
+        do { _ = try ScrollWMConfig.parse(jsonc: "{ not json ]") } catch { threw = true }
+        check("malformed config throws", threw)
+
+        // Every action has a parseable default chord (or is modifier-only).
+        let allDefaultsParse = KeyAction.allCases.allSatisfy { action in
+            (KeyAction.defaultChords[action] ?? []).allSatisfy { Chord(string: $0) != nil }
+        }
+        check("all default chords parse", allDefaultsParse)
+
+        // Default file round-trips: parsing the documented template equals
+        // the in-code defaults (keeps the file and code in sync).
+        do {
+            let fromFile = try ScrollWMConfig.parse(jsonc: ScrollWMConfig.defaultFileContents)
+            check("default file matches code defaults", fromFile == ScrollWMConfig.default)
+        } catch {
+            check("default file parses", false)
+        }
 
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0

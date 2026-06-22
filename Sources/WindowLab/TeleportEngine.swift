@@ -43,9 +43,12 @@ final class TeleportEngine {
     var focusIndex: Int = 0
 
     let screenFrame: CGRect       // visible frame, AX coordinates (top-left origin)
-    let gap: CGFloat = 12
+    /// Spacing between columns and at the strip's outer edges. Config-driven
+    /// (`layout.columnGap`); defaults to 12.
+    var gap: CGFloat = 12
     /// Floor for column width so a resize can never collapse a window.
-    let minColumnWidth: CGFloat = 200
+    /// Config-driven (`layout.minColumnWidth`); defaults to 200.
+    var minColumnWidth: CGFloat = 200
 
     /// How the viewport follows the focused column.
     enum FocusMode: String, CaseIterable {
@@ -67,6 +70,11 @@ final class TeleportEngine {
     /// Current focus-follow mode. Defaults to `fit` per user preference.
     var focusMode: FocusMode = .fit
 
+    /// Column-width presets (fractions of usable width) bound to the width
+    /// keys. Config-driven (`layout.widthPresets`); defaults to the static
+    /// `widthPresets`.
+    var widthPresets: [CGFloat] = TeleportEngine.widthPresets
+
     // Metrics
     private(set) var lastTeleportMs: Double = 0
     private(set) var teleportLatencies: [Double] = []
@@ -80,8 +88,10 @@ final class TeleportEngine {
     // MARK: - Adoption
 
     /// Lay out adopted windows as a strip of columns, preserving sizes.
+    /// The strip opens with a `gap` leading margin so the first column is not
+    /// flush against the screen edge (symmetric with the trailing margin).
     func adopt(matched: [MatchedWindow]) {
-        var x: CGFloat = 0
+        var x: CGFloat = gap
         slots = matched.filter {
             $0.ax.subrole == kAXStandardWindowSubrole as String
                 && !$0.ax.isMinimized && !$0.ax.isFullscreen
@@ -140,7 +150,9 @@ final class TeleportEngine {
         switch mode {
         case .centered:
             let target = slot.canvasX - (screenFrame.width - slot.width) / 2
-            return max(-gap, target)
+            // viewportX 0 maps the strip's leading `gap` margin to the screen
+            // edge, so 0 is the leftmost meaningful scroll position.
+            return max(0, target)
 
         case .fit:
             let viewLeft = currentViewportX
@@ -155,8 +167,9 @@ final class TeleportEngine {
             }
             if slotLeft < viewLeft {
                 // Overflows left: bring its left edge to the viewport's left
-                // (with a small gap for breathing room).
-                return max(-gap, slotLeft - gap)
+                // (with a small gap for breathing room). viewportX 0 already
+                // leaves the strip's leading `gap` margin, so 0 is the floor.
+                return max(0, slotLeft - gap)
             }
             if slotRight > viewRight {
                 // Overflows right: bring its right edge to the viewport's right.
