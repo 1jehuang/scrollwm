@@ -336,6 +336,12 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     private unowned let controller: ScrollWMController
     private let engine: TeleportEngine
 
+    /// High-refresh animated mini-map hosted inside the status button.
+    private let stripView = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 30, height: 22))
+    /// Status item width: a touch wider than the old 26 to give the animation
+    /// breathing room while still fitting crowded/notched menu bars.
+    static let itemWidth: CGFloat = 30
+
     static let autosaveName = "ScrollWMMain"
 
     init(controller: ScrollWMController, engine: TeleportEngine) {
@@ -366,9 +372,20 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
 
     private func createStatusItem() {
         // Compact width: crowded menu bars may have very little free space.
-        statusItem = NSStatusBar.system.statusItem(withLength: 26)
+        statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
         statusItem.autosaveName = NSStatusItem.AutosaveName(Self.autosaveName)
-        statusItem.button?.imageScaling = .scaleNone
+
+        // Host the high-refresh animated mini-map inside the status button. The
+        // view is click-through (hitTest -> nil) so the button still receives
+        // clicks and opens the menu; the image stays nil so only our view draws.
+        if let button = statusItem.button {
+            button.image = nil
+            button.title = ""
+            stripView.removeFromSuperview()
+            stripView.frame = button.bounds
+            stripView.autoresizingMask = [.width, .height]
+            button.addSubview(stripView)
+        }
         refresh()
 
         let menu = NSMenu()
@@ -403,7 +420,10 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     }
 
     func refresh() {
-        statusItem.button?.image = renderIcon()
+        // Feed the live engine state into the animated view; it diffs against
+        // the previous state and animates the change at the display's refresh
+        // rate, then idles its display link once everything settles.
+        stripView.apply(state: engine.stripState, managing: controller.isManaging)
     }
 
     var isVisibleInMenuBar: Bool {
@@ -416,55 +436,6 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             return frame.origin.x >= right.minX
         }
         return true
-    }
-
-    private func renderIcon() -> NSImage {
-        let size = NSSize(width: 22, height: 18)
-        let state = engine.stripState
-        let managing = controller.isManaging
-
-        return NSImage(size: size, flipped: false) { rect in
-            guard managing, !state.slots.isEmpty else {
-                // Dormant: subtle strip glyph (2 dashed columns).
-                NSColor.secondaryLabelColor.setStroke()
-                for i in 0..<2 {
-                    let r = NSRect(x: 3 + CGFloat(i) * 9, y: 5, width: 7, height: rect.height - 10)
-                    let p = NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2)
-                    p.setLineDash([2, 1.5], count: 2, phase: 0)
-                    p.lineWidth = 1
-                    p.stroke()
-                }
-                return true
-            }
-
-            let canvasMin = state.slots.map { $0.canvasX }.min() ?? 0
-            let canvasMax = state.slots.map { $0.canvasX + $0.width }.max() ?? 1
-            let viewLeft = state.viewportX
-            let viewRight = state.viewportX + state.viewportWidth
-            let fullMin = min(canvasMin, viewLeft)
-            let span = max(max(canvasMax, viewRight) - fullMin, 1)
-            let scale = rect.width / span
-            func toIcon(_ x: CGFloat) -> CGFloat { (x - fullMin) * scale }
-
-            for (i, slot) in state.slots.enumerated() {
-                let r = NSRect(x: toIcon(slot.canvasX), y: 5,
-                               width: max(slot.width * scale - 1, 2), height: rect.height - 10)
-                let p = NSBezierPath(roundedRect: r, xRadius: 1.5, yRadius: 1.5)
-                (i == state.focusIndex ? NSColor.controlAccentColor
-                    : slot.healthy ? NSColor.secondaryLabelColor
-                    : NSColor.systemRed.withAlphaComponent(0.6)).setFill()
-                p.fill()
-            }
-
-            let vx = toIcon(viewLeft)
-            let vw = max((viewRight - viewLeft) * scale, 4)
-            let vp = NSBezierPath(roundedRect: NSRect(x: vx, y: 1.5, width: min(vw, rect.width - vx), height: rect.height - 3),
-                                  xRadius: 3, yRadius: 3)
-            vp.lineWidth = 1.2
-            NSColor.labelColor.setStroke()
-            vp.stroke()
-            return true
-        }
     }
 
     // MARK: - Menu

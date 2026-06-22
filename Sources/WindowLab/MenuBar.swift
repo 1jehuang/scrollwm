@@ -11,6 +11,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let onSelectIndex: (Int) -> Void
     private let onQuit: () -> Void
 
+    /// High-refresh animated mini-map (springs + per-action flourishes).
+    private let stripView = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 46, height: 22))
+
     /// Width of the mini-map. Kept modest so we fit on notched MacBooks,
     /// where macOS silently hides items that don't fit.
     static let mapWidth: CGFloat = 46
@@ -37,8 +40,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: Self.mapWidth + 4)
         statusItem.autosaveName = NSStatusItem.AutosaveName(Self.autosaveName)
-        statusItem.button?.image = renderMiniMap()
-        statusItem.button?.imageScaling = .scaleNone
+        if let button = statusItem.button {
+            button.image = nil
+            stripView.frame = button.bounds
+            stripView.autoresizingMask = [.width, .height]
+            button.addSubview(stripView)
+        }
+        // The teleport tier is always "managing" (it adopts on launch).
+        stripView.apply(state: engine.stripState, managing: true)
 
         let menu = NSMenu()
         menu.delegate = self
@@ -50,7 +59,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     func refreshIcon() {
-        statusItem.button?.image = renderMiniMap()
+        stripView.apply(state: engine.stripState, managing: true)
     }
 
     /// Visibility check: notch-parked items report negative x. We verify the
@@ -72,65 +81,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let visible = statusItem.isVisible
         let frame = statusItem.button?.window?.frame ?? .zero
         return "statusItem visible=\(visible) windowFrame=\(frame)"
-    }
-
-    /// Draw the strip as a tiny map: columns as rounded rects, viewport as a
-    /// bright frame, focused window filled.
-    private func renderMiniMap() -> NSImage {
-        let size = NSSize(width: Self.mapWidth, height: 18)
-        let state = engine.stripState
-
-        return NSImage(size: size, flipped: false) { rect in
-            guard !state.slots.isEmpty else {
-                // Empty state: dashed outline.
-                let path = NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 3), xRadius: 3, yRadius: 3)
-                path.setLineDash([2, 2], count: 2, phase: 0)
-                NSColor.secondaryLabelColor.setStroke()
-                path.stroke()
-                return true
-            }
-
-            // Map canvas range -> icon pixels.
-            let canvasMin = state.slots.map { $0.canvasX }.min() ?? 0
-            let canvasMax = state.slots.map { $0.canvasX + $0.width }.max() ?? 1
-            let viewLeft = state.viewportX
-            let viewRight = state.viewportX + state.viewportWidth
-            let fullMin = min(canvasMin, viewLeft)
-            let fullMax = max(canvasMax, viewRight)
-            let span = max(fullMax - fullMin, 1)
-            let scale = rect.width / span
-
-            func toIcon(_ x: CGFloat) -> CGFloat { (x - fullMin) * scale }
-
-            // Windows.
-            for (i, slot) in state.slots.enumerated() {
-                let x = toIcon(slot.canvasX)
-                let w = max(slot.width * scale - 1, 2)
-                let windowRect = NSRect(x: x, y: 5, width: w, height: rect.height - 10)
-                let path = NSBezierPath(roundedRect: windowRect, xRadius: 1.5, yRadius: 1.5)
-                if i == state.focusIndex {
-                    NSColor.controlAccentColor.setFill()
-                    path.fill()
-                } else if !slot.healthy {
-                    NSColor.systemRed.withAlphaComponent(0.5).setFill()
-                    path.fill()
-                } else {
-                    NSColor.secondaryLabelColor.setFill()
-                    path.fill()
-                }
-            }
-
-            // Viewport frame on top.
-            let vx = toIcon(viewLeft)
-            let vw = max((viewRight - viewLeft) * scale, 4)
-            let viewportRect = NSRect(x: vx, y: 1.5, width: min(vw, rect.width - vx), height: rect.height - 3)
-            let viewportPath = NSBezierPath(roundedRect: viewportRect, xRadius: 3, yRadius: 3)
-            viewportPath.lineWidth = 1.2
-            NSColor.labelColor.setStroke()
-            viewportPath.stroke()
-
-            return true
-        }
     }
 
     // MARK: - NSMenuDelegate (menu built fresh on every open: always live)

@@ -20,6 +20,14 @@ final class TeleportEngine {
     }
 
     final class ManagedWindowRef {
+        /// Stable, process-unique identity assigned at adoption. Unlike the
+        /// array index (which shifts on insert/move/remove) this never changes
+        /// for a given managed window, so the animated menu-bar view can track
+        /// the same window across frames and animate it smoothly when columns
+        /// are reordered, inserted, or removed. Assigned on the main thread.
+        static var nextID: UInt64 = 0
+        let id: UInt64
+
         let element: AXUIElement
         let pid: pid_t
         var appName: String
@@ -29,6 +37,8 @@ final class TeleportEngine {
         let originalFrame: CGRect
 
         init(element: AXUIElement, pid: pid_t, appName: String, title: String, originalFrame: CGRect) {
+            Self.nextID += 1
+            self.id = Self.nextID
             self.element = element
             self.pid = pid
             self.appName = appName
@@ -236,7 +246,7 @@ final class TeleportEngine {
     // MARK: - Introspection for the menu bar
 
     struct StripState {
-        let slots: [(appName: String, title: String, canvasX: CGFloat, width: CGFloat, healthy: Bool)]
+        let slots: [(id: UInt64, appName: String, title: String, canvasX: CGFloat, width: CGFloat, healthy: Bool)]
         let viewportX: CGFloat
         let viewportWidth: CGFloat
         let focusIndex: Int
@@ -245,7 +255,7 @@ final class TeleportEngine {
 
     var stripState: StripState {
         StripState(
-            slots: slots.map { ($0.window.appName, $0.window.title, $0.canvasX, $0.width, $0.window.healthy) },
+            slots: slots.map { ($0.window.id, $0.window.appName, $0.window.title, $0.canvasX, $0.width, $0.window.healthy) },
             viewportX: viewportX,
             viewportWidth: screenFrame.width,
             focusIndex: focusIndex,

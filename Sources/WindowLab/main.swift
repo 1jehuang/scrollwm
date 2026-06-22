@@ -172,6 +172,11 @@ case "cycle":
     runCycleTest()
 case "unittest":
     exit(StripOpsTests.run() ? 0 : 1)
+case "animtest":
+    exit(MenuBarAnimationTests.run() ? 0 : 1)
+case "animrender":
+    let out = args.dropFirst().first ?? "menubar_anim.png"
+    exit(MenuBarAnimationRender.run(outPath: out) ? 0 : 1)
 case "opstest":
     runStripOpsIntegrationTest()
 case "e2etest":
@@ -204,6 +209,8 @@ default:
                                Arrange/release via menu or ctrl+opt+esc.
                                Exact frame restore on release/quit/crash.
       WindowLab unittest       pure-logic tests for width/move/close ops (no AX needed)
+      WindowLab animtest       pure-logic tests for the animated menu-bar
+                               mini-map (Spring physics + action inference)
       WindowLab opstest        integration test: spawn windows, exercise
                                width/move/close via the engine, verify + restore.
       WindowLab e2etest        end-to-end: run the real controller, synthesize
