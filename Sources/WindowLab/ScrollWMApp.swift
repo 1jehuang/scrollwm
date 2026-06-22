@@ -32,6 +32,12 @@ final class ScrollWMController: NSObject {
         engine = TeleportEngine(screenFrame: axFrame)
         super.init()
 
+        // Restore the persisted focus mode (defaults to .fit).
+        if let raw = UserDefaults.standard.string(forKey: Self.focusModeKey),
+           let mode = TeleportEngine.FocusMode(rawValue: raw) {
+            engine.focusMode = mode
+        }
+
         menuBar = ProductionMenuBar(controller: self, engine: engine)
         installHotkeys()
         installSignalHandlers()
@@ -141,6 +147,21 @@ final class ScrollWMController: NSObject {
         if isManaging { engine.closeFocused(); menuBar.refresh() }
     }
 
+    // MARK: - Focus mode
+
+    var focusMode: TeleportEngine.FocusMode { engine.focusMode }
+
+    /// Switch how the viewport follows focus (centered vs fit) and persist it.
+    func setFocusMode(_ mode: TeleportEngine.FocusMode) {
+        engine.focusMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.focusModeKey)
+        // Re-apply to the current focus so the change is visible immediately.
+        if isManaging { engine.focus(index: engine.focusIndex) }
+        menuBar.refresh()
+    }
+
+    static let focusModeKey = "ScrollWMFocusMode"
+
     // MARK: - Debug accessors (for the e2e keybinding test)
 
     var debugSlotCount: Int { engine.slots.count }
@@ -204,6 +225,15 @@ final class ScrollWMController: NSObject {
         }
         tap.addCombo(keyCode: HotkeyManager.Key.l.rawValueInt64, flags: [.maskCommand, .maskShift]) { [weak self] in
             self?.moveFocused(by: 1)
+        }
+        // Cmd+1..4 -> 25/50/75/100% width, in addition to Alt+1..4. Cmd+digits
+        // are otherwise claimed by apps (e.g. Ghostty tab switching), so route
+        // them through the tap, which suppresses them while managing.
+        let digitKeys: [HotkeyManager.Key] = [.one, .two, .three, .four]
+        for (i, key) in digitKeys.enumerated() {
+            tap.addCombo(keyCode: key.rawValueInt64, flags: [.maskCommand]) { [weak self] in
+                self?.setWidthPreset(i)
+            }
         }
         if tap.start() {
             moveTap = tap
@@ -413,6 +443,10 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             let releaseItem = NSMenuItem(title: "Release Windows (restore original positions)", action: #selector(releaseAction), keyEquivalent: "")
             releaseItem.target = self
             menu.addItem(releaseItem)
+
+            let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip", action: nil, keyEquivalent: "")
+            arrangeItem.isEnabled = false // already managing
+            menu.addItem(arrangeItem)
         } else {
             let header = NSMenuItem(title: "ScrollWM — dormant (not touching any window)", action: nil, keyEquivalent: "")
             header.isEnabled = false
@@ -422,10 +456,29 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip", action: #selector(arrangeAction), keyEquivalent: "")
             arrangeItem.target = self
             menu.addItem(arrangeItem)
+
+            let releaseItem = NSMenuItem(title: "Release Windows (restore original positions)", action: nil, keyEquivalent: "")
+            releaseItem.isEnabled = false // nothing to release while dormant
+            menu.addItem(releaseItem)
         }
 
+        // Focus mode submenu (Centered vs Fit).
         menu.addItem(.separator())
-        let help = NSMenuItem(title: "⌃⌥←/→ navigate · ⌃⌥1-9 jump · ⌥1-4 width · ⌘H/⌘L focus · ⌘⇧H/⌘⇧L move · ⌘Q close · ⌃⌥esc toggle", action: nil, keyEquivalent: "")
+        let focusModeItem = NSMenuItem(title: "Focus Follows: \(controller.focusMode.label)", action: nil, keyEquivalent: "")
+        let focusSubmenu = NSMenu()
+        for mode in TeleportEngine.FocusMode.allCases {
+            let mi = NSMenuItem(title: mode.label, action: #selector(setFocusModeAction(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.state = (controller.focusMode == mode) ? .on : .off
+            mi.representedObject = mode.rawValue
+            focusSubmenu.addItem(mi)
+        }
+        focusModeItem.submenu = focusSubmenu
+        menu.addItem(focusModeItem)
+
+
+        menu.addItem(.separator())
+        let help = NSMenuItem(title: "⌃⌥←/→ navigate · ⌃⌥1-9 jump · ⌥1-4 or ⌘1-4 width · ⌘H/⌘L focus · ⌘⇧H/⌘⇧L move · ⌘Q close · ⌃⌥esc toggle", action: nil, keyEquivalent: "")
         help.isEnabled = false
         menu.addItem(help)
 
@@ -445,6 +498,12 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     @objc private func selectWindow(_ sender: NSMenuItem) { controller.focus(index: sender.tag) }
     @objc private func arrangeAction() { controller.arrange() }
     @objc private func releaseAction() { controller.release() }
+    @objc private func setFocusModeAction(_ sender: NSMenuItem) {
+        if let raw = sender.representedObject as? String,
+           let mode = TeleportEngine.FocusMode(rawValue: raw) {
+            controller.setFocusMode(mode)
+        }
+    }
     @objc private func quitAction() { controller.quit() }
     @objc private func openAXSettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)

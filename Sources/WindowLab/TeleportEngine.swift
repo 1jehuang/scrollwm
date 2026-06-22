@@ -47,6 +47,26 @@ final class TeleportEngine {
     /// Floor for column width so a resize can never collapse a window.
     let minColumnWidth: CGFloat = 200
 
+    /// How the viewport follows the focused column.
+    enum FocusMode: String, CaseIterable {
+        /// Always center the focused column in the viewport (original behavior).
+        case centered
+        /// Only scroll the minimum needed so the focused column is fully on
+        /// screen; if it already fits, the viewport does not move (PaperWM /
+        /// niri "fit" behavior).
+        case fit
+
+        var label: String {
+            switch self {
+            case .centered: return "Centered"
+            case .fit: return "Fit (scroll only when needed)"
+            }
+        }
+    }
+
+    /// Current focus-follow mode. Defaults to `fit` per user preference.
+    var focusMode: FocusMode = .fit
+
     // Metrics
     private(set) var lastTeleportMs: Double = 0
     private(set) var teleportLatencies: [Double] = []
@@ -100,15 +120,51 @@ final class TeleportEngine {
         let clamped = max(0, min(slots.count - 1, index))
         focusIndex = clamped
 
-        // Viewport policy: keep the focused column fully visible,
-        // centered when possible.
         let slot = slots[clamped]
-        let target = slot.canvasX - (screenFrame.width - slot.width) / 2
-        viewportX = max(-gap, target)
+        viewportX = viewportTarget(for: slot, mode: focusMode, currentViewportX: viewportX)
 
         teleport()
         raiseAndFocus(slot.window)
         onLayoutChange?()
+    }
+
+    /// Compute where the viewport's left edge should sit so that `slot` is
+    /// shown according to `mode`. Pure function (no side effects) so it can be
+    /// unit-tested directly.
+    ///
+    /// - centered: place the column in the middle of the viewport.
+    /// - fit: keep the current viewport unless the column is partly/fully
+    ///        offscreen, then scroll the minimum amount to fully reveal it,
+    ///        aligning to whichever edge it overflowed.
+    func viewportTarget(for slot: Slot, mode: FocusMode, currentViewportX: CGFloat) -> CGFloat {
+        switch mode {
+        case .centered:
+            let target = slot.canvasX - (screenFrame.width - slot.width) / 2
+            return max(-gap, target)
+
+        case .fit:
+            let viewLeft = currentViewportX
+            let viewRight = currentViewportX + screenFrame.width
+            let slotLeft = slot.canvasX
+            let slotRight = slot.canvasX + slot.width
+
+            if slot.width >= screenFrame.width {
+                // Wider than the screen: align its left edge (with a small gap)
+                // so the start of the window is visible.
+                return slotLeft - gap
+            }
+            if slotLeft < viewLeft {
+                // Overflows left: bring its left edge to the viewport's left
+                // (with a small gap for breathing room).
+                return max(-gap, slotLeft - gap)
+            }
+            if slotRight > viewRight {
+                // Overflows right: bring its right edge to the viewport's right.
+                return slotRight - screenFrame.width + gap
+            }
+            // Already fully visible: don't move.
+            return currentViewportX
+        }
     }
 
     /// Recommit every window to its strip position minus viewport offset.

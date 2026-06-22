@@ -58,6 +58,20 @@ func runE2EKeybindingTest() {
         let got = controller.debugFocusedWidth
         check("Alt+2 set focused width to ~50% (want \(Int(want50)), got \(Int(got)))", abs(got - want50) <= 6)
 
+        // --- Cmd+1 -> 25% width on focused column (keyboard tap) ---
+        postKey(18, flags: .maskCommand) // key '1'
+        Thread.sleep(forTimeInterval: 0.4)
+        let want25 = controller.debugWidth(forFraction: 0.25)
+        let got25 = controller.debugFocusedWidth
+        check("Cmd+1 set focused width to ~25% (want \(Int(want25)), got \(Int(got25)))", abs(got25 - want25) <= 6)
+
+        // --- Cmd+4 -> 100% width on focused column (keyboard tap) ---
+        postKey(21, flags: .maskCommand) // key '4'
+        Thread.sleep(forTimeInterval: 0.4)
+        let want100b = controller.debugWidth(forFraction: 1.0)
+        let got100 = controller.debugFocusedWidth
+        check("Cmd+4 set focused width to ~100% (want \(Int(want100b)), got \(Int(got100)))", abs(got100 - want100b) <= 6)
+
         // --- Cmd+L -> focus next column (keyboard tap) ---
         // Start focus at column 0, then Cmd+L should advance to column 1.
         DispatchQueue.main.sync { controller.focus(index: 0) }

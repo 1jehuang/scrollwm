@@ -117,6 +117,53 @@ enum StripOpsTests {
         check("close last window leaves empty strip", e4.slots.isEmpty)
         check("closeFocused on empty == false", e4.closeFocused() == false)
 
+        // --- viewportTarget: centered mode always centers ---
+        let ec = makeEngine(count: 5, width: 400, screenWidth: 1600)
+        let slot2 = ec.slots[2] // canvasX = 2*(400+12) = 824
+        let centered = ec.viewportTarget(for: slot2, mode: .centered, currentViewportX: 0)
+        // expected: canvasX - (screenW - width)/2 = 824 - (1600-400)/2 = 824 - 600 = 224
+        check("centered: viewport = 224", abs(centered - 224) < 0.5)
+
+        // --- viewportTarget: fit mode does NOT move when already visible ---
+        let ef = makeEngine(count: 5, width: 300, screenWidth: 1600)
+        // viewport at 0 shows [0,1600). slot1 canvasX=312, right=612: fully visible.
+        let slot1 = ef.slots[1]
+        let fitNoMove = ef.viewportTarget(for: slot1, mode: .fit, currentViewportX: 0)
+        check("fit: no move when fully visible", fitNoMove == 0)
+
+        // --- fit mode: scrolls minimally when column overflows right ---
+        // slot at canvasX=2000, width=300 -> right=2300. viewport [0,1600).
+        var farSlot = ef.slots[1]
+        farSlot.canvasX = 2000
+        farSlot.width = 300
+        let fitRight = ef.viewportTarget(for: farSlot, mode: .fit, currentViewportX: 0)
+        // expected: slotRight - screenW + gap = 2300 - 1600 + 12 = 712
+        check("fit: overflow right scrolls minimally to 712", abs(fitRight - 712) < 0.5)
+
+        // --- fit mode: scrolls left when column is left of viewport ---
+        var leftSlot = ef.slots[1]
+        leftSlot.canvasX = 100
+        leftSlot.width = 300
+        // viewport currently at 500 -> shows [500,2100). slot at [100,400) is left.
+        let fitLeft = ef.viewportTarget(for: leftSlot, mode: .fit, currentViewportX: 500)
+        // expected: max(-gap, slotLeft - gap) = max(-12, 100-12) = 88
+        check("fit: overflow left scrolls to 88", abs(fitLeft - 88) < 0.5)
+
+        // --- fit mode: column wider than screen aligns to its left edge ---
+        var bigSlot = ef.slots[1]
+        bigSlot.canvasX = 500
+        bigSlot.width = 2000 // wider than 1600
+        let fitBig = ef.viewportTarget(for: bigSlot, mode: .fit, currentViewportX: 0)
+        // expected: slotLeft - gap = 500 - 12 = 488
+        check("fit: oversized column aligns left to 488", abs(fitBig - 488) < 0.5)
+
+        // --- FocusMode round-trips through rawValue ---
+        check("FocusMode rawValue round-trip centered",
+              TeleportEngine.FocusMode(rawValue: "centered") == .centered)
+        check("FocusMode rawValue round-trip fit",
+              TeleportEngine.FocusMode(rawValue: "fit") == .fit)
+        check("FocusMode has 2 cases", TeleportEngine.FocusMode.allCases.count == 2)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }
