@@ -218,6 +218,11 @@ default:
                                mini-map (Spring physics + action inference)
       WindowLab opstest        integration test: spawn windows, exercise
                                width/move/close via the engine, verify + restore.
+      WindowLab spawnlatency   measure how fast a NEW window in a managed app is
+                               adopted (AX observer fast path vs poll).
+      WindowLab sandbox [n]    run the REAL controller locked to n disposable
+                               windows it spawns (default 4). Drive the real
+                               hotkeys safely; your real windows are untouched.
       WindowLab e2etest        end-to-end: run the real controller, synthesize
                                Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q, verify effects.
       WindowLab hotkeyprobe [secs]
