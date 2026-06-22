@@ -170,6 +170,18 @@ case "run":
     )
 case "cycle":
     runCycleTest()
+case "unittest":
+    exit(StripOpsTests.run() ? 0 : 1)
+case "opstest":
+    runStripOpsIntegrationTest()
+case "e2etest":
+    runE2EKeybindingTest()
+case "hotkeyprobe":
+    let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 20
+    runHotkeyProbe(seconds: seconds)
+case "keytapprobe":
+    let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 20
+    runKeyTapProbe(seconds: seconds)
 default:
     print("""
     WindowLab - scrolling window manager reality-test harness
@@ -191,5 +203,13 @@ default:
                                ScrollWM production app: dormant menu bar agent.
                                Arrange/release via menu or ctrl+opt+esc.
                                Exact frame restore on release/quit/crash.
+      WindowLab unittest       pure-logic tests for width/move/close ops (no AX needed)
+      WindowLab opstest        integration test: spawn windows, exercise
+                               width/move/close via the engine, verify + restore.
+      WindowLab e2etest        end-to-end: run the real controller, synthesize
+                               Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q, verify effects.
+      WindowLab hotkeyprobe [secs]
+                               register Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q globally
+                               and report which key combos Carbon actually delivers.
     """)
 }

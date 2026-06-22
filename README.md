@@ -37,10 +37,25 @@ then relaunch.
 | menu bar icon → Arrange | adopt current-Space windows into the strip |
 | `⌃⌥←` / `⌃⌥→` | focus previous/next column |
 | `⌃⌥1`..`⌃⌥9` | jump to column N |
+| `⌥1` / `⌥2` / `⌥3` / `⌥4` | set focused column width to 25% / 50% / 75% / 100% |
+| `⌘H` / `⌘L` | move focused column left / right |
+| `⌘Q` | close focused window |
 | `⌃⌥esc` | toggle arrange/release |
 | menu bar icon → window | jump to that window |
 | menu → Release | restore all windows, go dormant |
 | menu → Quit | restore all windows and exit |
+
+The width/move/close keys are **only active while managing**, and are torn down
+on Release so the desktop behaves normally (`⌘Q` quits apps, `⌘H` hides them)
+when ScrollWM is dormant.
+
+> **Implementation note.** `⌥1-4` (width) and `⌘Q` (close) use permission-free
+> Carbon global hotkeys. `⌘H`/`⌘L` cannot: macOS reserves `⌘H` for "Hide" and
+> never delivers it to a Carbon hotkey (verified via `WindowLab hotkeyprobe`).
+> So the move keys ride a keyboard `CGEventTap`, which works with the
+> Accessibility permission the app already holds (verified via `keytapprobe`).
+> No Input Monitoring permission is required.
+
 
 The menu bar icon is a live mini-map: columns are windows, the outline is
 your viewport, blue is the focused window.

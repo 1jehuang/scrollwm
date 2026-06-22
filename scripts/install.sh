@@ -83,6 +83,9 @@ First run:
 Controls:
   ctrl+opt+left/right   focus previous/next column
   ctrl+opt+1..9         jump to column N
+  opt+1/2/3/4           focused column width 25/50/75/100%
+  cmd+h / cmd+l         move focused column left/right
+  cmd+q                 close focused window
   ctrl+opt+esc          toggle arrange/release
   menu -> Release       restore all windows to original positions
   menu -> Quit          also restores everything

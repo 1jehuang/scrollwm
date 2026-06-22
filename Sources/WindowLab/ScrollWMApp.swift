@@ -15,6 +15,8 @@ final class ScrollWMController: NSObject {
     private var lifecycle: LifecycleMonitor?
     private var menuBar: ProductionMenuBar!
     private let hotkeys = HotkeyManager()
+    /// Keyboard tap for the move bindings (Cmd+H/L) that Carbon cannot grab.
+    private var moveTap: KeyboardEventTap?
 
     private(set) var isManaging = false
 
@@ -90,12 +92,14 @@ final class ScrollWMController: NSObject {
         lifecycle = monitor
 
         engine.focus(index: 0)
+        registerManagementHotkeys()
         menuBar.refresh()
         print("arranged \(engine.slots.count) windows into strip (\(String(format: "%.1f", engine.lastTeleportMs))ms)")
     }
 
     func release() {
         guard isManaging else { return }
+        unregisterManagementHotkeys()
         lifecycle?.stop()
         lifecycle = nil
         let failures = engine.releaseAll()
@@ -120,6 +124,35 @@ final class ScrollWMController: NSObject {
     func focusPrevious() { if isManaging { engine.focusPrevious() } }
     func focus(index: Int) { if isManaging { engine.focus(index: index) } }
 
+    // MARK: - Window operations passthrough
+
+    /// Resize focused column to a width preset (Alt+1..4 -> 25/50/75/100%).
+    func setWidthPreset(_ index: Int) {
+        guard isManaging, TeleportEngine.widthPresets.indices.contains(index) else { return }
+        engine.setFocusedWidth(fraction: TeleportEngine.widthPresets[index])
+        menuBar.refresh()
+    }
+    /// Move focused column left/right within the strip (Cmd+H / Cmd+L).
+    func moveFocused(by delta: Int) {
+        if isManaging { engine.moveFocused(by: delta); menuBar.refresh() }
+    }
+    /// Close the focused window (Cmd+Q).
+    func closeFocused() {
+        if isManaging { engine.closeFocused(); menuBar.refresh() }
+    }
+
+    // MARK: - Debug accessors (for the e2e keybinding test)
+
+    var debugSlotCount: Int { engine.slots.count }
+    var debugSlotTitles: [String] { engine.slots.map { $0.window.title } }
+    var debugFocusedTitle: String {
+        engine.slots.indices.contains(engine.focusIndex) ? engine.slots[engine.focusIndex].window.title : ""
+    }
+    var debugFocusedWidth: CGFloat {
+        engine.slots.indices.contains(engine.focusIndex) ? engine.slots[engine.focusIndex].width : 0
+    }
+    func debugWidth(forFraction f: CGFloat) -> CGFloat { engine.width(forFraction: f) }
+
     // MARK: - Hotkeys
 
     private func installHotkeys() {
@@ -131,6 +164,53 @@ final class ScrollWMController: NSObject {
         }
         // ctrl+opt+escape: toggle arrange/release (panic switch).
         hotkeys.register(.escape) { [weak self] in self?.toggle() }
+    }
+
+    /// Hotkeys that only make sense while managing, and that would otherwise
+    /// shadow system shortcuts (Cmd+Q quit, Cmd+H hide). Registered on Arrange,
+    /// unregistered on Release so the desktop behaves normally when dormant.
+    private var managementHotkeyIDs: [UInt32] = []
+
+    private func registerManagementHotkeys() {
+        guard managementHotkeyIDs.isEmpty else { return }
+        var ids: [UInt32] = []
+        // Alt+1..4 -> 25/50/75/100% width (Carbon delivers these reliably).
+        let widthKeys: [HotkeyManager.Key] = [.one, .two, .three, .four]
+        for (i, key) in widthKeys.enumerated() {
+            if let id = hotkeys.register(key, modifiers: HotkeyManager.opt, handler: { [weak self] in
+                self?.setWidthPreset(i)
+            }) { ids.append(id) }
+        }
+        // Cmd+Q -> close focused window (Carbon delivers this reliably).
+        if let id = hotkeys.register(.q, modifiers: HotkeyManager.cmd, handler: { [weak self] in
+            self?.closeFocused()
+        }) { ids.append(id) }
+        managementHotkeyIDs = ids
+
+        // Cmd+H / Cmd+L -> move focused column left / right.
+        // Carbon CANNOT grab Cmd+H (macOS reserves it for Hide), so these ride
+        // a keyboard event tap, which the app's Accessibility permission allows.
+        let tap = KeyboardEventTap()
+        tap.addCommandCombo(keyCode: HotkeyManager.Key.h.rawValueInt64) { [weak self] in
+            self?.moveFocused(by: -1)
+        }
+        tap.addCommandCombo(keyCode: HotkeyManager.Key.l.rawValueInt64) { [weak self] in
+            self?.moveFocused(by: 1)
+        }
+        if tap.start() {
+            moveTap = tap
+        } else {
+            print("warning: could not start keyboard tap; Cmd+H/L move disabled")
+        }
+    }
+
+    private func unregisterManagementHotkeys() {
+        if !managementHotkeyIDs.isEmpty {
+            hotkeys.unregister(ids: managementHotkeyIDs)
+            managementHotkeyIDs.removeAll()
+        }
+        moveTap?.stop()
+        moveTap = nil
     }
 
     // MARK: - Clean shutdown on signals
@@ -337,7 +417,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        let help = NSMenuItem(title: "Hotkeys: ⌃⌥←/→ navigate · ⌃⌥1-9 jump · ⌃⌥esc toggle", action: nil, keyEquivalent: "")
+        let help = NSMenuItem(title: "⌃⌥←/→ navigate · ⌃⌥1-9 jump · ⌥1-4 width · ⌘H/⌘L move · ⌘Q close · ⌃⌥esc toggle", action: nil, keyEquivalent: "")
         help.isEnabled = false
         menu.addItem(help)
 

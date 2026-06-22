@@ -8,12 +8,14 @@ final class HotkeyManager {
     typealias Handler = () -> Void
 
     private var handlers: [UInt32: Handler] = [:]
-    private var hotkeyRefs: [EventHotKeyRef?] = []
+    private var refs: [UInt32: EventHotKeyRef] = [:]
     private var eventHandlerRef: EventHandlerRef?
     private var nextID: UInt32 = 1
 
     /// Carbon modifier masks.
     static let ctrlOpt: UInt32 = UInt32(controlKey | optionKey)
+    static let opt: UInt32 = UInt32(optionKey)
+    static let cmd: UInt32 = UInt32(cmdKey)
 
     /// Virtual key codes (ANSI layout).
     enum Key: UInt32 {
@@ -21,8 +23,12 @@ final class HotkeyManager {
         case one = 18, two = 19, three = 20, four = 21, five = 23
         case six = 22, seven = 26, eight = 28, nine = 25
         case escape = 53
+        case h = 4, l = 37, q = 12
 
         static let digits: [Key] = [.one, .two, .three, .four, .five, .six, .seven, .eight, .nine]
+
+        /// Keycode as Int64, for CGEvent keycode comparisons.
+        var rawValueInt64: Int64 { Int64(rawValue) }
     }
 
     func install() {
@@ -49,10 +55,12 @@ final class HotkeyManager {
         )
     }
 
-    func register(_ key: Key, modifiers: UInt32 = HotkeyManager.ctrlOpt, handler: @escaping Handler) {
+    /// Register a global hotkey. Returns the assigned id (for later
+    /// `unregister`), or nil if Carbon refused the registration.
+    @discardableResult
+    func register(_ key: Key, modifiers: UInt32 = HotkeyManager.ctrlOpt, handler: @escaping Handler) -> UInt32? {
         let id = nextID
         nextID += 1
-        handlers[id] = handler
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x53574D31), id: id) // 'SWM1'
         var ref: EventHotKeyRef?
@@ -60,16 +68,27 @@ final class HotkeyManager {
             key.rawValue, modifiers, hotKeyID,
             GetApplicationEventTarget(), 0, &ref
         )
-        if status == noErr {
-            hotkeyRefs.append(ref)
+        if status == noErr, let ref {
+            handlers[id] = handler
+            refs[id] = ref
+            return id
         } else {
             print("warning: hotkey registration failed for key \(key) (status \(status))")
+            return nil
+        }
+    }
+
+    /// Unregister a specific set of previously registered hotkeys.
+    func unregister(ids: [UInt32]) {
+        for id in ids {
+            if let ref = refs.removeValue(forKey: id) { UnregisterEventHotKey(ref) }
+            handlers.removeValue(forKey: id)
         }
     }
 
     func unregisterAll() {
-        for ref in hotkeyRefs { if let ref { UnregisterEventHotKey(ref) } }
-        hotkeyRefs.removeAll()
+        for (_, ref) in refs { UnregisterEventHotKey(ref) }
+        refs.removeAll()
         handlers.removeAll()
     }
 }

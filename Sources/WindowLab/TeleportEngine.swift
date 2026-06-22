@@ -43,7 +43,9 @@ final class TeleportEngine {
     var focusIndex: Int = 0
 
     let screenFrame: CGRect       // visible frame, AX coordinates (top-left origin)
-    private let gap: CGFloat = 12
+    let gap: CGFloat = 12
+    /// Floor for column width so a resize can never collapse a window.
+    let minColumnWidth: CGFloat = 200
 
     // Metrics
     private(set) var lastTeleportMs: Double = 0
