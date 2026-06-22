@@ -145,6 +145,7 @@ final class ScrollWMController: NSObject {
 
     var debugSlotCount: Int { engine.slots.count }
     var debugSlotTitles: [String] { engine.slots.map { $0.window.title } }
+    var debugFocusIndex: Int { engine.focusIndex }
     var debugFocusedTitle: String {
         engine.slots.indices.contains(engine.focusIndex) ? engine.slots[engine.focusIndex].window.title : ""
     }
@@ -187,20 +188,27 @@ final class ScrollWMController: NSObject {
         }) { ids.append(id) }
         managementHotkeyIDs = ids
 
-        // Cmd+H / Cmd+L -> move focused column left / right.
+        // Cmd+H / Cmd+L      -> focus left / right
+        // Cmd+Shift+H / L    -> move focused column left / right
         // Carbon CANNOT grab Cmd+H (macOS reserves it for Hide), so these ride
         // a keyboard event tap, which the app's Accessibility permission allows.
         let tap = KeyboardEventTap()
-        tap.addCommandCombo(keyCode: HotkeyManager.Key.h.rawValueInt64) { [weak self] in
+        tap.addCombo(keyCode: HotkeyManager.Key.h.rawValueInt64, flags: [.maskCommand]) { [weak self] in
+            self?.focusPrevious()
+        }
+        tap.addCombo(keyCode: HotkeyManager.Key.l.rawValueInt64, flags: [.maskCommand]) { [weak self] in
+            self?.focusNext()
+        }
+        tap.addCombo(keyCode: HotkeyManager.Key.h.rawValueInt64, flags: [.maskCommand, .maskShift]) { [weak self] in
             self?.moveFocused(by: -1)
         }
-        tap.addCommandCombo(keyCode: HotkeyManager.Key.l.rawValueInt64) { [weak self] in
+        tap.addCombo(keyCode: HotkeyManager.Key.l.rawValueInt64, flags: [.maskCommand, .maskShift]) { [weak self] in
             self?.moveFocused(by: 1)
         }
         if tap.start() {
             moveTap = tap
         } else {
-            print("warning: could not start keyboard tap; Cmd+H/L move disabled")
+            print("warning: could not start keyboard tap; Cmd+H/L focus/move disabled")
         }
     }
 
@@ -417,7 +425,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        let help = NSMenuItem(title: "⌃⌥←/→ navigate · ⌃⌥1-9 jump · ⌥1-4 width · ⌘H/⌘L move · ⌘Q close · ⌃⌥esc toggle", action: nil, keyEquivalent: "")
+        let help = NSMenuItem(title: "⌃⌥←/→ navigate · ⌃⌥1-9 jump · ⌥1-4 width · ⌘H/⌘L focus · ⌘⇧H/⌘⇧L move · ⌘Q close · ⌃⌥esc toggle", action: nil, keyEquivalent: "")
         help.isEnabled = false
         menu.addItem(help)
 

@@ -52,26 +52,39 @@ func runE2EKeybindingTest() {
         check("4 columns in strip", controller.debugSlotCount == 4)
 
         // --- Alt+2 -> 50% width on focused column (Carbon hotkey) ---
-        let focusTitle = controller.debugFocusedTitle
         postKey(19, flags: .maskAlternate) // key '2'
         Thread.sleep(forTimeInterval: 0.4)
         let want50 = controller.debugWidth(forFraction: 0.5)
         let got = controller.debugFocusedWidth
         check("Alt+2 set focused width to ~50% (want \(Int(want50)), got \(Int(got)))", abs(got - want50) <= 6)
 
-        // --- Cmd+L -> move focused column right (keyboard tap) ---
-        let order0 = controller.debugSlotTitles
+        // --- Cmd+L -> focus next column (keyboard tap) ---
+        // Start focus at column 0, then Cmd+L should advance to column 1.
+        DispatchQueue.main.sync { controller.focus(index: 0) }
+        Thread.sleep(forTimeInterval: 0.2)
         postKey(37, flags: .maskCommand) // key 'l'
         Thread.sleep(forTimeInterval: 0.4)
-        let order1 = controller.debugSlotTitles
-        check("Cmd+L moved focused column right",
-              order1.count == order0.count && order1.firstIndex(of: focusTitle) == 1)
+        check("Cmd+L focused next column (index 1)", controller.debugFocusIndex == 1)
 
-        // --- Cmd+H -> move it back left (keyboard tap) ---
+        // --- Cmd+H -> focus previous column (keyboard tap) ---
         postKey(4, flags: .maskCommand) // key 'h'
         Thread.sleep(forTimeInterval: 0.4)
+        check("Cmd+H focused previous column (index 0)", controller.debugFocusIndex == 0)
+
+        // --- Cmd+Shift+L -> move focused column right (keyboard tap) ---
+        let focusTitle = controller.debugFocusedTitle
+        let order0 = controller.debugSlotTitles
+        postKey(37, flags: [.maskCommand, .maskShift]) // Cmd+Shift+L
+        Thread.sleep(forTimeInterval: 0.4)
+        let order1 = controller.debugSlotTitles
+        check("Cmd+Shift+L moved focused column right",
+              order1.count == order0.count && order1.firstIndex(of: focusTitle) == 1)
+
+        // --- Cmd+Shift+H -> move it back left (keyboard tap) ---
+        postKey(4, flags: [.maskCommand, .maskShift]) // Cmd+Shift+H
+        Thread.sleep(forTimeInterval: 0.4)
         let order2 = controller.debugSlotTitles
-        check("Cmd+H moved focused column back left", order2.firstIndex(of: focusTitle) == 0)
+        check("Cmd+Shift+H moved focused column back left", order2.firstIndex(of: focusTitle) == 0)
 
         // --- Cmd+Q -> close focused window (Carbon hotkey) ---
         let liveBefore = pids.flatMap { p -> [AXWindowInfo] in

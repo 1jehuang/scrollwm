@@ -19,12 +19,17 @@ import AppKit
 /// Lifecycle: started on Arrange, stopped on Release. While dormant the tap
 /// does not exist, so Cmd+H keeps its normal "Hide" behavior on the desktop.
 final class KeyboardEventTap {
-    /// One key combo: a virtual keycode plus an exact modifier match, and the
+    /// One key combo: a virtual keycode plus an exact modifier set, and the
     /// action to run on the main thread when it fires.
     struct Combo {
         let keyCode: Int64
+        let flags: CGEventFlags   // exact match among cmd/shift/ctrl/alt
         let handler: () -> Void
     }
+
+    /// Modifiers we consider when matching (others, e.g. the always-present
+    /// non-coalesced bit or fn, are ignored).
+    static let relevantFlags: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
 
     private var combos: [Combo] = []
     private var tapPort: CFMachPort?
@@ -34,10 +39,10 @@ final class KeyboardEventTap {
     private(set) var captured = 0
     private(set) var disableCount = 0
 
-    /// Add a combo that fires when `keyCode` is pressed with Command held and
-    /// no other modifiers (control/option/shift). Call before `start()`.
-    func addCommandCombo(keyCode: Int64, handler: @escaping () -> Void) {
-        combos.append(Combo(keyCode: keyCode, handler: handler))
+    /// Add a combo that fires when `keyCode` is pressed with exactly `flags`
+    /// (among cmd/shift/ctrl/alt). Call before `start()`.
+    func addCombo(keyCode: Int64, flags: CGEventFlags, handler: @escaping () -> Void) {
+        combos.append(Combo(keyCode: keyCode, flags: flags, handler: handler))
     }
 
     func start() -> Bool {
@@ -93,16 +98,9 @@ final class KeyboardEventTap {
         }
         guard type == .keyDown else { return Unmanaged.passUnretained(event) }
 
-        let f = event.flags
-        // Exactly Command (ignore the always-present non-coalesced bits).
-        let onlyCommand = f.contains(.maskCommand)
-            && !f.contains(.maskControl)
-            && !f.contains(.maskAlternate)
-            && !f.contains(.maskShift)
-        guard onlyCommand else { return Unmanaged.passUnretained(event) }
-
+        let masked = event.flags.intersection(Self.relevantFlags)
         let key = event.getIntegerValueField(.keyboardEventKeycode)
-        if let combo = combos.first(where: { $0.keyCode == key }) {
+        if let combo = combos.first(where: { $0.keyCode == key && $0.flags == masked }) {
             captured += 1
             DispatchQueue.main.async { combo.handler() }
             return nil // suppress: focused app must not also act on this combo
