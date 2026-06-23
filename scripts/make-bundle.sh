@@ -2,27 +2,46 @@
 # make-bundle.sh - assemble (and sign) ScrollWM.app from a built binary.
 #
 # Single source of truth for HOW the .app bundle is shaped: Info.plist, icon,
-# CLI-preserving wrapper, and code signature. Both scripts/install.sh (local
-# install) and the GitHub Actions release workflow call this so the bundle is
-# identical everywhere.
+# main executable, and code signature. Both scripts/install.sh (local install)
+# and the GitHub Actions release workflow call this so the bundle is identical
+# everywhere.
 #
 # Usage:
 #   scripts/make-bundle.sh <app-path> <binary-path> [sign-id] [version]
 #
 #   <app-path>     where to write the bundle, e.g. ~/Applications/ScrollWM.app
 #   <binary-path>  the built WindowLab executable (arm64 or universal)
-#   [sign-id]      codesign identity; "-" for ad-hoc (default), or a cert name
+#   [sign-id]      codesign identity; "-" for ad-hoc (default), a self-signed
+#                  cert name, or a "Developer ID Application: ..." identity.
+#                  Omit to auto-detect the best available (see signing-lib.sh).
 #   [version]      CFBundleShortVersionString (default: 0.0.0-dev)
+#
+# Signing tiers (see scripts/signing-lib.sh):
+#   - Developer ID Application -> hardened runtime + entitlements + secure
+#     timestamp, so the bundle is NOTARIZABLE (downloads open with no warning).
+#   - self-signed / ad-hoc     -> plain signature (local use; downloads warn).
+#
+# The bundle's main executable is the real Mach-O (CFBundleExecutable=ScrollWM).
+# It decides what to do from how it was launched: a bare launch as an .app runs
+# the production menu-bar agent; subcommands (status/arrange/probe/...) still
+# work for the `scrollwm` CLI and the lab harness (see Sources/.../main.swift).
 set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=signing-lib.sh
+source "$REPO_DIR/scripts/signing-lib.sh"
 
 APP="${1:?usage: make-bundle.sh <app-path> <binary-path> [sign-id] [version]}"
 BIN="${2:?missing binary path}"
-SIGN_ID="${3:--}"
+SIGN_ID="${3:-}"
 VERSION="${4:-0.0.0-dev}"
 BUNDLE_ID="dev.scrollwm.app"
 
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Auto-detect the identity when the caller did not pin one.
+[[ -n "$SIGN_ID" ]] || SIGN_ID="$(scrollwm_detect_identity)"
+
 ICON_SRC="$REPO_DIR/Resources/AppIcon.icns"
+ENTITLEMENTS="$REPO_DIR/Resources/ScrollWM.entitlements"
 
 [[ -x "$BIN" ]] || { echo "make-bundle: binary not found/executable: $BIN" >&2; exit 1; }
 
@@ -55,32 +74,37 @@ $ICON_KEY
 </plist>
 PLIST
 
-# Wrapper keeps the CLI harness available: ScrollWM with no args = production
-# app (run); subcommands still work for diagnostics (probe/bench/run --selftest).
-# It resolves symlinks so a `scrollwm` symlink on PATH (e.g. /opt/homebrew/bin)
-# still finds ScrollWM.bin inside the bundle.
-cp "$BIN" "$APP/Contents/MacOS/ScrollWM.bin"
-cat > "$APP/Contents/MacOS/ScrollWM" <<'WRAPPER'
-#!/bin/bash
-# Resolve this script through any symlinks to locate the real bundle dir.
-SOURCE="${BASH_SOURCE[0]}"
-while [[ -L "$SOURCE" ]]; do
-    TARGET="$(readlink "$SOURCE")"
-    if [[ "$TARGET" == /* ]]; then SOURCE="$TARGET"; else SOURCE="$(dirname "$SOURCE")/$TARGET"; fi
-done
-DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
-if [[ $# -eq 0 ]]; then
-    exec "$DIR/ScrollWM.bin" run
-fi
-exec "$DIR/ScrollWM.bin" "$@"
-WRAPPER
+# The Mach-O IS the bundle's main executable (CFBundleExecutable). No shell
+# wrapper: a script main-executable cannot carry a hardened-runtime signature
+# and breaks notarization. The binary itself defaults to `run` when launched as
+# an .app and otherwise dispatches subcommands, so the `scrollwm` CLI symlink
+# (install.sh / the cask) points straight at this file.
+cp "$BIN" "$APP/Contents/MacOS/ScrollWM"
 chmod +x "$APP/Contents/MacOS/ScrollWM"
 
-# Sign the inner binary first, then the bundle. A stable identity keeps the
-# designated requirement constant across rebuilds (Accessibility persists);
-# "-" is ad-hoc (fine for downloads, re-grant on each update).
-codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP/Contents/MacOS/ScrollWM.bin"
-codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+# Signing. A Developer ID identity gets the hardened runtime + entitlements +
+# secure timestamp (all required for notarization). Self-signed/ad-hoc get a
+# plain signature: enough for local use, but Gatekeeper still warns on download.
+SIGN_FLAGS=(--force --sign "$SIGN_ID" --identifier "$BUNDLE_ID")
+if scrollwm_is_developer_id "$SIGN_ID"; then
+    SIGN_FLAGS+=(--options runtime --timestamp)
+    [[ -f "$ENTITLEMENTS" ]] && SIGN_FLAGS+=(--entitlements "$ENTITLEMENTS")
+    echo "make-bundle: signing with Developer ID (hardened runtime, notarizable)"
+fi
 
-codesign --verify --deep "$APP"
+# Sign inner Mach-O first, then the bundle.
+codesign "${SIGN_FLAGS[@]}" "$APP/Contents/MacOS/ScrollWM"
+codesign "${SIGN_FLAGS[@]}" "$APP"
+
+codesign --verify --deep --strict "$APP"
+# For Developer ID builds, confirm the runtime flag actually stuck (catches a
+# silently-dropped hardened runtime before it fails at the notary service).
+if scrollwm_is_developer_id "$SIGN_ID"; then
+    if codesign -d --verbose=2 "$APP" 2>&1 | grep -q "flags=.*runtime"; then
+        echo "make-bundle: hardened runtime confirmed"
+    else
+        echo "make-bundle: WARNING - hardened runtime flag not present after signing" >&2
+    fi
+fi
 echo "make-bundle: wrote $APP (version $VERSION, sign '$SIGN_ID')"
+echo "make-bundle: $(scrollwm_identity_note "$SIGN_ID")"

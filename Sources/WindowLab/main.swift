@@ -122,8 +122,20 @@ func runWatch(seconds: Int) {
 
 // MARK: - Entry point
 
-let args = CommandLine.arguments.dropFirst()
-let command = args.first ?? "probe"
+// Drop a LaunchServices process-serial-number argument: older macOS passes
+// `-psn_0_12345` when a .app is launched by double-click, and it is not a
+// command. (Modern macOS no longer passes it, but filtering is cheap insurance
+// now that the Mach-O is the bundle's main executable - see scripts/make-bundle.sh.)
+let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-psn_") }
+
+// Default command depends on HOW we were launched:
+//   - As ScrollWM.app's main executable (Finder / `open` / menu-bar agent),
+//     a bare invocation must start the production app (`run`).
+//   - As the bare `WindowLab` dev/CLI binary (e.g. `.build/debug/WindowLab`),
+//     it defaults to the diagnostic `probe`, preserving the dev workflow.
+// We detect the app case via the main bundle's URL ending in `.app`.
+let launchedAsAppBundle = Bundle.main.bundleURL.pathExtension == "app"
+let command = args.first ?? (launchedAsAppBundle ? "run" : "probe")
 
 // CLI control verbs: talk to a RUNNING ScrollWM app over its control socket.
 // These are the user-facing `scrollwm <verb>` commands (see runControlCLI).

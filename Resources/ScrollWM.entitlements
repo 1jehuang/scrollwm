@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the notarized (Developer ID) build.
+
+  ScrollWM is a window manager: it drives OTHER apps' windows through the
+  Accessibility API and sends AppleEvents (e.g. `tell application "X" to quit`
+  on update). The hardened runtime (required for notarization) blocks that by
+  default, so we opt back into exactly what we need - and NOTHING more:
+
+    - apple-events: send AppleEvents to other apps (graceful quit on update,
+      app activation). Accessibility itself is a TCC permission, not an
+      entitlement, so it is granted by the user, not requested here.
+
+  We deliberately do NOT enable the App Sandbox: a sandboxed process cannot get
+  the system-wide Accessibility control a window manager requires. This is the
+  documented "one permission (Accessibility), no private APIs" contract; it is
+  why ScrollWM ships as a notarized Developer-ID app, not a Mac App Store app.
+
+  These entitlements are applied ONLY when signing with a Developer ID cert
+  (ad-hoc / self-signed local builds skip them; see make-bundle.sh).
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>

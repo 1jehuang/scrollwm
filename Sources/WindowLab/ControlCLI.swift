@@ -57,7 +57,7 @@ private func launchRunningApp() -> Bool {
     // Prefer launching the bundle that contains THIS binary (so a freshly
     // built/installed app drives itself), falling back to bundle-id lookup.
     let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-    // .../ScrollWM.app/Contents/MacOS/ScrollWM.bin -> .../ScrollWM.app
+    // .../ScrollWM.app/Contents/MacOS/ScrollWM -> .../ScrollWM.app
     let bundle = exe.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     if bundle.pathExtension == "app" {
         NSWorkspace.shared.open(bundle)

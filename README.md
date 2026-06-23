@@ -100,6 +100,28 @@ rebuilds, create a stable self-signed identity **once**:
 After granting Accessibility one more time post-setup, future `update.sh` runs
 keep the permission (the app's signing identity no longer changes per build).
 
+> If you have an Apple **Developer ID Application** certificate installed, the
+> scripts prefer it automatically (over the self-signed cert and ad-hoc): local
+> installs are then signed with the same identity used for notarized releases,
+> so the Accessibility grant persists and you only manage one certificate. See
+> [docs/SIGNING.md](docs/SIGNING.md).
+
+## Releasing (maintainers)
+
+Notarized releases open with **no Gatekeeper warning**. This needs a paid Apple
+Developer account and a "Developer ID Application" certificate; without one the
+pipeline still works and falls back to ad-hoc (the cask strips quarantine).
+
+```bash
+./scripts/package-release.sh 0.1.2     # universal build, signed (auto-detected identity)
+./scripts/notarize.sh 0.1.2            # submit to Apple, staple, repackage zip/dmg
+./scripts/update-cask.sh 0.1.2         # sync the Homebrew cask sha256 (+drops the xattr hack when notarized)
+```
+
+CI does this automatically on a `v*` tag when the signing secrets are configured
+(see the comments in `.github/workflows/release.yml`). Full setup, including the
+one-time `notarytool store-credentials`, is in [docs/SIGNING.md](docs/SIGNING.md).
+
 ## Uninstall
 
 ```bash

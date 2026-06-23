@@ -18,7 +18,7 @@ APP="$DEST_DIR/ScrollWM.app"
 echo "==> quitting running ScrollWM (windows are restored on quit)"
 # Ask nicely first so the app restores managed windows; fall back to kill.
 osascript -e 'tell application "ScrollWM" to quit' >/dev/null 2>&1 || true
-pkill -x ScrollWM.bin >/dev/null 2>&1 || true
+pkill -f "ScrollWM.app/Contents/MacOS/ScrollWM" >/dev/null 2>&1 || true
 sleep 0.5
 
 echo "==> reinstalling from $REPO_DIR"

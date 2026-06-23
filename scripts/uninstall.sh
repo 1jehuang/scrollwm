@@ -15,7 +15,7 @@ say() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 say "quitting ScrollWM (windows restore on quit)"
 osascript -e 'tell application "ScrollWM" to quit' >/dev/null 2>&1 || true
 sleep 0.5
-pkill -x ScrollWM.bin >/dev/null 2>&1 || true
+pkill -f "ScrollWM.app/Contents/MacOS/ScrollWM" >/dev/null 2>&1 || true
 
 for APP in "$HOME/Applications/ScrollWM.app" "/Applications/ScrollWM.app"; do
     if [[ -d "$APP" ]]; then

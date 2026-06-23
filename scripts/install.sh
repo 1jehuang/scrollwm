@@ -15,6 +15,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=signing-lib.sh
+source "$REPO_DIR/scripts/signing-lib.sh"
 VERSION="$(cat "$REPO_DIR/VERSION" 2>/dev/null || echo 0.0.0-dev)"
 
 UNIVERSAL=0
@@ -40,25 +42,23 @@ else
 fi
 [[ -x "$BIN" ]] || { echo "build failed: $BIN missing"; exit 1; }
 
-# Prefer a stable self-signed identity (see scripts/setup-signing.sh) so the
-# Accessibility grant persists across updates; otherwise fall back to ad-hoc.
-SIGN_ID="-"
-SIGN_NOTE="ad-hoc (Accessibility may need re-granting after updates)"
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "ScrollWM Self-Signed"; then
-    SIGN_ID="ScrollWM Self-Signed"
-    SIGN_NOTE="stable self-signed (Accessibility persists across updates)"
-fi
+# Pick the best available signing identity (Developer ID > self-signed > ad-hoc;
+# see scripts/signing-lib.sh). A stable identity keeps the Accessibility grant
+# across updates; a Developer ID identity additionally produces a notarizable,
+# hardened-runtime bundle. Override with SCROLLWM_SIGN_ID=... if you must.
+SIGN_ID="$(scrollwm_detect_identity)"
+SIGN_NOTE="$(scrollwm_identity_note "$SIGN_ID")"
 
 echo "==> assembling + signing bundle ($SIGN_NOTE)"
 mkdir -p "$DEST_DIR"
 "$REPO_DIR/scripts/make-bundle.sh" "$APP" "$BIN" "$SIGN_ID" "$VERSION"
 
 echo "==> verifying"
-"$APP/Contents/MacOS/ScrollWM.bin" help >/dev/null && echo "    binary runs"
+"$APP/Contents/MacOS/ScrollWM" help >/dev/null && echo "    binary runs"
 
 # Put `scrollwm` on PATH so you can drive the running app from a shell
-# (scrollwm arrange / focus / width / status ...). The bundle's wrapper routes
-# any subcommand to the binary, so the symlink target is that wrapper. Pick the
+# (scrollwm arrange / focus / width / status ...). The bundle's main executable
+# dispatches any subcommand, so the symlink target is that binary. Pick the
 # first user-writable bin dir on PATH; fall back to ~/.local/bin.
 echo "==> installing 'scrollwm' CLI on PATH"
 CLI_TARGET="$APP/Contents/MacOS/ScrollWM"

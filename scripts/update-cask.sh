@@ -6,16 +6,41 @@
 # CI right before publishing. Users install with:
 #   brew tap 1jehuang/scrollwm https://github.com/1jehuang/scrollwm
 #   brew install --cask scrollwm
+#
+# Notarization-aware: if dist/ScrollWM.app is notarized + stapled (built with a
+# Developer ID cert and run through scripts/notarize.sh), the emitted cask drops
+# the quarantine-stripping postflight - a notarized app opens with no Gatekeeper
+# warning, so the xattr hack is unnecessary (and undesirable). Otherwise the
+# cask keeps stripping quarantine so ad-hoc/self-signed downloads still open.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-$(cat "$REPO_DIR/VERSION")}"
 ZIP="$REPO_DIR/dist/ScrollWM-$VERSION.zip"
+APP="$REPO_DIR/dist/ScrollWM.app"
 CASK_DIR="$REPO_DIR/Casks"
 CASK="$CASK_DIR/scrollwm.rb"
 
 [[ -f "$ZIP" ]] || { echo "missing $ZIP; run scripts/package-release.sh first" >&2; exit 1; }
 SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+
+# Detect a stapled (notarized) bundle so we can omit the quarantine workaround.
+NOTARIZED=0
+if [[ -d "$APP" ]] && xcrun stapler validate "$APP" >/dev/null 2>&1; then
+    NOTARIZED=1
+fi
+
+if [[ "$NOTARIZED" == "1" ]]; then
+    GATEKEEPER_BLOCK="  # Notarized + stapled: opens with no Gatekeeper warning, no workaround needed."
+else
+    GATEKEEPER_BLOCK="  # The app is ad-hoc/self-signed (not notarized); strip quarantine so it
+  # opens without the Gatekeeper block. Homebrew also does this for casks.
+  postflight do
+    system_command \"/usr/bin/xattr\",
+                   args: [\"-dr\", \"com.apple.quarantine\", \"#{appdir}/ScrollWM.app\"],
+                   sudo: false
+  end"
+fi
 
 mkdir -p "$CASK_DIR"
 cat > "$CASK" <<RUBY
@@ -32,17 +57,11 @@ cask "scrollwm" do
 
   app "ScrollWM.app"
 
-  # Expose the `scrollwm` CLI on PATH. The bundle wrapper routes any subcommand
-  # to the binary, so this is the same entry point the app uses.
+  # Expose the \`scrollwm\` CLI on PATH. The bundle's main executable dispatches
+  # any subcommand, so this is the same entry point the app uses.
   binary "#{appdir}/ScrollWM.app/Contents/MacOS/ScrollWM", target: "scrollwm"
 
-  # The app is ad-hoc signed (not notarized); strip quarantine so it opens
-  # without the Gatekeeper block. Homebrew also does this for casks by default.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/ScrollWM.app"],
-                   sudo: false
-  end
+$GATEKEEPER_BLOCK
 
   uninstall quit: "dev.scrollwm.app"
 
@@ -53,4 +72,4 @@ cask "scrollwm" do
 end
 RUBY
 
-echo "wrote $CASK (version $VERSION, sha256 $SHA)"
+echo "wrote $CASK (version $VERSION, sha256 $SHA, notarized=$NOTARIZED)"

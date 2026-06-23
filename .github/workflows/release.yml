@@ -6,6 +6,16 @@ name: Release
 #   - pushing a tag like v0.1.0  -> creates/uploads to that release
 #   - manual "Run workflow"      -> builds + uploads to a release for the chosen
 #                                   tag (defaults to the VERSION file)
+#
+# Signing / notarization (optional, gated on repo secrets):
+#   Set these secrets to ship a notarized build that opens with NO Gatekeeper
+#   warning. If they are absent the workflow still runs and produces an ad-hoc
+#   signed build (quarantine-stripped by the cask), so nothing breaks.
+#     DEVELOPER_ID_CERT_P12       base64 of your "Developer ID Application" .p12
+#     DEVELOPER_ID_CERT_PASSWORD  password for that .p12
+#     NOTARY_APPLE_ID             Apple ID email for notarization
+#     NOTARY_TEAM_ID              10-char Apple Developer Team ID
+#     NOTARY_PASSWORD             app-specific password for the Apple ID
 on:
   push:
     tags:
@@ -22,6 +32,9 @@ permissions:
 jobs:
   release:
     runs-on: macos-14
+    env:
+      # notarize.sh reads this profile name from the keychain.
+      SCROLLWM_NOTARY_PROFILE: scrollwm-notary
     steps:
       - uses: actions/checkout@v4
 
@@ -42,14 +55,71 @@ jobs:
           echo "tag=v$V" >> "$GITHUB_OUTPUT"
           echo "Releasing version $V (tag v$V)"
 
+      # Decide whether signing/notarization secrets are present. Secrets cannot
+      # be used directly in `if:` conditions, so surface a boolean output here.
+      - name: Detect signing secrets
+        id: signing
+        env:
+          CERT: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          NOTARY: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          if [ -n "$CERT" ] && [ -n "$NOTARY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Developer ID signing + notarization: ENABLED"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Developer ID signing + notarization: disabled (no secrets); ad-hoc build"
+          fi
+
+      # Import the Developer ID cert into a throwaway keychain so codesign can
+      # find it. make-bundle.sh auto-detects the identity, so a later
+      # package-release run will sign with it automatically.
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/scrollwm-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Prepend our keychain to the search list so codesign sees the identity.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "Imported identities:"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Store notary credentials
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials "$SCROLLWM_NOTARY_PROFILE" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD"
+
       - name: Build + package universal app
         run: ./scripts/package-release.sh "${{ steps.ver.outputs.version }}"
+
+      - name: Notarize + staple
+        if: steps.signing.outputs.enabled == 'true'
+        run: ./scripts/notarize.sh "${{ steps.ver.outputs.version }}"
 
       - name: Verify artifacts
         run: |
           ls -la dist
           codesign --verify --deep --strict dist/ScrollWM.app
-          lipo -archs dist/ScrollWM.app/Contents/MacOS/ScrollWM.bin
+          lipo -archs dist/ScrollWM.app/Contents/MacOS/ScrollWM
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -63,7 +133,9 @@ jobs:
             dist/SHA256SUMS.txt
 
       # Keep the in-repo Homebrew cask in sync with the just-published zip
-      # (its sha256 must match the CI-built artifact, not a local build).
+      # (its sha256 must match the CI-built artifact, not a local build). When
+      # the build was notarized, update-cask.sh detects the stapled bundle and
+      # drops the quarantine workaround automatically.
       - name: Update Homebrew cask on main
         run: |
           ./scripts/update-cask.sh "${{ steps.ver.outputs.version }}"

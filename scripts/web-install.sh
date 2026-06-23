@@ -50,11 +50,11 @@ ditto -x -k "$TMP/ScrollWM.zip" "$TMP/extracted"
 [[ -d "$TMP/extracted/ScrollWM.app" ]] || die "archive did not contain ScrollWM.app"
 
 # Quit any running instance (restores managed windows first).
-if pgrep -x ScrollWM.bin >/dev/null 2>&1; then
+if pgrep -f "ScrollWM.app/Contents/MacOS/ScrollWM" >/dev/null 2>&1; then
     say "quitting running ScrollWM (windows restore on quit)"
     osascript -e 'tell application "ScrollWM" to quit' >/dev/null 2>&1 || true
     sleep 0.5
-    pkill -x ScrollWM.bin >/dev/null 2>&1 || true
+    pkill -f "ScrollWM.app/Contents/MacOS/ScrollWM" >/dev/null 2>&1 || true
 fi
 
 say "installing to $DEST"

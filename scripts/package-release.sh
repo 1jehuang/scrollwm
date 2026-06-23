@@ -7,14 +7,22 @@
 #   ScrollWM-<version>.dmg        drag-to-Applications disk image
 #   SHA256SUMS.txt                checksums for the artifacts
 #
-# Signing is ad-hoc by default (no Apple account required). Downloaded ad-hoc
-# apps are quarantined by Gatekeeper; the curl installer and README explain the
-# one-time right-click-Open / xattr step.
+# Signing identity is auto-detected (Developer ID > self-signed > ad-hoc; see
+# scripts/signing-lib.sh) or pinned via SCROLLWM_SIGN_ID. With a Developer ID
+# identity the bundle is hardened-runtime signed and ready for notarization:
+# run scripts/notarize.sh afterward to submit + staple, then the zip/dmg open
+# with no Gatekeeper warning. Ad-hoc/self-signed downloads are quarantined; the
+# curl installer and README explain the one-time right-click-Open / xattr step.
 #
 # Usage: scripts/package-release.sh [version]
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=signing-lib.sh
+source "$REPO_DIR/scripts/signing-lib.sh"
+# shellcheck source=package-lib.sh
+source "$REPO_DIR/scripts/package-lib.sh"
+
 VERSION="${1:-$(cat "$REPO_DIR/VERSION" 2>/dev/null || echo 0.0.0-dev)}"
 DIST="$REPO_DIR/dist"
 APP="$DIST/ScrollWM.app"
@@ -29,26 +37,28 @@ BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/Window
 [[ -x "$BIN" ]] || { echo "build failed: $BIN missing"; exit 1; }
 echo "    $(lipo -archs "$BIN" 2>/dev/null || echo arm64)"
 
-echo "==> assembling bundle (ad-hoc signed)"
-"$REPO_DIR/scripts/make-bundle.sh" "$APP" "$BIN" "-" "$VERSION"
+SIGN_ID="$(scrollwm_detect_identity)"
+echo "==> assembling bundle ($(scrollwm_identity_note "$SIGN_ID"))"
+"$REPO_DIR/scripts/make-bundle.sh" "$APP" "$BIN" "$SIGN_ID" "$VERSION"
 
-ZIP="$DIST/ScrollWM-$VERSION.zip"
-echo "==> zipping -> $(basename "$ZIP")"
-# ditto preserves the bundle's signature/metadata correctly (unlike plain zip).
-( cd "$DIST" && ditto -c -k --sequesterRsrc --keepParent "ScrollWM.app" "$ZIP" )
-
-DMG="$DIST/ScrollWM-$VERSION.dmg"
-echo "==> building dmg -> $(basename "$DMG")"
-DMG_STAGE="$(mktemp -d)"
-trap 'rm -rf "$DMG_STAGE"' EXIT
-cp -R "$APP" "$DMG_STAGE/ScrollWM.app"
-ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create -volname "ScrollWM" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG" >/dev/null
-echo "    wrote $(basename "$DMG")"
-
-echo "==> checksums"
-( cd "$DIST" && shasum -a 256 "ScrollWM-$VERSION.zip" "ScrollWM-$VERSION.dmg" | tee SHA256SUMS.txt )
+scrollwm_package_artifacts "$DIST" "$APP" "$VERSION"
 
 echo
 echo "Release artifacts in: $DIST"
 ls -la "$DIST"
+
+if scrollwm_is_developer_id "$SIGN_ID"; then
+    cat <<NEXT
+
+Next step (Developer ID build): notarize so downloads open with no warning:
+  scripts/notarize.sh $VERSION
+NEXT
+else
+    cat <<NEXT
+
+Note: this build is $(scrollwm_identity_note "$SIGN_ID").
+To ship downloads with no Gatekeeper warning, install a "Developer ID
+Application" certificate (Xcode > Settings > Accounts > Manage Certificates),
+re-run this script, then scripts/notarize.sh $VERSION.
+NEXT
+fi

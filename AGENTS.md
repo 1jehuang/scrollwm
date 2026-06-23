@@ -95,6 +95,16 @@ swift build                       # debug, fast iteration
                                   # Accessibility grant persists across rebuilds
 ```
 
+Signing identity is auto-detected by `scripts/signing-lib.sh`
+(**Developer ID > "ScrollWM Self-Signed" > ad-hoc**; override with
+`SCROLLWM_SIGN_ID`). With a Developer ID cert, `make-bundle.sh` adds the
+hardened runtime + entitlements (`Resources/ScrollWM.entitlements`) + timestamp,
+and `scripts/notarize.sh <ver>` submits to Apple and staples the ticket so
+downloads open with no Gatekeeper warning. The bundle's main executable is the
+real Mach-O (`CFBundleExecutable=ScrollWM`, no shell wrapper); it defaults to
+`run` when launched as an `.app` and dispatches subcommands otherwise. Full
+details: `docs/SIGNING.md`.
+
 If `codesign` fails with `errSecInternalComponent` after creating the identity,
 run:
 `security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" ~/Library/Keychains/login.keychain-db`
