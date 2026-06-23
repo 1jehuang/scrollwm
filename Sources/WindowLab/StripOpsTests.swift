@@ -266,6 +266,43 @@ enum StripOpsTests {
         check("insert into empty strip lands at index 0",
               ez.slots.map { $0.window.title } == ["New7"])
 
+        // --- REGRESSION: layout must honor the CONFIGURED gap everywhere ---
+        // `insert`/`compactStrip` used to hardcode gap=12, ignoring the engine's
+        // config-driven `gap`. With any non-default columnGap, a newly opened
+        // window was packed at 12px while width math assumed the real gap, so
+        // columns no longer tiled and the new window appeared at the wrong size/
+        // offset. Build an engine with a non-default gap and assert the strip
+        // stays compact AT THAT GAP after an insert.
+        let eGap = TeleportEngine(screenFrame: CGRect(x: 0, y: 0, width: 1600, height: 1000))
+        eGap.gap = 30
+        eGap.insert(window: synthInfo(1), at: 0)
+        eGap.insert(window: synthInfo(2), at: 1)
+        eGap.compactStrip()
+        check("insert honors configured gap (col0 at gap)",
+              abs(eGap.slots[0].canvasX - 30) < 0.5)
+        check("insert honors configured gap (col1 packed at gap)",
+              abs(eGap.slots[1].canvasX - (30 + eGap.slots[0].width + 30)) < 0.5)
+        check("strip compact at non-default gap", isCompact(eGap))
+
+        // --- REGRESSION: a new window stores its REAL size, not a clamped one ---
+        // The teleport pass only repositions windows (never resizes), so the
+        // model width MUST equal the real frame width. `insert` used to clamp
+        // the stored width to the usable area (screenW - 2*gap); a window wider
+        // than that ended up modeled NARROWER than it really was, so compaction
+        // packed the next column too close and the new window bled past the
+        // viewport edge - the "slightly wrong size / ignores gaps" symptom.
+        let eWide = TeleportEngine(screenFrame: CGRect(x: 0, y: 0, width: 1600, height: 1000))
+        let wideInfo = AXWindowInfo(
+            pid: 81234, appName: "Wide", element: AXUIElementCreateApplication(81234),
+            title: "Wide", role: kAXWindowRole as String,
+            subrole: kAXStandardWindowSubrole as String,
+            frame: CGRect(x: 0, y: 0, width: 2000, height: 1200), // wider/taller than screen
+            isMinimized: false, isFullscreen: false
+        )
+        eWide.insert(window: wideInfo, at: 0)
+        check("new window keeps its real (un-clamped) width", eWide.slots[0].width == 2000)
+        check("new window keeps its real (un-clamped) height", eWide.slots[0].height == 1200)
+
         // --- Config: chord parsing ---
         if let c = Chord(string: "cmd+shift+h") {
             check("chord cmd+shift+h keyCode is H (4)", c.keyCode == 4)

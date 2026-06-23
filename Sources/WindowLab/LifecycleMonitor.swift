@@ -311,9 +311,6 @@ extension TeleportEngine {
     /// the array position.
     func insert(window info: AXWindowInfo, at index: Int) {
         AXSource.setTimeout(info.element, seconds: 0.08)
-        let gap: CGFloat = 12
-        let width = min(info.frame.width, screenFrame.width - gap * 2)
-        let height = min(info.frame.height, screenFrame.height)
         let slot = Slot(
             window: ManagedWindowRef(
                 element: info.element,
@@ -323,9 +320,19 @@ extension TeleportEngine {
                 originalFrame: info.frame
             ),
             canvasX: 0,
-            width: width,
+            // Store the window's ACTUAL frame size. The teleport pass only ever
+            // repositions windows, it never resizes them, so the model MUST
+            // mirror the real frame. Clamping the stored size to the usable area
+            // (as this used to) made the model NARROWER than the real window for
+            // anything larger than the strip: `compactStrip` then packed the
+            // next column a gap too close and the freshly-opened column
+            // overflowed the viewport edge by the clamped-off amount - exactly
+            // the "new window ignores the gaps / is slightly the wrong size"
+            // symptom. Keep model == reality; `viewportTarget` (fit mode) already
+            // handles a column wider than the screen.
+            width: info.frame.width,
             y: screenFrame.origin.y,
-            height: height
+            height: info.frame.height
         )
         let clamped = max(0, min(index, slots.count))
         slots.insert(slot, at: clamped)
@@ -360,7 +367,6 @@ extension TeleportEngine {
     /// Re-pack columns left-to-right, removing gaps left by closed windows.
     /// Opens with a `gap` leading margin (symmetric with the trailing margin).
     func compactStrip() {
-        let gap: CGFloat = 12
         var x: CGFloat = gap
         for i in slots.indices {
             slots[i].canvasX = x

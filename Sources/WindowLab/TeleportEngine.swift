@@ -116,8 +116,14 @@ final class TeleportEngine {
                 && !$0.ax.isMinimized && !$0.ax.isFullscreen
         }.map { m in
             AXSource.setTimeout(m.ax.element, seconds: 0.08)
-            let width = min(m.ax.frame.width, screenFrame.width - gap * 2)
-            let height = min(m.ax.frame.height, screenFrame.height)
+            // Mirror the window's REAL frame size. The teleport pass only moves
+            // windows, never resizes them, so clamping the stored size to the
+            // usable area would desync the model from reality: `compactStrip`
+            // would pack the next column too close and an over-wide window would
+            // bleed past the viewport edge by the clamped-off amount. Keep
+            // model == reality; `viewportTarget` handles over-wide columns.
+            let width = m.ax.frame.width
+            let height = m.ax.frame.height
             let slot = Slot(
                 window: ManagedWindowRef(
                     element: m.ax.element,
