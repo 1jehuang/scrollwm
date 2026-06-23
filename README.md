@@ -1,5 +1,9 @@
 # ScrollWM
 
+<p align="center">
+  <img src="Resources/icon-preview.png" alt="ScrollWM" width="160">
+</p>
+
 A scrolling window manager for macOS. Windows live in columns on a horizontal
 strip (PaperWM-style); navigation teleports the viewport instantly.
 
@@ -22,33 +26,71 @@ ScrollWM is built around a "never break the desktop" rule:
 
 ## Install
 
+ScrollWM is a single menu-bar app. Pick whichever install you like; all three
+land the same `ScrollWM.app` in `~/Applications` (or `/Applications`).
+
+### 1. One-line install (recommended)
+
 ```bash
-./scripts/install.sh            # installs ScrollWM.app to ~/Applications
-open ~/Applications/ScrollWM.app
+curl -fsSL https://raw.githubusercontent.com/1jehuang/scrollwm/main/scripts/web-install.sh | bash
 ```
 
-On first launch ScrollWM shows a one-step onboarding window explaining its
-single permission and opens the right Settings pane for you. Flip the
-**Accessibility** switch for ScrollWM and the app continues automatically —
-no relaunch. If permission is already granted, ScrollWM starts silently with
-no prompt and no waiting UI (it never asks when it doesn't need to).
+Downloads the latest release, removes the Gatekeeper quarantine, installs to
+`~/Applications`, and launches it. Re-run the same command anytime to update.
+
+### 2. Homebrew
+
+```bash
+brew install --cask 1jehuang/scrollwm/scrollwm
+```
+
+(That auto-taps this repo. If you prefer to tap first:
+`brew tap 1jehuang/scrollwm https://github.com/1jehuang/scrollwm` then
+`brew install --cask scrollwm`.)
+
+### 3. Download the app
+
+Grab `ScrollWM-<version>.dmg` (or `.zip`) from the
+[latest release](https://github.com/1jehuang/scrollwm/releases/latest), drag
+**ScrollWM.app** to Applications, then open it.
+
+> **First open of a downloaded build:** the app is ad-hoc signed (not
+> notarized), so macOS may say it "cannot be opened." Right-click the app →
+> **Open** → **Open**, just once. (The curl and Homebrew installs above handle
+> this for you.)
+
+### First launch
+
+ScrollWM shows a one-step onboarding window explaining its single permission and
+opens the right Settings pane for you. Flip the **Accessibility** switch for
+ScrollWM and the app continues automatically — no relaunch. If permission is
+already granted, ScrollWM starts silently (it never asks when it doesn't need
+to).
 
 > Stuck? The onboarding window has a "Copy setup steps for my AI assistant"
 > button that puts plain instructions on your clipboard for any assistant you
 > already use. This is an optional escape hatch, never a dependency.
 
-## Updating
+## Build from source
 
-To run the latest code after a change:
+Requires Xcode (or the Swift toolchain) on macOS 14+.
 
 ```bash
-./scripts/update.sh             # rebuild, reinstall in place, relaunch
+git clone https://github.com/1jehuang/scrollwm
+cd scrollwm
+./scripts/install.sh              # build + install to ~/Applications
+# or: ./scripts/install.sh --universal /Applications
 ```
 
-By default the build is **ad-hoc signed**, so macOS sees each rebuild as a new
-app and drops the Accessibility grant (you must re-enable it after every
-update). To keep the permission across updates, create a stable self-signed
-identity **once**:
+## Updating
+
+- Installed via curl: re-run the one-line command.
+- Installed via Homebrew: `brew upgrade --cask scrollwm`.
+- Built from source: `./scripts/update.sh` (rebuild, reinstall in place, relaunch).
+
+Source builds are **ad-hoc signed** by default, so macOS sees each rebuild as a
+new app and drops the Accessibility grant. To keep the permission across local
+rebuilds, create a stable self-signed identity **once**:
 
 ```bash
 ./scripts/setup-signing.sh      # one-time: makes a local code-signing cert
@@ -57,6 +99,18 @@ identity **once**:
 
 After granting Accessibility one more time post-setup, future `update.sh` runs
 keep the permission (the app's signing identity no longer changes per build).
+
+## Uninstall
+
+```bash
+brew uninstall --cask scrollwm                 # if installed via Homebrew
+# or, for curl/source installs:
+curl -fsSL https://raw.githubusercontent.com/1jehuang/scrollwm/main/scripts/uninstall.sh | bash
+# add --purge to also delete ~/Library/Application Support/ScrollWM
+```
+
+Then remove ScrollWM from System Settings → Privacy & Security → Accessibility.
+
 
 ## Use
 

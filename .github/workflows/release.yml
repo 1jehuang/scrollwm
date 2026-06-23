@@ -1,0 +1,81 @@
+name: Release
+
+# Build a universal ScrollWM.app and publish it to a GitHub Release.
+#
+# Triggers:
+#   - pushing a tag like v0.1.0  -> creates/uploads to that release
+#   - manual "Run workflow"      -> builds + uploads to a release for the chosen
+#                                   tag (defaults to the VERSION file)
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (without leading v), e.g. 0.1.0"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version && xcodebuild -version
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="$(cat VERSION)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+          echo "Releasing version $V (tag v$V)"
+
+      - name: Build + package universal app
+        run: ./scripts/package-release.sh "${{ steps.ver.outputs.version }}"
+
+      - name: Verify artifacts
+        run: |
+          ls -la dist
+          codesign --verify --deep --strict dist/ScrollWM.app
+          lipo -archs dist/ScrollWM.app/Contents/MacOS/ScrollWM.bin
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ScrollWM ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/ScrollWM-${{ steps.ver.outputs.version }}.zip
+            dist/ScrollWM-${{ steps.ver.outputs.version }}.dmg
+            dist/SHA256SUMS.txt
+
+      # Keep the in-repo Homebrew cask in sync with the just-published zip
+      # (its sha256 must match the CI-built artifact, not a local build).
+      - name: Update Homebrew cask on main
+        run: |
+          ./scripts/update-cask.sh "${{ steps.ver.outputs.version }}"
+          if git diff --quiet -- Casks/scrollwm.rb; then
+            echo "cask already up to date"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          ./scripts/update-cask.sh "${{ steps.ver.outputs.version }}"
+          git add Casks/scrollwm.rb
+          git commit -m "cask: ScrollWM ${{ steps.ver.outputs.tag }}"
+          git push origin main

@@ -1,0 +1,38 @@
+name: CI
+
+# Build ScrollWM and run the AX-free test suites on every push / PR.
+# The hosted runner has no Accessibility grant and no display session, so we
+# only run tests that are pure logic (no live AX / window spawning).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build (debug)
+        run: swift build
+
+      - name: Unit tests (pure logic, no AX)
+        run: |
+          .build/debug/WindowLab unittest
+          .build/debug/WindowLab animtest
+
+      - name: Build (release, universal)
+        run: swift build -c release --arch arm64 --arch x86_64
+
+      - name: Smoke-test bundle assembly
+        run: |
+          BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/WindowLab"
+          ./scripts/make-bundle.sh /tmp/ScrollWM.app "$BIN" "-" "$(cat VERSION)"
+          codesign --verify --deep --strict /tmp/ScrollWM.app
+          /tmp/ScrollWM.app/Contents/MacOS/ScrollWM help >/dev/null
+          echo "bundle OK"
