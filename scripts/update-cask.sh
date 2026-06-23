@@ -32,6 +32,10 @@ cask "scrollwm" do
 
   app "ScrollWM.app"
 
+  # Expose the `scrollwm` CLI on PATH. The bundle wrapper routes any subcommand
+  # to the binary, so this is the same entry point the app uses.
+  binary "#{appdir}/ScrollWM.app/Contents/MacOS/ScrollWM", target: "scrollwm"
+
   # The app is ad-hoc signed (not notarized); strip quarantine so it opens
   # without the Gatekeeper block. Homebrew also does this for casks by default.
   postflight do

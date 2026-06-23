@@ -135,6 +135,38 @@ A first run pops the tutorial automatically. The width/focus/move/close keys
 are **only active while managing**, and are torn down on Release so the desktop
 behaves normally (`⌘Q` quits apps, `⌘H` hides them) when ScrollWM is dormant.
 
+## Command line (`scrollwm`)
+
+ScrollWM ships a CLI that drives the **running** app from your shell or scripts
+(installed on your PATH by Homebrew and `install.sh`). The app must be running;
+`arrange`/`toggle` will launch it for you if it isn't.
+
+```bash
+scrollwm arrange                 # adopt current-Space windows into the strip
+scrollwm release                 # restore all windows, go dormant
+scrollwm toggle                  # arrange <-> release
+scrollwm focus next|prev|3       # change focused column (3 is 1-based)
+scrollwm move left|right         # move the focused column within the strip
+scrollwm width 25|50|75|100      # resize focused column (also accepts 0.0-1.0)
+scrollwm close                   # close the focused window
+scrollwm focus-mode fit|centered # how the viewport follows focus
+scrollwm reload                  # re-read the config file live
+scrollwm status                  # JSON snapshot of the strip
+scrollwm quit                    # restore windows and quit the app
+scrollwm --help                  # full list
+```
+
+`status` prints JSON so you can script against it:
+
+```bash
+scrollwm status | jq '.windowCount, .columns[].title'
+```
+
+Every verb exits non-zero on error (e.g. not running, or not managing yet), so
+it composes cleanly in scripts. Under the hood the CLI talks to the app over a
+per-user Unix socket at `~/Library/Application Support/ScrollWM/control.sock` —
+no network, no extra permission.
+
 ## Settings & keybindings (config file only)
 
 All settings live in one human-editable file (the single source of truth):

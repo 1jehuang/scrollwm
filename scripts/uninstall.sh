@@ -24,6 +24,12 @@ for APP in "$HOME/Applications/ScrollWM.app" "/Applications/ScrollWM.app"; do
     fi
 done
 
+# Remove any `scrollwm` CLI symlink we created on PATH.
+for d in "/opt/homebrew/bin" "/usr/local/bin" "$HOME/.local/bin" "$HOME/bin"; do
+    LINK="$d/scrollwm"
+    if [[ -L "$LINK" ]]; then say "removing CLI symlink $LINK"; rm -f "$LINK"; fi
+done
+
 SUPPORT="$HOME/Library/Application Support/ScrollWM"
 SANDBOX="$HOME/Library/Application Support/ScrollWM-Sandbox"
 if [[ "$PURGE" == "1" ]]; then

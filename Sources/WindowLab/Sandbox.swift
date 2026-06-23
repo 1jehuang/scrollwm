@@ -41,6 +41,10 @@ func runSandbox(windowCount: Int) {
     controller.sandboxPIDs = pids
     scrollWMControllerKeepAlive = controller
 
+    // Expose a control socket so `scrollwm <verb>` can drive the sandbox.
+    // Point the CLI at it with SCROLLWM_CONTROL_SOCK (printed below).
+    controller.startControlServer()
+
     // Clean up the spawned helpers on exit so nothing leaks.
     func cleanup() {
         if controller.isManaging { controller.release() }

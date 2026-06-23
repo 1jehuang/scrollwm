@@ -15,6 +15,9 @@ final class ScrollWMController: NSObject {
     private var lifecycle: LifecycleMonitor?
     private var menuBar: ProductionMenuBar!
     private let hotkeys = HotkeyManager()
+    /// CLI control plane (Unix socket). Started only by the production `run`
+    /// path via `startControlServer()`; sandbox/tests never expose it.
+    private var controlServer: ControlServer?
     /// Keyboard tap for the move bindings (Cmd+H/L) that Carbon cannot grab.
     private var moveTap: KeyboardEventTap?
 
@@ -197,6 +200,7 @@ final class ScrollWMController: NSObject {
     }
 
     func quit() {
+        stopControlServer()
         release()
         NSApplication.shared.terminate(nil)
     }
@@ -222,6 +226,49 @@ final class ScrollWMController: NSObject {
     /// Close the focused window (Cmd+Q).
     func closeFocused() {
         if isManaging { engine.closeFocused(); menuBar.refresh() }
+    }
+
+    /// Resize the focused column to an arbitrary fraction of the strip width
+    /// (CLI `width` verb; the preset keys use `setWidthPreset`).
+    func setWidthFraction(_ fraction: CGFloat) {
+        guard isManaging else { return }
+        _ = engine.setFocusedWidth(fraction: fraction)
+        engine.refitViewportToFocused()
+        menuBar.refresh()
+    }
+
+    /// Per-column snapshot for the CLI `status` command.
+    func controlColumns() -> [[String: Any]] {
+        engine.slots.enumerated().map { (i, slot) in
+            [
+                "index": i + 1,
+                "app": slot.window.appName,
+                "title": slot.window.title,
+                "width": Int(slot.width.rounded()),
+                "focused": i == engine.focusIndex,
+                "healthy": slot.window.healthy,
+            ]
+        }
+    }
+
+    /// Start listening for `scrollwm` CLI commands on the control socket.
+    /// Production-only (the `run` path calls this); the handler runs on the
+    /// main thread, so it can touch AX/AppKit safely.
+    func startControlServer() {
+        guard controlServer == nil else { return }
+        let server = ControlServer { [weak self] line in
+            guard let self else { return "error: controller gone" }
+            return self.handleControlCommand(line)
+        }
+        if server.start() {
+            controlServer = server
+            print("control socket: \(ControlSocket.path())")
+        }
+    }
+
+    func stopControlServer() {
+        controlServer?.stop()
+        controlServer = nil
     }
 
     // MARK: - Focus mode
@@ -575,10 +622,22 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
 
-    func startController() {
-        let controller = ScrollWMController()
-        scrollWMControllerKeepAlive = controller
-        print("ScrollWM running (dormant). Use the menu bar item or the toggle key to arrange.")
+    // Create the controller and bring up the control plane IMMEDIATELY, before
+    // (and independent of) the Accessibility check. The controller is dormant
+    // until `arrange`, so this touches nothing; but it means the `scrollwm` CLI
+    // and the menu bar work the instant the app launches — even while AX is
+    // still resolving (or not yet granted). `arrange` itself still requires AX
+    // and fails gracefully without it.
+    let controller = ScrollWMController()
+    scrollWMControllerKeepAlive = controller
+    controller.startControlServer()
+
+    // One-time, AX-gated "ready" actions (tutorial, selftest, crash phase).
+    var readyDone = false
+    func onReady() {
+        guard !readyDone else { return }
+        readyDone = true
+        print("ScrollWM running (dormant). Use the menu bar item, the toggle key, or the `scrollwm` CLI to arrange.")
         controller.showTutorialOnFirstRunIfNeeded()
         if selftest { runScrollWMSelftest(controller: controller) }
         if crashPhase == .crash { runCrashPhase(controller: controller) }
@@ -589,13 +648,12 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
     // launch, so a granted machine starts silently — no waiting UI, no prompt.
     // Only after the grace window, if still genuinely untrusted, do we show the
     // onboarding window. Once granted (now or later, with no relaunch), the
-    // controller starts automatically.
-    // onboarding window/controller (created lazily below).
+    // ready actions fire.
     var started = false
     func startOnce() {
         guard !started else { return }
         started = true
-        startController()
+        onReady()
     }
 
     AccessibilityPermission.shared.resolveAtLaunch { state in

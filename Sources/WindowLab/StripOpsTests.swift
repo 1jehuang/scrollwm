@@ -429,6 +429,22 @@ enum StripOpsTests {
         check("autoprompt: untrusted but asked before -> never re-prompt (deep-link instead)",
               AccessibilityPermission.shouldAutoPrompt(isTrusted: false, hasPrompted: true) == false)
 
+        // MARK: - CLI width parsing (scrollwm width <arg>)
+        // Accepts percents (25/50/75/100) and fractions (0.0-1.0); rejects junk.
+        func widthApprox(_ s: String, _ want: CGFloat) -> Bool {
+            guard let f = ScrollWMController.parseWidthFraction(s) else { return false }
+            return abs(f - want) < 0.0001
+        }
+        check("width parse: '50' -> 0.5", widthApprox("50", 0.5))
+        check("width parse: '100' -> 1.0", widthApprox("100", 1.0))
+        check("width parse: '25' -> 0.25", widthApprox("25", 0.25))
+        check("width parse: '0.5' -> 0.5", widthApprox("0.5", 0.5))
+        check("width parse: '1' -> 1.0 (treated as fraction)", widthApprox("1", 1.0))
+        check("width parse: '0' rejected", ScrollWMController.parseWidthFraction("0") == nil)
+        check("width parse: '150' rejected (>100%)", ScrollWMController.parseWidthFraction("150") == nil)
+        check("width parse: 'abc' rejected", ScrollWMController.parseWidthFraction("abc") == nil)
+        check("width parse: '-25' rejected", ScrollWMController.parseWidthFraction("-25") == nil)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

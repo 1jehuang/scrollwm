@@ -56,6 +56,26 @@ mkdir -p "$DEST_DIR"
 echo "==> verifying"
 "$APP/Contents/MacOS/ScrollWM.bin" help >/dev/null && echo "    binary runs"
 
+# Put `scrollwm` on PATH so you can drive the running app from a shell
+# (scrollwm arrange / focus / width / status ...). The bundle's wrapper routes
+# any subcommand to the binary, so the symlink target is that wrapper. Pick the
+# first user-writable bin dir on PATH; fall back to ~/.local/bin.
+echo "==> installing 'scrollwm' CLI on PATH"
+CLI_TARGET="$APP/Contents/MacOS/ScrollWM"
+CLI_LINK=""
+for d in "/opt/homebrew/bin" "/usr/local/bin" "$HOME/.local/bin" "$HOME/bin"; do
+    if [[ -d "$d" && -w "$d" ]]; then CLI_LINK="$d/scrollwm"; break; fi
+done
+if [[ -z "$CLI_LINK" ]]; then
+    mkdir -p "$HOME/.local/bin"; CLI_LINK="$HOME/.local/bin/scrollwm"
+fi
+ln -sf "$CLI_TARGET" "$CLI_LINK"
+echo "    linked $CLI_LINK -> ScrollWM.app"
+case ":$PATH:" in
+    *":$(dirname "$CLI_LINK"):"*) : ;;
+    *) echo "    NOTE: add $(dirname "$CLI_LINK") to your PATH to use 'scrollwm'." ;;
+esac
+
 cat <<DONE
 
 Installed: $APP  (v$VERSION)
@@ -64,7 +84,7 @@ First run:
   1. open "$APP"      (menu bar icon appears; nothing is touched yet)
   2. grant Accessibility when prompted:
      System Settings -> Privacy & Security -> Accessibility -> enable ScrollWM
-  3. use the menu bar icon -> "Arrange Windows into Strip"
+  3. use the menu bar icon -> "Arrange Windows into Strip", or run: scrollwm arrange
 
 Controls (also in the in-app tutorial):
   ctrl+opt+left/right   focus previous/next column
@@ -75,6 +95,12 @@ Controls (also in the in-app tutorial):
   ctrl+opt+esc          toggle arrange/release
   menu -> Release       restore all windows to original positions
   menu -> Quit          also restores everything
+
+CLI (drive the running app from a shell):
+  scrollwm arrange | release | toggle
+  scrollwm focus <next|prev|N> | move <left|right> | width <25|50|75|100>
+  scrollwm status            # JSON snapshot of the strip
+  scrollwm --help            # full list
 
 Note: $SIGN_NOTE.
 DONE

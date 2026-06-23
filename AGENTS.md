@@ -61,6 +61,9 @@ for any behavior you change; prefer extracting pure functions (e.g.
 - `IdentityMatcher.swift`    AX<->CG fusion (PID+frame+title scoring)
 - `RestoreStore.swift`       crash-recovery frame persistence
 - `ScrollWMApp.swift`        production controller, menu bar, hotkeys, signals
+- `ControlServer.swift`      Unix-socket control plane (server + client) for the CLI
+- `ControlCommands.swift`    maps `scrollwm <verb>` requests to controller actions
+- `ControlCLI.swift`         `scrollwm` CLI: connect to the running app, print reply
 - `Sandbox.swift`            sandbox mode (safe live testing)
 - `Config.swift`             JSONC config file (single source of truth for keybinds)
 

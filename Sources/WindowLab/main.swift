@@ -125,6 +125,17 @@ func runWatch(seconds: Int) {
 let args = CommandLine.arguments.dropFirst()
 let command = args.first ?? "probe"
 
+// CLI control verbs: talk to a RUNNING ScrollWM app over its control socket.
+// These are the user-facing `scrollwm <verb>` commands (see runControlCLI).
+let controlVerbs: Set<String> = [
+    "status", "arrange", "release", "toggle", "focus", "move", "width",
+    "close", "focus-mode", "focusmode", "reload", "reload-config",
+    "tutorial", "ping", "quit",
+]
+if controlVerbs.contains(command) {
+    exit(runControlCLI(Array(args)))
+}
+
 switch command {
 case "probe":
     runProbe(verbose: args.contains("-v") || args.contains("--verbose"))
@@ -194,9 +205,26 @@ case "keytapprobe":
     runKeyTapProbe(seconds: seconds)
 default:
     print("""
-    WindowLab - scrolling window manager reality-test harness
+    ScrollWM / WindowLab
 
-    usage:
+    Control a running ScrollWM from your shell (the app must be running):
+      scrollwm status              print strip state as JSON
+      scrollwm arrange             adopt current-Space windows (launches app if needed)
+      scrollwm release             restore all windows, go dormant
+      scrollwm toggle              arrange <-> release
+      scrollwm focus <next|prev|left|right|N>
+                                   change focused column (N is 1-based)
+      scrollwm move <left|right>   move focused column within the strip
+      scrollwm width <25|50|75|100|0.0-1.0>
+                                   resize focused column
+      scrollwm close               close the focused window
+      scrollwm focus-mode [fit|centered]
+                                   get/set how the viewport follows focus
+      scrollwm reload              re-read the config file live
+      scrollwm tutorial            open the in-app cheat sheet
+      scrollwm quit                restore windows and quit the app
+
+    Lab / test harness (spawns its own processes; safe):
       WindowLab probe [-v]     enumerate CG+AX windows, match, report latency
       WindowLab bench          AX move/resize benchmark (windows restored after)
       WindowLab watch [secs]   repeated full resync loop with timing
@@ -211,7 +239,7 @@ default:
                                virtual canvas with inertia. Windows restored after.
       WindowLab run [--selftest]
                                ScrollWM production app: dormant menu bar agent.
-                               Arrange/release via menu or ctrl+opt+esc.
+                               Arrange/release via menu, ctrl+opt+esc, or the CLI.
                                Exact frame restore on release/quit/crash.
       WindowLab unittest       pure-logic tests for width/move/close ops (no AX needed)
       WindowLab animtest       pure-logic tests for the animated menu-bar

@@ -57,10 +57,18 @@ PLIST
 
 # Wrapper keeps the CLI harness available: ScrollWM with no args = production
 # app (run); subcommands still work for diagnostics (probe/bench/run --selftest).
+# It resolves symlinks so a `scrollwm` symlink on PATH (e.g. /opt/homebrew/bin)
+# still finds ScrollWM.bin inside the bundle.
 cp "$BIN" "$APP/Contents/MacOS/ScrollWM.bin"
 cat > "$APP/Contents/MacOS/ScrollWM" <<'WRAPPER'
 #!/bin/bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve this script through any symlinks to locate the real bundle dir.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+    TARGET="$(readlink "$SOURCE")"
+    if [[ "$TARGET" == /* ]]; then SOURCE="$TARGET"; else SOURCE="$(dirname "$SOURCE")/$TARGET"; fi
+done
+DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 if [[ $# -eq 0 ]]; then
     exec "$DIR/ScrollWM.bin" run
 fi
