@@ -175,10 +175,14 @@ final class LifecycleMonitor {
         var currentSpaceIDs = Set<Int>()
         for (i, m) in matched.enumerated() where m.cg != nil { currentSpaceIDs.insert(i) }
 
-        // Strip tokens: managed windows that AX still reports map to their
-        // `standard` index; genuinely-closed ones get a negative sentinel that
-        // is never in `axIDs`/`currentSpaceIDs` (so they read as removed).
-        let stripIDs: [Int] = engine.slots.enumerated().map { (s, slot) in
+        // Strip tokens: windows the engine manages in ANY vertical workspace map
+        // to their `standard` index; genuinely-closed ones get a negative
+        // sentinel that is never in `axIDs`/`currentSpaceIDs` (so they read as
+        // removed). Spanning ALL workspaces is what stops a window PARKED in an
+        // inactive workspace (still on-screen as the shared parking sliver, so
+        // it shows up in the current-Space set) from being re-adopted into the
+        // active workspace as if it were brand new.
+        let stripIDs: [Int] = engine.allManagedSlots.enumerated().map { (s, slot) in
             standard.firstIndex { CFEqual($0.element, slot.window.element) } ?? -(s + 1)
         }
 
@@ -291,10 +295,11 @@ final class LifecycleMonitor {
         }.filter {
             $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen
         }
-        // Windows we do not already manage.
-        let unmanaged = appWindows.filter { info in
-            !engine.slots.contains { CFEqual(info.element, $0.window.element) }
-        }
+        // Windows we do not already manage in ANY vertical workspace. Spanning
+        // all workspaces keeps a window parked in an inactive workspace (which is
+        // still on-screen as the shared parking sliver) from being re-adopted
+        // into the active workspace by the fast path.
+        let unmanaged = appWindows.filter { info in !engine.isManaged(info.element) }
         guard !unmanaged.isEmpty else { return }
 
         // Current-Space gate via the on-screen CG list (cheap, one syscall).

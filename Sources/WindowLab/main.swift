@@ -141,7 +141,7 @@ let command = args.first ?? (launchedAsAppBundle ? "run" : "probe")
 // These are the user-facing `scrollwm <verb>` commands (see runControlCLI).
 let controlVerbs: Set<String> = [
     "status", "arrange", "release", "toggle", "focus", "move", "width",
-    "close", "focus-mode", "focusmode", "reload", "reload-config",
+    "workspace", "ws", "close", "focus-mode", "focusmode", "reload", "reload-config",
     "tutorial", "ping", "quit",
 ]
 if controlVerbs.contains(command) {
@@ -191,6 +191,9 @@ case "run":
         selftest: args.contains("--selftest"),
         crashPhase: args.contains("--crashtest") ? .crash : .none
     )
+case "sizeprobe":
+    let target = args.dropFirst().compactMap { Double($0) }.first.map { CGFloat($0) } ?? 360
+    SizeProbe.run(targetWidth: target)
 case "cycle":
     runCycleTest()
 case "unittest":
@@ -227,6 +230,9 @@ default:
       scrollwm focus <next|prev|left|right|N>
                                    change focused column (N is 1-based)
       scrollwm move <left|right>   move focused column within the strip
+      scrollwm move <up|down>      send focused window to the workspace above/below
+      scrollwm workspace <up|down|N>
+                                   switch vertical workspace (niri-style)
       scrollwm width <25|50|75|100|0.0-1.0>
                                    resize focused column
       scrollwm close               close the focused window

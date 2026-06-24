@@ -139,6 +139,8 @@ final class TutorialWindowController: NSObject {
             ("Focus left / right", .focusLeft),
             ("Jump to column 1–9", .jumpModifier),
             ("Move column left / right", .moveColumnLeft),
+            ("Workspace down / up", .workspaceDown),
+            ("Send window to workspace down / up", .moveToWorkspaceDown),
             ("Width 25% / 50% / 75% / 100%", .width25),
             ("Close focused window", .closeWindow),
         ]
@@ -155,6 +157,10 @@ final class TutorialWindowController: NSObject {
                 keys = "\(chordText(config, .focusLeft)) / \(chordText(config, .focusRight))"
             case .moveColumnLeft:
                 keys = "\(chordText(config, .moveColumnLeft)) / \(chordText(config, .moveColumnRight))"
+            case .workspaceDown:
+                keys = "\(chordText(config, .workspaceDown)) / \(chordText(config, .workspaceUp))"
+            case .moveToWorkspaceDown:
+                keys = "\(chordText(config, .moveToWorkspaceDown)) / \(chordText(config, .moveToWorkspaceUp))"
             case .jumpModifier:
                 keys = "\(chordText(config, .jumpModifier)) + 1…9"
             case .width25:

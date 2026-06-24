@@ -100,14 +100,51 @@ func runE2EKeybindingTest() {
         let order2 = controller.debugSlotTitles
         check("Cmd+Shift+H moved focused column back left", order2.firstIndex(of: focusTitle) == 0)
 
+        // --- Cmd+J -> switch to a new vertical workspace below (keyboard tap) ---
+        // Start with all 4 windows on workspace 1, focus column 0.
+        DispatchQueue.main.sync { controller.focus(index: 0) }
+        Thread.sleep(forTimeInterval: 0.2)
+        let wsCountBefore = controller.debugWorkspaceCount
+        let colsBefore = controller.debugSlotCount
+        postKey(38, flags: .maskCommand) // key 'j'
+        Thread.sleep(forTimeInterval: 0.4)
+        check("Cmd+J switched to workspace 2 (index 1)", controller.debugActiveWorkspace == 1)
+        check("Cmd+J created a new empty workspace", controller.debugWorkspaceCount == wsCountBefore + 1)
+        check("Cmd+J new workspace is empty", controller.debugSlotCount == 0)
+
+        // --- Cmd+K -> switch back UP to the original workspace (keyboard tap) ---
+        postKey(40, flags: .maskCommand) // key 'k'
+        Thread.sleep(forTimeInterval: 0.4)
+        check("Cmd+K switched back to workspace 1 (index 0)", controller.debugActiveWorkspace == 0)
+        check("Cmd+K restored the original columns", controller.debugSlotCount == colsBefore)
+        check("Cmd+K pruned the empty trailing workspace",
+              controller.debugWorkspaceCount == wsCountBefore)
+
+        // --- Cmd+Shift+J -> send focused window down to a new workspace + follow ---
+        let sendTitle = controller.debugFocusedTitle
+        postKey(38, flags: [.maskCommand, .maskShift]) // Cmd+Shift+J
+        Thread.sleep(forTimeInterval: 0.4)
+        check("Cmd+Shift+J followed window to workspace 2", controller.debugActiveWorkspace == 1)
+        check("Cmd+Shift+J destination holds the sent window", controller.debugSlotCount == 1)
+        check("Cmd+Shift+J sent the focused window", controller.debugFocusedTitle == sendTitle)
+        // Go back up so the close/release checks below run against the main strip.
+        postKey(40, flags: .maskCommand) // Cmd+K
+        Thread.sleep(forTimeInterval: 0.4)
+        check("back on workspace 1 after workspace tests", controller.debugActiveWorkspace == 0)
+        check("workspace 1 has the remaining columns", controller.debugSlotCount == colsBefore - 1)
+        // Re-focus column 0 for a deterministic close target.
+        DispatchQueue.main.sync { controller.focus(index: 0) }
+        Thread.sleep(forTimeInterval: 0.2)
+
         // --- Cmd+Q -> close focused window (Carbon hotkey) ---
+        let colsBeforeClose = controller.debugSlotCount
         let liveBefore = pids.flatMap { p -> [AXWindowInfo] in
             guard let a = NSRunningApplication(processIdentifier: p) else { return [] }
             return AXSource.windows(for: a)
         }.count
         postKey(12, flags: .maskCommand) // key 'q'
         Thread.sleep(forTimeInterval: 0.7)
-        check("Cmd+Q dropped a column", controller.debugSlotCount == 3)
+        check("Cmd+Q dropped a column", controller.debugSlotCount == colsBeforeClose - 1)
         let liveAfter = pids.flatMap { p -> [AXWindowInfo] in
             guard let a = NSRunningApplication(processIdentifier: p) else { return [] }
             return AXSource.windows(for: a)

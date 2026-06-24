@@ -57,6 +57,51 @@ final class TeleportEngine {
     private(set) var viewportX: CGFloat = 0
     var focusIndex: Int = 0
 
+    // MARK: - Vertical workspaces (niri-style)
+    //
+    // Workspaces are stacked VERTICALLY. Each is an independent horizontal
+    // strip. The ACTIVE workspace's live state is the existing
+    // `slots`/`viewportX`/`focusIndex` above (so every existing code path keeps
+    // working unchanged and pays no extra cost). Inactive workspaces are stashed
+    // here; `workspaces[activeWorkspace]` is a stale placeholder kept only for
+    // ordering — never read its slots for the active index (use the live ones).
+    struct Workspace {
+        var slots: [Slot] = []
+        var viewportX: CGFloat = 0
+        var focusIndex: Int = 0
+    }
+    private var workspaces: [Workspace] = [Workspace()]
+    private(set) var activeWorkspace = 0
+    /// Total number of vertical workspaces (always >= 1).
+    var workspaceCount: Int { workspaces.count }
+
+    /// Slots of workspace `i`, transparently returning the live active slots for
+    /// the active index (whose authoritative copy is `slots`, not the stash).
+    private func workspaceSlots(_ i: Int) -> [Slot] {
+        i == activeWorkspace ? slots : workspaces[i].slots
+    }
+
+    /// Every managed window across ALL workspaces, in (workspace, strip) order.
+    /// Used by crash-recovery persistence and release so no workspace is lost.
+    var allManagedSlots: [Slot] {
+        var out: [Slot] = []
+        for i in workspaces.indices { out += workspaceSlots(i) }
+        return out
+    }
+
+    /// True if `element` is managed in ANY workspace (active or stashed). The
+    /// lifecycle monitor uses this so a window parked in an inactive workspace
+    /// is never re-adopted into the active one (it is still on-screen as the
+    /// shared parking sliver, so the naive current-Space test would re-add it).
+    func isManaged(_ element: AXUIElement) -> Bool {
+        for i in workspaces.indices {
+            if workspaceSlots(i).contains(where: { CFEqual($0.window.element, element) }) {
+                return true
+            }
+        }
+        return false
+    }
+
     let screenFrame: CGRect       // visible frame, AX coordinates (top-left origin)
     /// Spacing between columns and at the strip's outer edges. Config-driven
     /// (`layout.columnGap`); defaults to 12.
@@ -142,6 +187,9 @@ final class TeleportEngine {
         }
         focusIndex = slots.isEmpty ? 0 : 0
         viewportX = 0
+        // A fresh arrange starts from a single workspace.
+        workspaces = [Workspace()]
+        activeWorkspace = 0
         commitAll()
     }
 
@@ -175,6 +223,136 @@ final class TeleportEngine {
         viewportX = viewportTarget(for: slot, mode: focusMode, currentViewportX: viewportX)
         teleport()
         onLayoutChange?()
+    }
+
+    // MARK: - Vertical workspace switching
+
+    /// Switch DOWN (`delta == +1`, niri "workspace-down") or UP
+    /// (`delta == -1`, "workspace-up") by `delta` workspaces. Going down past
+    /// the last workspace creates a fresh empty one (niri-style dynamic
+    /// workspaces); going up past the first is a no-op. Returns the workspace we
+    /// ended on (unchanged on a no-op).
+    @discardableResult
+    func switchWorkspace(by delta: Int) -> Int {
+        guard delta != 0 else { return activeWorkspace }
+        let target = activeWorkspace + delta
+        if target < 0 { return activeWorkspace }            // already at the top
+        if target >= workspaces.count {
+            // Only one trailing empty workspace ever exists: if the current one
+            // is already empty there is nothing below to create.
+            if slots.isEmpty { return activeWorkspace }
+            workspaces.append(Workspace())
+        }
+        activateWorkspace(target)
+        return activeWorkspace
+    }
+
+    /// Move the focused column out of the active workspace and into the one
+    /// `delta` away (creating a new trailing workspace if needed), then FOLLOW
+    /// it there (niri "move-column-to-workspace-down/up"). Returns false when
+    /// nothing is focused or the move is off the top edge.
+    @discardableResult
+    func moveFocusedToWorkspace(by delta: Int) -> Bool {
+        guard slots.indices.contains(focusIndex), delta != 0 else { return false }
+        let target = activeWorkspace + delta
+        if target < 0 { return false }                       // no workspace above
+        if target >= workspaces.count { workspaces.append(Workspace()) }
+
+        // Detach the focused column from the active strip.
+        let moved = slots.remove(at: focusIndex)
+        focusIndex = slots.isEmpty ? 0 : max(0, min(focusIndex, slots.count - 1))
+        compactStrip()
+
+        // Append it to the destination workspace and make it the focus there.
+        workspaces[target].slots.append(moved)
+        workspaces[target].focusIndex = workspaces[target].slots.count - 1
+
+        // Follow the window: activate the destination (this stashes + parks the
+        // source workspace and brings the destination on-screen).
+        activateWorkspace(target)
+        return true
+    }
+
+    /// Jump directly to workspace `index` (0-based), clamped into range. Used by
+    /// the CLI and any future "jump to workspace N" binding.
+    @discardableResult
+    func focusWorkspace(_ index: Int) -> Int {
+        let clamped = max(0, min(workspaces.count - 1, index))
+        if clamped != activeWorkspace { activateWorkspace(clamped) }
+        return activeWorkspace
+    }
+
+    /// The heavy lifting of a workspace switch:
+    ///   1. stash the live active strip back into its slot,
+    ///   2. PARK every window of the outgoing workspace at the shared off-screen
+    ///      corner (so only the active workspace is ever visible),
+    ///   3. load the destination strip into the live state,
+    ///   4. drop a now-vacated trailing empty workspace, and
+    ///   5. re-place + focus the destination on-screen.
+    private func activateWorkspace(_ index: Int) {
+        guard workspaces.indices.contains(index), index != activeWorkspace else { return }
+        let outgoing = activeWorkspace
+
+        // 1. Stash the live active strip.
+        workspaces[activeWorkspace] = Workspace(slots: slots, viewportX: viewportX, focusIndex: focusIndex)
+        // 2. Park the outgoing workspace's windows off-screen.
+        parkWindows(workspaces[outgoing].slots)
+
+        // 3. Load the destination strip into the live state.
+        activeWorkspace = index
+        slots = workspaces[index].slots
+        viewportX = workspaces[index].viewportX
+        focusIndex = workspaces[index].focusIndex
+
+        // 4. Tidy: a workspace we just left that ended up empty and trailing is
+        // removed so the stack never accumulates blank workspaces. This may
+        // shift `activeWorkspace` if a workspace before it is removed.
+        pruneTrailingEmptyWorkspaces()
+
+        // 5. Re-place + focus the destination on-screen.
+        compactStrip()
+        if slots.indices.contains(focusIndex) {
+            // `focus(index:)` recomputes the viewport for the focus mode,
+            // teleports the destination windows back on-screen, and raises the
+            // focused one (pulling its app forward like a normal nav).
+            focus(index: focusIndex)
+        } else {
+            // Empty destination: nothing to place or raise.
+            viewportX = 0
+            focusIndex = 0
+            teleport()
+            onLayoutChange?()
+        }
+    }
+
+    /// Park a set of windows at the shared off-screen corner (see `teleport`'s
+    /// parking discussion). They collapse into one ~40px sliver instead of a row
+    /// of peeking edges, and their `lastCommittedOrigin` is updated so switching
+    /// back re-places them (their on-screen target differs from the park point).
+    private func parkWindows(_ parked: [Slot]) {
+        let p = parkingPoint
+        for slot in parked {
+            guard slot.window.healthy else { continue }
+            if let last = slot.window.lastCommittedOrigin,
+               abs(last.x - p.x) < 0.5, abs(last.y - p.y) < 0.5 { continue }
+            let err = AXSource.setPoint(slot.window.element, kAXPositionAttribute as String, p)
+            if err == .success { slot.window.lastCommittedOrigin = p }
+            else { slot.window.healthy = false }
+        }
+    }
+
+    /// Remove empty workspaces from the END of the stack, keeping at least one
+    /// workspace and never removing the active one. Adjusts `activeWorkspace`
+    /// for any removed entries that sit before it (none can, since we only trim
+    /// the tail past the active index, but the guard keeps it correct if the
+    /// active workspace is itself the last and empty — then we stop).
+    private func pruneTrailingEmptyWorkspaces() {
+        while workspaces.count > 1,
+              let lastIdx = workspaces.indices.last,
+              lastIdx != activeWorkspace,
+              workspaceSlots(lastIdx).isEmpty {
+            workspaces.removeLast()
+        }
     }
 
     /// "Show All Windows": resize every column to an equal share of the viewport
@@ -432,6 +610,10 @@ final class TeleportEngine {
         let viewportWidth: CGFloat
         let focusIndex: Int
         let lastTeleportMs: Double
+        /// Index of the active vertical workspace (0-based).
+        var activeWorkspace: Int = 0
+        /// Total number of vertical workspaces (>= 1).
+        var workspaceCount: Int = 1
     }
 
     var stripState: StripState {
@@ -440,7 +622,9 @@ final class TeleportEngine {
             viewportX: viewportX,
             viewportWidth: screenFrame.width,
             focusIndex: focusIndex,
-            lastTeleportMs: lastTeleportMs
+            lastTeleportMs: lastTeleportMs,
+            activeWorkspace: activeWorkspace,
+            workspaceCount: workspaceCount
         )
     }
 
@@ -463,7 +647,9 @@ final class TeleportEngine {
     @discardableResult
     func releaseAll() -> Int {
         var failures = 0
-        for slot in slots {
+        // Restore EVERY workspace's windows, not just the active strip, so a
+        // window parked in an inactive vertical workspace is also put back.
+        for slot in allManagedSlots {
             let w = slot.window
             _ = AXSource.setPoint(w.element, kAXPositionAttribute as String, w.originalFrame.origin)
             _ = AXSource.setSize(w.element, kAXSizeAttribute as String, w.originalFrame.size)
@@ -481,6 +667,8 @@ final class TeleportEngine {
             }
         }
         slots.removeAll()
+        workspaces = [Workspace()]
+        activeWorkspace = 0
         focusIndex = 0
         viewportX = 0
         onLayoutChange?()

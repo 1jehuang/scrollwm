@@ -747,6 +747,89 @@ enum StripOpsTests {
         )
         check("compute: self windows never floating", mine.isEmpty)
 
+        // --- Vertical workspaces (niri-style) ------------------------------
+        // AX position writes on synthetic elements fail harmlessly, so we only
+        // assert on the engine's model: which windows live in which workspace,
+        // the active index, and that switching preserves/moves columns.
+
+        // A fresh engine has exactly one workspace, active index 0.
+        let ew0 = makeEngine(count: 3)
+        check("workspaces: start with 1 workspace", ew0.workspaceCount == 1)
+        check("workspaces: start active index 0", ew0.stripState.activeWorkspace == 0)
+
+        // Switching DOWN from a non-empty workspace creates a new empty one and
+        // moves there; the old strip's windows leave the live `slots`.
+        let ew1 = makeEngine(count: 3)
+        let titles0 = ew1.slots.map { $0.window.title }
+        ew1.switchWorkspace(by: 1)
+        check("workspaces: switch down creates workspace 2", ew1.workspaceCount == 2)
+        check("workspaces: now on workspace index 1", ew1.stripState.activeWorkspace == 1)
+        check("workspaces: new workspace is empty", ew1.slots.isEmpty)
+
+        // Switching back UP returns to the original strip intact.
+        ew1.switchWorkspace(by: -1)
+        check("workspaces: switch up returns to workspace 0", ew1.stripState.activeWorkspace == 0)
+        check("workspaces: original 3 columns restored", ew1.slots.count == 3)
+        check("workspaces: original column order preserved",
+              ew1.slots.map { $0.window.title } == titles0)
+
+        // The empty trailing workspace we created but left is pruned away.
+        check("workspaces: trailing empty workspace pruned", ew1.workspaceCount == 1)
+
+        // Switching up at the top edge is a no-op (no workspace above index 0).
+        let ewTop = makeEngine(count: 2)
+        ewTop.switchWorkspace(by: -1)
+        check("workspaces: switch up at top is a no-op", ewTop.stripState.activeWorkspace == 0)
+        check("workspaces: no-op did not add a workspace", ewTop.workspaceCount == 1)
+
+        // Switching down from an EMPTY workspace is a no-op (no blank stacking).
+        let ewEmpty = makeEngine(count: 0)
+        ewEmpty.switchWorkspace(by: 1)
+        check("workspaces: switch down from empty is a no-op", ewEmpty.workspaceCount == 1)
+
+        // moveFocusedToWorkspace: send the focused column down and follow it.
+        let ewMove = makeEngine(count: 3)
+        ewMove.focusIndex = 1
+        let movedTitle = ewMove.slots[1].window.title
+        let okMove = ewMove.moveFocusedToWorkspace(by: 1)
+        check("workspaces: moveFocusedToWorkspace returns true", okMove)
+        check("workspaces: followed window down to workspace 1", ewMove.stripState.activeWorkspace == 1)
+        check("workspaces: destination has just the moved window", ewMove.slots.count == 1)
+        check("workspaces: destination column is the moved one",
+              ewMove.slots.first?.window.title == movedTitle)
+        // The source workspace lost exactly that column.
+        ewMove.switchWorkspace(by: -1)
+        check("workspaces: source workspace now has 2 columns", ewMove.slots.count == 2)
+        check("workspaces: moved column gone from source",
+              !ewMove.slots.contains { $0.window.title == movedTitle })
+
+        // moveFocusedToWorkspace up off the top edge is a no-op.
+        let ewMoveTop = makeEngine(count: 2)
+        check("workspaces: move up at top edge is a no-op",
+              ewMoveTop.moveFocusedToWorkspace(by: -1) == false)
+        check("workspaces: failed move kept both columns", ewMoveTop.slots.count == 2)
+
+        // allManagedSlots + isManaged span every workspace (used by restore +
+        // lifecycle so parked windows are never lost or re-adopted).
+        let ewSpan = makeEngine(count: 2)
+        let keepEl = ewSpan.slots[0].window.element
+        ewSpan.focusIndex = 0
+        ewSpan.moveFocusedToWorkspace(by: 1)     // now on ws1 with 1 window
+        check("workspaces: allManagedSlots spans both workspaces", ewSpan.allManagedSlots.count == 2)
+        check("workspaces: isManaged finds a parked window", ewSpan.isManaged(keepEl))
+        let strangerEl = AXUIElementCreateApplication(pid_t(12345))
+        check("workspaces: isManaged false for unmanaged element", !ewSpan.isManaged(strangerEl))
+
+        // focusWorkspace jumps directly to an index (clamped) and releaseAll
+        // resets the whole stack to a single workspace.
+        let ewJump = makeEngine(count: 1)
+        ewJump.switchWorkspace(by: 1)            // ws0 has 1 window -> creates ws1
+        check("workspaces: focusWorkspace clamps high index",
+              ewJump.focusWorkspace(99) == ewJump.workspaceCount - 1)
+        ewJump.releaseAll()
+        check("workspaces: releaseAll resets to single workspace", ewJump.workspaceCount == 1)
+        check("workspaces: releaseAll resets active index", ewJump.stripState.activeWorkspace == 0)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

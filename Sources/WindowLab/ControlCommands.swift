@@ -58,9 +58,27 @@ extension ScrollWMController {
             switch dir {
             case "left":  moveFocused(by: -1)
             case "right": moveFocused(by: 1)
+            case "up":    moveFocusedToWorkspace(by: -1)
+            case "down":  moveFocusedToWorkspace(by: 1)
             default: return "error: usage: move <left|right>"
             }
             return "ok: moved to column \(debugFocusIndex + 1)"
+
+        case "workspace", "ws":
+            guard isManaging else { return "error: not managing; run `scrollwm arrange` first" }
+            guard let arg = args.first?.lowercased() else {
+                return "ok: workspace \(debugActiveWorkspace + 1) of \(debugWorkspaceCount)"
+            }
+            switch arg {
+            case "down", "next": switchWorkspace(by: 1)
+            case "up", "prev", "previous": switchWorkspace(by: -1)
+            default:
+                guard let n = Int(arg), n >= 1 else {
+                    return "error: usage: workspace <up|down|N>"
+                }
+                focusWorkspace(n)
+            }
+            return "ok: on workspace \(debugActiveWorkspace + 1) of \(debugWorkspaceCount)"
 
         case "width":
             guard isManaging else { return "error: not managing; run `scrollwm arrange` first" }
@@ -103,7 +121,7 @@ extension ScrollWMController {
             return "ok: quitting (windows restored)"
 
         default:
-            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move width close focus-mode reload quit"
+            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close focus-mode reload quit"
         }
     }
 
@@ -125,6 +143,8 @@ extension ScrollWMController {
         if isManaging {
             obj["focusedColumn"] = debugFocusIndex + 1
             obj["columns"] = controlColumns()
+            obj["workspace"] = debugActiveWorkspace + 1
+            obj["workspaceCount"] = debugWorkspaceCount
             let floating = floatingWindows
             obj["floatingCount"] = floating.count
             obj["floating"] = floating.map { w -> [String: Any] in

@@ -382,6 +382,24 @@ final class ScrollWMController: NSObject {
         if isManaging { engine.closeFocused(); menuBar.refresh() }
     }
 
+    /// Switch the active vertical workspace (Cmd+J down / Cmd+K up). `delta` is
+    /// +1 for down, -1 for up. No-op while dormant.
+    func switchWorkspace(by delta: Int) {
+        guard isManaging else { return }
+        engine.switchWorkspace(by: delta)
+        RestoreStore.save(engine: engine)
+        menuBar.refresh()
+    }
+
+    /// Send the focused window to the workspace `delta` away and follow it
+    /// (Cmd+Shift+J down / Cmd+Shift+K up). No-op while dormant.
+    func moveFocusedToWorkspace(by delta: Int) {
+        guard isManaging else { return }
+        engine.moveFocusedToWorkspace(by: delta)
+        RestoreStore.save(engine: engine)
+        menuBar.refresh()
+    }
+
     /// Resize the focused column to an arbitrary fraction of the strip width
     /// (CLI `width` verb; the preset keys use `setWidthPreset`).
     func setWidthFraction(_ fraction: CGFloat) {
@@ -452,6 +470,16 @@ final class ScrollWMController: NSObject {
         engine.slots.indices.contains(engine.focusIndex) ? engine.slots[engine.focusIndex].width : 0
     }
     func debugWidth(forFraction f: CGFloat) -> CGFloat { engine.width(forFraction: f) }
+    var debugActiveWorkspace: Int { engine.stripState.activeWorkspace }
+    var debugWorkspaceCount: Int { engine.stripState.workspaceCount }
+
+    /// Jump directly to a 1-based workspace index (CLI `workspace N`).
+    func focusWorkspace(_ oneBased: Int) {
+        guard isManaging else { return }
+        engine.focusWorkspace(oneBased - 1)
+        RestoreStore.save(engine: engine)
+        menuBar.refresh()
+    }
 
     // MARK: - Hotkeys
 
@@ -531,6 +559,10 @@ final class ScrollWMController: NSObject {
         bind(.focusRight) { [weak self] in self?.focusNext() }
         bind(.moveColumnLeft) { [weak self] in self?.moveFocused(by: -1) }
         bind(.moveColumnRight) { [weak self] in self?.moveFocused(by: 1) }
+        bind(.workspaceDown) { [weak self] in self?.switchWorkspace(by: 1) }
+        bind(.workspaceUp) { [weak self] in self?.switchWorkspace(by: -1) }
+        bind(.moveToWorkspaceDown) { [weak self] in self?.moveFocusedToWorkspace(by: 1) }
+        bind(.moveToWorkspaceUp) { [weak self] in self?.moveFocusedToWorkspace(by: -1) }
 
         if tap.start() {
             moveTap = tap
@@ -719,8 +751,11 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
 
         if managing {
             let state = engine.stripState
+            let wsSuffix = state.workspaceCount > 1
+                ? String(format: " · workspace %d/%d", state.activeWorkspace + 1, state.workspaceCount)
+                : ""
             let header = NSMenuItem(
-                title: String(format: "Managing %d windows · teleport %.1f ms", state.slots.count, state.lastTeleportMs),
+                title: String(format: "Managing %d windows · teleport %.1f ms%@", state.slots.count, state.lastTeleportMs, wsSuffix),
                 action: nil, keyEquivalent: ""
             )
             header.isEnabled = false

@@ -292,6 +292,14 @@ struct ScrollWMConfig: Equatable {
         "moveColumnLeft":  "cmd+shift+h",       // (tap) move focused column left
         "moveColumnRight": "cmd+shift+l",       // (tap) move focused column right
 
+        // Vertical workspaces (niri-style): the strip you see is one workspace;
+        // stack more above/below. Switching parks the other workspace's windows
+        // off-screen. Going "down" past the last workspace makes a new empty one.
+        "workspaceDown":       "cmd+j",         // (tap) switch to workspace below
+        "workspaceUp":         "cmd+k",         // (tap) switch to workspace above
+        "moveToWorkspaceDown": "cmd+shift+j",   // (tap) send focused window down + follow
+        "moveToWorkspaceUp":   "cmd+shift+k",   // (tap) send focused window up + follow
+
         "width25":  ["opt+1", "cmd+1"],
         "width50":  ["opt+2", "cmd+2"],
         "width75":  ["opt+3", "cmd+3"],
@@ -324,6 +332,10 @@ enum KeyAction: String, CaseIterable {
     case focusRight
     case moveColumnLeft
     case moveColumnRight
+    case workspaceDown
+    case workspaceUp
+    case moveToWorkspaceDown
+    case moveToWorkspaceUp
     case width25
     case width50
     case width75
@@ -339,6 +351,10 @@ enum KeyAction: String, CaseIterable {
         .focusRight:      ["cmd+l"],
         .moveColumnLeft:  ["cmd+shift+h"],
         .moveColumnRight: ["cmd+shift+l"],
+        .workspaceDown:       ["cmd+j"],
+        .workspaceUp:         ["cmd+k"],
+        .moveToWorkspaceDown: ["cmd+shift+j"],
+        .moveToWorkspaceUp:   ["cmd+shift+k"],
         .width25:         ["opt+1", "cmd+1"],
         .width50:         ["opt+2", "cmd+2"],
         .width75:         ["opt+3", "cmd+3"],

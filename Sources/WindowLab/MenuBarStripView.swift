@@ -311,6 +311,12 @@ final class MenuBarStripView: NSView {
     private var modeFade = Spring(0, response: 0.34, dampingFraction: 0.9)
     /// Horizontal page slide for workspace switches (icon-widths, springs to 0).
     private var pageSlide = Spring(0, response: 0.5, dampingFraction: 0.8)
+    /// Vertical page slide for VERTICAL workspace switches (icon-heights ->0).
+    private var pageSlideY = Spring(0, response: 0.5, dampingFraction: 0.82)
+    /// Active workspace index + count, for the little stacked indicator and to
+    /// detect a switch between two `apply` calls.
+    private var activeWorkspace = 0
+    private var workspaceCount = 1
     /// Glowing selector that travels to the focused column (canvas center x).
     private var focusGlow = Spring(0, response: 0.32, dampingFraction: 0.7)
     private var focusGlowActive = false
@@ -361,6 +367,17 @@ final class MenuBarStripView: NSView {
         dormant = !managing || state.slots.isEmpty
         modeFade.target = dormant ? 0 : 1
 
+        // Detect a vertical workspace switch and play the page slide. Direction
+        // mirrors the strip: switching DOWN (active index grows) slides the new
+        // workspace UP from below. Skip on first apply / mode changes.
+        if !firstApply && managing && lastManaging
+            && state.activeWorkspace != activeWorkspace {
+            animateWorkspaceSwitchVertical(
+                direction: state.activeWorkspace > activeWorkspace ? 1 : -1)
+        }
+        activeWorkspace = state.activeWorkspace
+        workspaceCount = state.workspaceCount
+
         // 1. Reconcile slot set against the new state (by stable id).
         reconcile(state: state, firstApply: firstApply, now: now)
 
@@ -399,6 +416,23 @@ final class MenuBarStripView: NSView {
         pageSlide.value = Double(direction) * w
         pageSlide.target = 0
         // A bright sweep in the travel direction sells the transition.
+        flourishes.append(Flourish(
+            kind: .sweep, canvasX: 0, birth: CACurrentMediaTime(),
+            duration: 0.42, hue: NSColor.controlAccentColor
+        ))
+        ensureAnimating()
+    }
+
+    /// Slide the strip VERTICALLY like flipping through stacked workspaces.
+    /// `direction`: +1 = switched to a workspace BELOW (new content rises up
+    /// from the bottom), -1 = a workspace ABOVE (drops in from the top).
+    func animateWorkspaceSwitchVertical(direction: Int) {
+        let h = Double(max(bounds.height, 12))
+        // New content starts offset opposite the travel direction and springs
+        // home: going down means it enters from below (negative y in flipped-up
+        // AppKit coords), so seed +/- accordingly.
+        pageSlideY.value = Double(-direction) * h
+        pageSlideY.target = 0
         flourishes.append(Flourish(
             kind: .sweep, canvasX: 0, birth: CACurrentMediaTime(),
             duration: 0.42, hue: NSColor.controlAccentColor
@@ -529,7 +563,7 @@ final class MenuBarStripView: NSView {
     func advance(dt: Double, now: CFTimeInterval) {
         modeFade.step(dt)
         viewportX.step(dt); viewportW.step(dt)
-        pageSlide.step(dt); focusGlow.step(dt)
+        pageSlide.step(dt); pageSlideY.step(dt); focusGlow.step(dt)
         for s in slots { s.step(dt, now: now) }
 
         // Reap fully-exited columns and dead flourishes.
@@ -541,7 +575,7 @@ final class MenuBarStripView: NSView {
 
     private func everythingSettled() -> Bool {
         modeFade.isSettled && viewportX.isSettled && viewportW.isSettled &&
-        pageSlide.isSettled && focusGlow.isSettled &&
+        pageSlide.isSettled && pageSlideY.isSettled && focusGlow.isSettled &&
         flourishes.isEmpty && slots.allSatisfy { $0.settled }
     }
 
@@ -592,7 +626,9 @@ final class MenuBarStripView: NSView {
         let slidePx = CGFloat(pageSlide.value)
         func mapX(_ x: Double) -> CGFloat { rect.minX + CGFloat(x - minX) * scale + slidePx }
 
-        let top = rect.minY + vInset
+        // Vertical workspace-switch slide: nudge the whole strip band up/down.
+        let slideY = CGFloat(pageSlideY.value)
+        let top = rect.minY + vInset + slideY
         let bottomH = rect.height - vInset * 2
 
         // (Focus glow halo removed: the focused column is highlighted directly
@@ -650,6 +686,31 @@ final class MenuBarStripView: NSView {
         // 4. Flourishes on top.
         let now = CACurrentMediaTime()
         for f in flourishes { drawFlourish(f, now: now, mapX: mapX, top: top, bottomH: bottomH, alpha: alpha) }
+
+        // 5. Vertical-workspace indicator: a tiny stack of dots at the top-left,
+        // one per workspace, the active one filled. Only when >1 workspace.
+        drawWorkspaceIndicator(in: rect, alpha: alpha)
+    }
+
+    /// Stacked dots showing which vertical workspace is active (niri-style).
+    /// Drawn only when there is more than one workspace so single-workspace
+    /// users see no extra chrome.
+    private func drawWorkspaceIndicator(in rect: NSRect, alpha: Double) {
+        guard workspaceCount > 1 else { return }
+        let dot: CGFloat = 1.6
+        let spacing: CGFloat = 1.3
+        let n = min(workspaceCount, 6)            // cap so a tall stack still fits
+        let totalH = CGFloat(n) * dot + CGFloat(n - 1) * spacing
+        var y = rect.midY + totalH / 2 - dot      // top-down (AppKit y grows up)
+        let x = rect.minX + 0.5
+        for i in 0..<n {
+            let on = i == min(activeWorkspace, n - 1)
+            let r = NSRect(x: x, y: y, width: dot, height: dot)
+            let p = NSBezierPath(ovalIn: r)
+            NSColor.labelColor.withAlphaComponent((on ? 0.95 : 0.35) * alpha).setFill()
+            p.fill()
+            y -= dot + spacing
+        }
     }
 
     private func drawFlourish(_ f: Flourish, now: CFTimeInterval,
