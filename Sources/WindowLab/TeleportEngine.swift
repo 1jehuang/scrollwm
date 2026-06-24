@@ -177,6 +177,51 @@ final class TeleportEngine {
         onLayoutChange?()
     }
 
+    /// "Show All Windows": resize every column to an equal share of the viewport
+    /// so all managed windows are visible at once, then scroll the viewport back
+    /// to the strip origin. Best-effort: when there are too many windows to fit
+    /// at `minColumnWidth`, columns stay at the floor width and the strip may
+    /// still overflow, in which case we simply show it from the start.
+    ///
+    /// Like every resize path, sizes are reconciled against the live AX frame
+    /// (apps clamp to their own minimums while still reporting `.success`), so
+    /// the model never diverges from reality.
+    func fitAllColumns() {
+        guard !slots.isEmpty else { return }
+        let target = equalShareWidth(count: slots.count)
+        for i in slots.indices {
+            // Optimistically update the model so a missing readback (unhealthy
+            // app) still reflects the requested width.
+            slots[i].width = target
+            let slot = slots[i]
+            guard slot.window.healthy else { continue }
+            _ = AXSource.setSize(
+                slot.window.element,
+                kAXSizeAttribute as String,
+                CGSize(width: target, height: slot.height)
+            )
+            if let actual = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
+                slots[i].width = actual.width
+                slots[i].height = actual.height
+            }
+        }
+        compactStrip()
+        viewportX = 0          // show the strip from its leading edge
+        teleport()
+        onLayoutChange?()
+    }
+
+    /// Equal-share column width so `count` columns tile the viewport with gaps:
+    ///   leftMargin + count*w + (count-1)*gap + rightMargin = V,  margins == gap
+    ///     => w = (V - (count+1)*gap) / count
+    /// This is exactly `width(forFraction: 1/count)`. Floored at
+    /// `minColumnWidth` so a very crowded strip overflows rather than collapsing
+    /// a window to nothing.
+    func equalShareWidth(count: Int) -> CGFloat {
+        guard count > 0 else { return minColumnWidth }
+        return width(forFraction: 1.0 / CGFloat(count))
+    }
+
     /// Compute where the viewport's left edge should sit so that `slot` is
     /// shown according to `mode`. Pure function (no side effects) so it can be
     /// unit-tested directly.

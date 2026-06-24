@@ -570,6 +570,36 @@ enum StripOpsTests {
         check("width parse: 'abc' rejected", ScrollWMController.parseWidthFraction("abc") == nil)
         check("width parse: '-25' rejected", ScrollWMController.parseWidthFraction("-25") == nil)
 
+        // --- fitAllColumns: equalize every column to fit on screen ---
+        // Equal-share width is exactly width(forFraction: 1/count), so N columns
+        // tile the viewport with symmetric gaps. After fit, the strip is compact,
+        // the viewport is reset to the origin, and (for counts that fit above the
+        // min width) the last column ends one gap short of the screen edge.
+        let efit = makeEngine(count: 4, width: 700, screenWidth: 1600)
+        efit.focusIndex = 2
+        efit.setViewportXForTest(5000) // pretend we'd scrolled far away
+        let shareW = efit.equalShareWidth(count: 4)
+        check("equalShareWidth == width(1/4)", abs(shareW - efit.width(forFraction: 0.25)) < 0.5)
+        efit.fitAllColumns()
+        check("fitAll: every column equalized to share width",
+              efit.slots.allSatisfy { abs($0.width - shareW) < 0.5 })
+        check("fitAll: strip stays compact", isCompact(efit))
+        check("fitAll: viewport reset to origin", efit.viewportX == 0)
+        let lastFit = efit.slots.last!
+        check("fitAll: last column ends one gap short of the screen edge",
+              abs((lastFit.canvasX + lastFit.width) - (efit.screenFrame.width - efit.gap)) < 1.0)
+
+        // fitAllColumns on an empty strip is a harmless no-op.
+        let efitEmpty = makeEngine(count: 0)
+        efitEmpty.fitAllColumns()
+        check("fitAll on empty strip is a no-op", efitEmpty.slots.isEmpty)
+
+        // Too many windows to fit: columns floor at minColumnWidth (never zero).
+        let efitMany = makeEngine(count: 50, width: 300, screenWidth: 1600)
+        efitMany.fitAllColumns()
+        check("fitAll: crowded strip floors at minColumnWidth",
+              efitMany.slots.allSatisfy { $0.width >= efitMany.minColumnWidth - 0.5 })
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

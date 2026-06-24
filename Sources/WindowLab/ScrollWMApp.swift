@@ -246,6 +246,46 @@ final class ScrollWMController: NSObject {
         isManaging ? release() : arrange()
     }
 
+    /// "Show All Windows": equalize every managed column so all windows are
+    /// visible on screen at once (an overview), scrolled to the strip's start.
+    /// No-op while dormant. Persists the new frames for crash recovery.
+    func showAllWindows() {
+        guard isManaging else { return }
+        engine.fitAllColumns()
+        RestoreStore.save(engine: engine)
+        menuBar.refresh()
+        print("show all: equalized \(engine.slots.count) columns to fit")
+    }
+
+    /// "Arrange All Windows": arrange the desktop when dormant, or force a full
+    /// resync when already managing so any windows opened since the last arrange
+    /// are adopted, then show them all. This is the one-shot "tidy everything"
+    /// action from the menu.
+    func arrangeAllWindows() {
+        if !isManaging {
+            arrange()
+            // Equalize right after arranging so the user sees everything at once.
+            if isManaging { engine.fitAllColumns(); RestoreStore.save(engine: engine); menuBar.refresh() }
+            return
+        }
+        // Already managing: pull in any newly-opened current-Space windows, then
+        // equalize so the freshly-adopted ones are visible too. `resync` runs its
+        // heavy enumeration on a background queue and applies on main, so we
+        // equalize once now (current columns) and again shortly after for any
+        // windows the resync adopts.
+        lifecycle?.resync()
+        engine.fitAllColumns()
+        RestoreStore.save(engine: engine)
+        menuBar.refresh()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, self.isManaging else { return }
+            self.engine.fitAllColumns()
+            RestoreStore.save(engine: self.engine)
+            self.menuBar.refresh()
+        }
+        print("arrange all: resynced + equalized \(engine.slots.count) columns")
+    }
+
     func quit() {
         stopControlServer()
         release()
@@ -601,6 +641,14 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             releaseItem.target = self
             menu.addItem(releaseItem)
 
+            let showAllItem = NSMenuItem(title: "Show All Windows (fit on screen)", action: #selector(showAllAction), keyEquivalent: "")
+            showAllItem.target = self
+            menu.addItem(showAllItem)
+
+            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (adopt new + fit)", action: #selector(arrangeAllAction), keyEquivalent: "")
+            arrangeAllItem.target = self
+            menu.addItem(arrangeAllItem)
+
             let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip", action: nil, keyEquivalent: "")
             arrangeItem.isEnabled = false // already managing
             menu.addItem(arrangeItem)
@@ -613,6 +661,14 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip", action: #selector(arrangeAction), keyEquivalent: "")
             arrangeItem.target = self
             menu.addItem(arrangeItem)
+
+            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (adopt new + fit)", action: #selector(arrangeAllAction), keyEquivalent: "")
+            arrangeAllItem.target = self
+            menu.addItem(arrangeAllItem)
+
+            let showAllItem = NSMenuItem(title: "Show All Windows (fit on screen)", action: nil, keyEquivalent: "")
+            showAllItem.isEnabled = false // nothing managed yet
+            menu.addItem(showAllItem)
 
             let releaseItem = NSMenuItem(title: "Release Windows (restore original positions)", action: nil, keyEquivalent: "")
             releaseItem.isEnabled = false // nothing to release while dormant
@@ -670,6 +726,8 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     @objc private func selectWindow(_ sender: NSMenuItem) { controller.focus(index: sender.tag) }
     @objc private func arrangeAction() { controller.arrange() }
     @objc private func releaseAction() { controller.release() }
+    @objc private func showAllAction() { controller.showAllWindows() }
+    @objc private func arrangeAllAction() { controller.arrangeAllWindows() }
     @objc private func setFocusModeAction(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String,
            let mode = TeleportEngine.FocusMode(rawValue: raw) {
