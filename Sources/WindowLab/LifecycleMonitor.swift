@@ -208,11 +208,22 @@ final class LifecycleMonitor {
             }
         }
 
+        // Reconcile each surviving column's stored size against the live AX
+        // frame. The teleport pass only ever REPOSITIONS windows, so any size
+        // change made outside our resize verbs (a terminal snapping to whole
+        // character cells, an app clamping to its own minimum, the user
+        // dragging an edge, or a `setSize` whose immediate read-back was stale)
+        // would otherwise leave the model permanently diverged from reality:
+        // compacted columns overlap or leave gaps and the menu-bar mini-map
+        // shows the wrong widths. This is the safety net that makes size
+        // self-heal even when the per-resize read-back lied.
+        let sizeChanged = engine.reconcileSizes(from: standard)
+
         adoptedCount += newWindows.count
         removedCount += removed
         lastResyncMs = Double(Clock.nowAbsNs() &- start) / 1e6
 
-        if removed > 0 || !newWindows.isEmpty {
+        if removed > 0 || !newWindows.isEmpty || sizeChanged {
             engine.compactStrip()
             if let lastInsertedIndex {
                 // Focus + scroll the viewport to reveal the newly opened window.
@@ -372,5 +383,43 @@ extension TeleportEngine {
             slots[i].canvasX = x
             x += slots[i].width + gap
         }
+    }
+
+    /// Reconcile each managed column's stored size against the freshly
+    /// enumerated AX frames (`standard`, the same snapshot the resync diff
+    /// uses). The teleport pass only repositions windows, never resizes them,
+    /// so the model's `width`/`height` are only ever set at adopt time or by a
+    /// resize verb. When a window changes size by any OTHER route, the model
+    /// silently diverges from reality. This pulls the live size back in.
+    ///
+    /// Matching is by AX element identity (`CFEqual`), so it is exact and never
+    /// confuses two windows. Returns true if any column's size changed beyond a
+    /// 1pt tolerance, signalling the caller to re-pack + teleport.
+    @discardableResult
+    func reconcileSizes(from standard: [AXWindowInfo]) -> Bool {
+        var changed = false
+        for i in slots.indices {
+            let el = slots[i].window.element
+            guard let info = standard.first(where: { CFEqual($0.element, el) }) else { continue }
+            // The window is present in a fresh AX enumeration with a readable
+            // frame, so it is reachable again. Clear any stale `unhealthy` flag
+            // (set by a past failed teleport); otherwise a single transient AX
+            // failure would strand the column forever - resize verbs skip it and
+            // teleport never repositions it. Recovering health here lets the
+            // very next teleport place it correctly.
+            if !slots[i].window.healthy {
+                slots[i].window.healthy = true
+                changed = true
+            }
+            let liveW = info.frame.width
+            let liveH = info.frame.height
+            if abs(slots[i].width - liveW) > 1 || abs(slots[i].height - liveH) > 1 {
+                slots[i].width = liveW
+                slots[i].height = liveH
+                changed = true
+            }
+        }
+        if changed { onLayoutChange?() }
+        return changed
     }
 }

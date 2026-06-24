@@ -190,11 +190,17 @@ final class TeleportEngine {
         guard !slots.isEmpty else { return }
         let target = equalShareWidth(count: slots.count)
         for i in slots.indices {
-            // Optimistically update the model so a missing readback (unhealthy
-            // app) still reflects the requested width.
-            slots[i].width = target
             let slot = slots[i]
+            // Skip unreachable windows entirely: with no AX write and no
+            // readback, stamping `target` into the model would be a lie that
+            // strands the column at a width the real window never adopts (the
+            // "every column claims the same width but several really differ"
+            // desync). Leave the last known real size; the resync size-
+            // reconcile refreshes it once the window is reachable again.
             guard slot.window.healthy else { continue }
+            // Optimistically update the model so a stale readback still reflects
+            // the requested width; the readback below + resync correct it.
+            slots[i].width = target
             _ = AXSource.setSize(
                 slot.window.element,
                 kAXSizeAttribute as String,

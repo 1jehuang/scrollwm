@@ -49,12 +49,15 @@ extension TeleportEngine {
     func setFocusedWidth(fraction: CGFloat) -> Bool {
         guard slots.indices.contains(focusIndex) else { return false }
         let requestedWidth = width(forFraction: fraction)
-        // Optimistically update the model so a missing readback (hung/unhealthy
-        // app) still reflects the user's intent.
-        slots[focusIndex].width = requestedWidth
 
         let slot = slots[focusIndex]
         if slot.window.healthy {
+            // Optimistically update the model so a missing/stale readback still
+            // reflects the user's intent. Safe ONLY for a healthy window: the
+            // immediate readback below plus `scheduleWidthReconcile` and the
+            // periodic resync all pull the model back to the real frame, so any
+            // optimism is short-lived.
+            slots[focusIndex].width = requestedWidth
             _ = AXSource.setSize(
                 slot.window.element,
                 kAXSizeAttribute as String,
@@ -68,6 +71,12 @@ extension TeleportEngine {
                 slots[focusIndex].height = actual.height
             }
         }
+        // For an UNHEALTHY window we deliberately do NOT touch the model: there
+        // is no AX write and no readback, so writing `requestedWidth` would be a
+        // pure lie that strands the column at a width the real window never
+        // adopts (the exact "all columns claim 717 but 5 are really 735"
+        // desync). Keep the last known real size; the resync size-reconcile
+        // will refresh it if/when the window becomes reachable again.
 
         compactStrip()
         focus(index: focusIndex) // re-centers viewport on the resized column

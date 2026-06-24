@@ -110,6 +110,69 @@ enum StripOpsTests {
         let eEmpty = makeEngine(count: 0)
         check("setFocusedWidth on empty == false", eEmpty.setFocusedWidth(fraction: 0.5) == false)
 
+        // --- setFocusedWidth must NOT touch the model for an UNHEALTHY window ---
+        // An unreachable window gets no AX write and no readback, so writing the
+        // requested width would strand the column at a size the real window
+        // never adopts (the "all columns claim the same width but several really
+        // differ" desync). The model must keep the last known real size.
+        let eUnhealthy = makeEngine(count: 3, width: 735)
+        eUnhealthy.focusIndex = 1
+        eUnhealthy.slots[1].window.healthy = false
+        let okUnhealthy = eUnhealthy.setFocusedWidth(fraction: 0.5)
+        check("setFocusedWidth still returns true for unhealthy", okUnhealthy)
+        check("unhealthy column keeps its real width (not the request)",
+              abs(eUnhealthy.slots[1].width - 735) < 0.5)
+
+        // --- reconcileSizes pulls model widths back to the live AX frame ---
+        // Simulate the real-world desync: the model thinks every column is 717
+        // but the live frames report a couple at 735. A resync must heal them.
+        let eRec = makeEngine(count: 4, width: 717)
+        var liveFrames: [AXWindowInfo] = []
+        for (i, slot) in eRec.slots.enumerated() {
+            let realW: CGFloat = (i == 1 || i == 3) ? 735 : 717
+            liveFrames.append(AXWindowInfo(
+                pid: slot.window.pid,
+                appName: slot.window.appName,
+                element: slot.window.element,
+                title: slot.window.title,
+                role: kAXWindowRole as String,
+                subrole: kAXStandardWindowSubrole as String,
+                frame: CGRect(x: 0, y: 0, width: realW, height: slot.height),
+                isMinimized: false,
+                isFullscreen: false
+            ))
+        }
+        let recChanged = eRec.reconcileSizes(from: liveFrames)
+        check("reconcileSizes reports a change", recChanged)
+        check("reconcileSizes heals col1 to live 735", abs(eRec.slots[1].width - 735) < 0.5)
+        check("reconcileSizes heals col3 to live 735", abs(eRec.slots[3].width - 735) < 0.5)
+        check("reconcileSizes leaves matching col0 at 717", abs(eRec.slots[0].width - 717) < 0.5)
+        check("strip recompacts cleanly after size reconcile",
+              { eRec.compactStrip(); return isCompact(eRec) }())
+
+        // --- reconcileSizes is a no-op when sizes already match ---
+        let recNoop = eRec.reconcileSizes(from: liveFrames)
+        check("reconcileSizes no-op when already in sync", recNoop == false)
+
+        // --- reconcileSizes recovers a window's health on reappearance ---
+        // A past transient AX failure marked the window unhealthy; seeing it in a
+        // fresh enumeration proves it is reachable, so health must be restored or
+        // resize/teleport would skip it forever.
+        let eHeal = makeEngine(count: 2, width: 717)
+        eHeal.slots[0].window.healthy = false
+        let healFrames = eHeal.slots.map { slot in
+            AXWindowInfo(
+                pid: slot.window.pid, appName: slot.window.appName,
+                element: slot.window.element, title: slot.window.title,
+                role: kAXWindowRole as String, subrole: kAXStandardWindowSubrole as String,
+                frame: CGRect(x: 0, y: 0, width: 717, height: slot.height),
+                isMinimized: false, isFullscreen: false
+            )
+        }
+        let healChanged = eHeal.reconcileSizes(from: healFrames)
+        check("reconcileSizes recovers stale unhealthy flag", eHeal.slots[0].window.healthy)
+        check("reconcileSizes reports change on health recovery alone", healChanged)
+
         // --- moveFocused reorders columns ---
         let e2 = makeEngine(count: 3) // titles Win0,Win1,Win2
         e2.focusIndex = 0
