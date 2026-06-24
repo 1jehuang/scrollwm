@@ -128,6 +128,41 @@ enum MenuBarAnimationTests {
                                     new: state([1], focus: 0, widths: [400.4]), newManaging: true)
         check("sub-pixel width jitter ignored", jit.isEmpty)
 
+        // MARK: Adaptive width metrics
+
+        // One full screen of strip maps to exactly pointsPerScreen.
+        let oneScreen = MenuBarMetrics.contentWidth(
+            span: 1600, screenWidth: 1600, pointsPerScreen: 30, minWidth: 30, maxWidth: 220)
+        check("one screen -> pointsPerScreen", abs(oneScreen - 30) < 0.01)
+
+        // Two screens of strip is twice as wide (linear growth as windows pile up).
+        let twoScreens = MenuBarMetrics.contentWidth(
+            span: 3200, screenWidth: 1600, pointsPerScreen: 30, minWidth: 30, maxWidth: 220)
+        check("two screens -> double width", abs(twoScreens - 60) < 0.01)
+
+        // A 25% strip never goes below the floor (min clamp).
+        let quarter = MenuBarMetrics.contentWidth(
+            span: 400, screenWidth: 1600, pointsPerScreen: 30, minWidth: 30, maxWidth: 220)
+        check("sub-screen clamps to min", abs(quarter - 30) < 0.01)
+
+        // 25% vs 50% column density is constant below the cap: doubling the
+        // span doubles the width (so each window keeps a fixed on-map size).
+        let w25 = MenuBarMetrics.contentWidth(
+            span: 2000, screenWidth: 1600, pointsPerScreen: 30, minWidth: 30, maxWidth: 999)
+        let w50 = MenuBarMetrics.contentWidth(
+            span: 4000, screenWidth: 1600, pointsPerScreen: 30, minWidth: 30, maxWidth: 999)
+        check("density constant below cap", abs((w50 / w25) - 2) < 0.01)
+
+        // A huge strip is capped so it never overruns the menu bar.
+        let huge = MenuBarMetrics.contentWidth(
+            span: 100_000, screenWidth: 1600, pointsPerScreen: 30, minWidth: 30, maxWidth: 220)
+        check("huge strip capped at max", abs(huge - 220) < 0.01)
+
+        // Degenerate inputs fall back to the floor, never NaN/negative.
+        let degZero = MenuBarMetrics.contentWidth(
+            span: 0, screenWidth: 0, pointsPerScreen: 30, minWidth: 30, maxWidth: 220)
+        check("degenerate input -> min", degZero == 30)
+
         print("\n[animtest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

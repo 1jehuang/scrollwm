@@ -138,6 +138,7 @@ final class ScrollWMController: NSObject {
             engine.compactStrip()
             engine.focus(index: engine.focusIndex)
         }
+        menuBar.applyConfig(config)
         menuBar.refresh()
         print("config reloaded from \(ScrollWMConfig.fileURL.path)")
     }
@@ -571,9 +572,12 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
 
     /// High-refresh animated mini-map hosted inside the status button.
     private let stripView = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 30, height: 22))
-    /// Status item width: a touch wider than the old 26 to give the animation
-    /// breathing room while still fitting crowded/notched menu bars.
-    static let itemWidth: CGFloat = 30
+    /// Horizontal padding around the mini-map inside the status item (points),
+    /// split across both edges. The status item length is content + this.
+    static let hPadding: CGFloat = 4
+    /// The mini-map's current desired CONTENT width (points). Driven by the
+    /// view as the strip grows/shrinks; the status item length tracks it.
+    private var contentWidth: CGFloat = 30
 
     static let autosaveName = "ScrollWMMain"
 
@@ -582,10 +586,22 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         self.engine = engine
         super.init()
 
+        // Seed the mini-map sizing from config and start at the configured floor.
+        let mb = controller.config.menuBar
+        stripView.pointsPerScreen = mb.pointsPerScreen
+        stripView.minContentWidth = mb.minWidth
+        stripView.maxContentWidth = mb.maxWidth
+        contentWidth = mb.minWidth
+
         // Notch workaround (see MenuBarController).
         let positionKey = "NSStatusItem Preferred Position \(Self.autosaveName)"
         if UserDefaults.standard.object(forKey: positionKey) == nil {
             UserDefaults.standard.set(400.0, forKey: positionKey)
+        }
+
+        // Grow/shrink the status item as the strip changes size.
+        stripView.onDesiredContentWidthChange = { [weak self] width in
+            self?.setContentWidth(width)
         }
 
         createStatusItem()
@@ -604,8 +620,9 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     }
 
     private func createStatusItem() {
-        // Compact width: crowded menu bars may have very little free space.
-        statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
+        // Length tracks the live mini-map width (content + padding). Starts at
+        // the configured floor; grows/shrinks as windows are added/removed.
+        statusItem = NSStatusBar.system.statusItem(withLength: contentWidth + Self.hPadding)
         statusItem.autosaveName = NSStatusItem.AutosaveName(Self.autosaveName)
 
         // Host the high-refresh animated mini-map inside the status button. The
@@ -624,6 +641,17 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+    }
+
+    /// Update the status item's length to fit a new mini-map content width.
+    /// Called from the view's width callback as the strip grows/shrinks. Setting
+    /// `statusItem.length` resizes the button in place (no teardown), so the
+    /// hosted view animates the new geometry smoothly.
+    private func setContentWidth(_ width: CGFloat) {
+        let clamped = max(stripView.minContentWidth, min(width, stripView.maxContentWidth))
+        guard abs(clamped - contentWidth) >= 0.5 else { return }
+        contentWidth = clamped
+        statusItem?.length = clamped + Self.hPadding
     }
 
     private var healAttempt = 0
@@ -657,6 +685,18 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         // the previous state and animates the change at the display's refresh
         // rate, then idles its display link once everything settles.
         stripView.apply(state: engine.stripState, managing: controller.isManaging)
+    }
+
+    /// Re-read mini-map sizing from config (called on Reload Config) and apply
+    /// it live: the next `refresh()` re-evaluates the desired width.
+    func applyConfig(_ config: ScrollWMConfig) {
+        let mb = config.menuBar
+        stripView.pointsPerScreen = mb.pointsPerScreen
+        stripView.minContentWidth = mb.minWidth
+        stripView.maxContentWidth = mb.maxWidth
+        // Re-clamp the current item to the new bounds immediately.
+        setContentWidth(contentWidth)
+        refresh()
     }
 
     var isVisibleInMenuBar: Bool {

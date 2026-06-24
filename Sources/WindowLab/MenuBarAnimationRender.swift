@@ -46,11 +46,26 @@ enum MenuBarAnimationRender {
 
     static func run(outPath: String) -> Bool {
         let scale: CGFloat = 6           // upscale so the tiny icon is legible
-        let iconW: CGFloat = 30, iconH: CGFloat = 22
-        let cellW = Int(iconW * scale), cellH = Int(iconH * scale)
+        let iconH: CGFloat = 22
+        // Adaptive width: the icon grows with the strip. Size cells to the
+        // widest content the timeline produces so each frame draws at its TRUE
+        // width (left-aligned), making the growth visible on the contact sheet.
+        let maxContent: CGFloat = 220
+        let cellW = Int((maxContent + 4) * scale), cellH = Int(iconH * scale)
         let fps = 60.0, dt = 1.0 / fps
 
-        let view = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: iconW, height: iconH))
+        let view = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 30, height: iconH))
+        // Match the production defaults so the sheet reflects real behavior.
+        view.pointsPerScreen = 30
+        view.minContentWidth = 30
+        view.maxContentWidth = maxContent
+        // The view reports its desired content width; resize the layer to it so
+        // each snapshot is captured at the icon's real adaptive size.
+        var currentContent: CGFloat = 30
+        view.onDesiredContentWidthChange = { width in
+            currentContent = width
+            view.frame = NSRect(x: 0, y: 0, width: width, height: iconH)
+        }
 
         // Virtual clock: flourish birth times and frame advances share one base.
         let base = CACurrentMediaTime()
@@ -66,6 +81,8 @@ enum MenuBarAnimationRender {
             Step(label: "focus->4",  apply: { view.apply(state: state([1,2,3,4], focus: 3), managing: true, now: vt) }, holdFrames: 18),
             Step(label: "open win5", apply: { view.apply(state: state([1,2,3,4,5], focus: 4), managing: true, now: vt) }, holdFrames: 20),
             Step(label: "widen #5",  apply: { view.apply(state: state([1,2,3,4,5], focus: 4, widths: [360,360,360,360,760]), managing: true, now: vt) }, holdFrames: 18),
+            Step(label: "8 windows", apply: { view.apply(state: state([1,2,3,4,5,6,7,8], focus: 7), managing: true, now: vt) }, holdFrames: 20),
+            Step(label: "20 windows", apply: { view.apply(state: state(Array(1...20), focus: 19), managing: true, now: vt) }, holdFrames: 22),
             Step(label: "move #5<-", apply: { view.apply(state: state([1,2,3,5,4], focus: 3, widths: [360,360,360,760,360]), managing: true, now: vt) }, holdFrames: 18),
             Step(label: "close #3",  apply: { view.apply(state: state([1,2,5,4], focus: 2, widths: [360,360,760,360]), managing: true, now: vt) }, holdFrames: 20),
             Step(label: "workspace", apply: { view.animateWorkspaceSwitch(direction: 1) }, holdFrames: 24),
@@ -80,7 +97,8 @@ enum MenuBarAnimationRender {
                 view.advance(dt: dt, now: vt)
                 vt += dt
                 if f == snapAt {
-                    if let img = snapshot(view: view, cellW: cellW, cellH: cellH) {
+                    if let img = snapshot(view: view, contentW: currentContent,
+                                          scale: scale, cellW: cellW, cellH: cellH) {
                         frames.append((step.label, img))
                     }
                 }
@@ -105,12 +123,17 @@ enum MenuBarAnimationRender {
         }
     }
 
-    /// Render the view's current state into an offscreen bitmap, upscaled.
-    private static func snapshot(view: MenuBarStripView, cellW: Int, cellH: Int) -> NSImage? {
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
-        view.cacheDisplay(in: view.bounds, to: rep)
+    /// Render the view's current state into an offscreen bitmap, upscaled. The
+    /// icon is drawn at its TRUE adaptive content width (`contentW`), left-aligned
+    /// in a fixed-size cell, so the contact sheet shows the icon growing.
+    private static func snapshot(view: MenuBarStripView, contentW: CGFloat,
+                                 scale: CGFloat, cellW: Int, cellH: Int) -> NSImage? {
+        let bounds = view.bounds
+        guard bounds.width > 0, let rep = view.bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+        view.cacheDisplay(in: bounds, to: rep)
         guard let small = rep.cgImage else { return nil }
 
+        let drawW = Int(min(contentW, CGFloat(cellW) / scale) * scale)
         let img = NSImage(size: NSSize(width: cellW, height: cellH))
         img.lockFocus()
         guard let ctx = NSGraphicsContext.current?.cgContext else { img.unlockFocus(); return nil }
@@ -118,7 +141,8 @@ enum MenuBarAnimationRender {
         ctx.setFillColor(NSColor(white: 0.12, alpha: 1).cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: cellW, height: cellH))
         ctx.interpolationQuality = .none
-        ctx.draw(small, in: CGRect(x: 0, y: 0, width: cellW, height: cellH))
+        // Left-aligned at true width so growth is visible across frames.
+        ctx.draw(small, in: CGRect(x: 0, y: 0, width: drawW, height: cellH))
         img.unlockFocus()
         return img
     }

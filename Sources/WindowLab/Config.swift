@@ -37,7 +37,20 @@ struct ScrollWMConfig: Equatable {
         var widthPresets: [CGFloat] = [0.25, 0.50, 0.75, 1.0]
     }
 
+    /// Menu-bar mini-map sizing. The icon grows with the strip instead of being
+    /// a fixed width: one full screen of strip maps to `pointsPerScreen` icon
+    /// points, so a 25%/50%/etc. column is always the same size regardless of
+    /// how many windows exist. The icon grows as windows are added until it hits
+    /// `maxWidth`, after which the whole strip is compressed to fit so it never
+    /// overruns the menu bar.
+    struct MenuBar: Equatable {
+        var pointsPerScreen: CGFloat = 30
+        var minWidth: CGFloat = 30
+        var maxWidth: CGFloat = 220
+    }
+
     var layout = Layout()
+    var menuBar = MenuBar()
     var focusMode: TeleportEngine.FocusMode = .fit
 
     /// Action -> one or more chords. Multiple chords let an action have
@@ -95,6 +108,11 @@ struct ScrollWMConfig: Equatable {
                 "minColumnWidth": Double(layout.minColumnWidth),
                 "widthPresets": layout.widthPresets.map { Double($0) },
             ],
+            "menuBar": [
+                "pointsPerScreen": Double(menuBar.pointsPerScreen),
+                "minWidth": Double(menuBar.minWidth),
+                "maxWidth": Double(menuBar.maxWidth),
+            ],
             "focusMode": focusMode.rawValue,
             "keybindings": Dictionary(uniqueKeysWithValues: keybindings.map { ($0.key.rawValue, $0.value) }),
             "spawn": spawn,
@@ -128,6 +146,15 @@ struct ScrollWMConfig: Equatable {
             if let presets = layout["widthPresets"] as? [NSNumber], !presets.isEmpty {
                 config.layout.widthPresets = presets.map { CGFloat($0.doubleValue) }
             }
+        }
+        if let mb = obj["menuBar"] as? [String: Any] {
+            if let p = mb["pointsPerScreen"] as? NSNumber { config.menuBar.pointsPerScreen = CGFloat(p.doubleValue) }
+            if let n = mb["minWidth"] as? NSNumber { config.menuBar.minWidth = CGFloat(n.doubleValue) }
+            if let x = mb["maxWidth"] as? NSNumber { config.menuBar.maxWidth = CGFloat(x.doubleValue) }
+            // Keep the clamps sane regardless of what's in the file.
+            config.menuBar.pointsPerScreen = max(8, config.menuBar.pointsPerScreen)
+            config.menuBar.minWidth = max(12, config.menuBar.minWidth)
+            config.menuBar.maxWidth = max(config.menuBar.minWidth, config.menuBar.maxWidth)
         }
         if let fm = obj["focusMode"] as? String, let mode = TeleportEngine.FocusMode(rawValue: fm) {
             config.focusMode = mode
@@ -228,6 +255,17 @@ struct ScrollWMConfig: Equatable {
         "columnGap": 12,          // px between columns and screen edges
         "minColumnWidth": 200,    // px floor; a column never shrinks below this
         "widthPresets": [0.25, 0.50, 0.75, 1.0]  // fractions for the width keys
+      },
+
+      // Menu-bar mini-map sizing. The icon GROWS with the strip instead of
+      // being a fixed width, so a 25%/50%/75%/100% column is always the same
+      // size on the map no matter how many windows you have. As you open more
+      // windows the icon widens, until it reaches maxWidth — then the whole
+      // strip compresses to fit so it never takes over the menu bar.
+      "menuBar": {
+        "pointsPerScreen": 30,    // icon px that ONE full screen of strip maps to
+        "minWidth": 30,           // px the icon never shrinks below (empty strip)
+        "maxWidth": 220           // px cap; past this the map compresses to fit
       },
 
       // How the viewport follows the focused column:

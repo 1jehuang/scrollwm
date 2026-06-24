@@ -160,6 +160,29 @@ enum MenuBarDiff {
     }
 }
 
+// MARK: - Width metrics (pure, unit-testable)
+
+/// Maps a strip's canvas extent to the icon's on-screen content width.
+///
+/// The mini-map uses a FIXED density rather than always compressing the whole
+/// strip into a constant-width icon: one full screen of strip maps to
+/// `pointsPerScreen` icon points, so a 25% column is always a quarter of that,
+/// a 50% column always half, regardless of how many windows exist. As the
+/// strip grows past one screen the icon grows too, until it hits `maxWidth`
+/// (so it never eats the menu bar); only then does the map compress to fit.
+enum MenuBarMetrics {
+    /// Icon content width (points) for a strip whose live canvas spans `span`
+    /// points, where one screen equals `screenWidth` canvas points. Clamped to
+    /// `[minWidth, maxWidth]`.
+    static func contentWidth(span: CGFloat, screenWidth: CGFloat,
+                             pointsPerScreen: CGFloat,
+                             minWidth: CGFloat, maxWidth: CGFloat) -> CGFloat {
+        guard screenWidth > 0, span > 0 else { return minWidth }
+        let raw = (span / screenWidth) * pointsPerScreen
+        return min(max(raw, minWidth), max(minWidth, maxWidth))
+    }
+}
+
 // MARK: - Transient visual flourishes
 
 /// Short-lived particle/effect overlaid on the mini-map. Each carries the
@@ -243,6 +266,44 @@ final class MenuBarStripView: NSView {
     private let hInset: CGFloat = 2
     private let vInset: CGFloat = 3
 
+    // MARK: - Adaptive width
+
+    /// Icon points one full screen-width of strip maps to. Higher = each window
+    /// is drawn wider, so the icon grows faster as windows are added.
+    var pointsPerScreen: CGFloat = 30
+    /// Smallest content width the icon ever shrinks to (one tight screen / the
+    /// dormant glyph). Keeps a sensible minimum on an empty or single-screen strip.
+    var minContentWidth: CGFloat = 30
+    /// Largest content width the icon may grow to. Past this the map compresses
+    /// the whole strip to fit, so it never overruns the menu bar.
+    var maxContentWidth: CGFloat = 220
+
+    /// Called when the icon's desired CONTENT width changes (points, excluding
+    /// the host's horizontal padding). The host resizes its status item to fit.
+    var onDesiredContentWidthChange: ((CGFloat) -> Void)?
+    /// Last width reported through `onDesiredContentWidthChange`, to suppress
+    /// no-op churn (and the implied status-item teardown/relayout).
+    private var lastReportedContentWidth: CGFloat = -1
+
+    /// Content width the icon wants for the most recently applied state, given
+    /// the current density and clamps. Pure function of the state's geometry.
+    private func desiredContentWidth(for state: TeleportEngine.StripState, managing: Bool) -> CGFloat {
+        guard managing, !state.slots.isEmpty else { return minContentWidth }
+        var minX = state.viewportX
+        var maxX = state.viewportX + state.viewportWidth
+        for s in state.slots {
+            minX = min(minX, s.canvasX)
+            maxX = max(maxX, s.canvasX + s.width)
+        }
+        return MenuBarMetrics.contentWidth(
+            span: maxX - minX,
+            screenWidth: state.viewportWidth,
+            pointsPerScreen: pointsPerScreen,
+            minWidth: minContentWidth,
+            maxWidth: maxContentWidth
+        )
+    }
+
     private var slots: [VisualSlot] = []
     private var viewportX = Spring(0, response: 0.42, dampingFraction: 0.85)
     private var viewportW = Spring(1, response: 0.42, dampingFraction: 0.85)
@@ -317,6 +378,15 @@ final class MenuBarStripView: NSView {
 
         lastState = state
         lastManaging = managing
+
+        // Report the icon's desired content width so the host can grow/shrink
+        // the status item. Quantized + thresholded to avoid churn on tiny deltas.
+        let desired = desiredContentWidth(for: state, managing: managing)
+        if abs(desired - lastReportedContentWidth) >= 1 {
+            lastReportedContentWidth = desired
+            onDesiredContentWidthChange?(desired)
+        }
+
         ensureAnimating()
         needsDisplay = true
     }
