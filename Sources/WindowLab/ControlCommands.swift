@@ -125,6 +125,11 @@ extension ScrollWMController {
         if isManaging {
             obj["focusedColumn"] = debugFocusIndex + 1
             obj["columns"] = controlColumns()
+            let floating = floatingWindows
+            obj["floatingCount"] = floating.count
+            obj["floating"] = floating.map { w -> [String: Any] in
+                ["app": w.appName, "title": w.title, "canTile": w.canTile]
+            }
         }
         guard let data = try? JSONSerialization.data(
             withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),

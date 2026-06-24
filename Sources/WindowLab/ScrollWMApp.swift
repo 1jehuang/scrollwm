@@ -221,6 +221,12 @@ final class ScrollWMController: NSObject {
             guard let self else { return }
             RestoreStore.save(engine: self.engine)
         }
+        monitor.onFloatingChange = { [weak self] in
+            // Floating set changed (a dialog opened/closed, a window not on the
+            // strip appeared): refresh the menu-bar status item so its badge and
+            // the next menu build reflect reality.
+            self?.menuBar.refresh()
+        }
         monitor.start()
         lifecycle = monitor
 
@@ -297,6 +303,66 @@ final class ScrollWMController: NSObject {
     func focusNext() { if isManaging { engine.focusNext() } }
     func focusPrevious() { if isManaging { engine.focusPrevious() } }
     func focus(index: Int) { if isManaging { engine.focus(index: index) } }
+
+    // MARK: - Floating windows (open, but not on the strip)
+
+    /// Windows on the current Space that ScrollWM is NOT tiling: dialogs,
+    /// palettes, and any normal window not (yet) adopted. Drives the menu-bar
+    /// "Floating" section. Empty while dormant (we enumerate nothing then).
+    var floatingWindows: [FloatingWindow] {
+        isManaging ? (lifecycle?.floatingWindows ?? []) : []
+    }
+
+    /// Bring a floating window to the front WITHOUT tiling it (for dialogs /
+    /// palettes, or just to peek at a window). Activates its app so keyboard
+    /// focus follows, mirroring the strip's own raise behavior.
+    func focusFloating(_ window: FloatingWindow) {
+        AXUIElementPerformAction(window.element, kAXRaiseAction as CFString)
+        AXSource.setBool(window.element, kAXMainAttribute as String, true)
+        AXSource.setBool(window.element, kAXFocusedAttribute as String, true)
+        if let app = NSRunningApplication(processIdentifier: window.pid) {
+            app.activate()
+        }
+    }
+
+    /// Pull a floating (tileable) window onto the strip: insert it just right of
+    /// the focused column, re-pack, and focus it. Dialogs/panels (`!canTile`)
+    /// are only raised - tiling a modal sheet or palette is wrong.
+    func tileFloating(_ window: FloatingWindow) {
+        guard isManaging else { return }
+        guard window.canTile else { focusFloating(window); return }
+        // Already managed? (raced with an auto-adopt) Just focus it.
+        if let i = engine.slots.firstIndex(where: { CFEqual($0.window.element, window.element) }) {
+            engine.focus(index: i)
+            menuBar.refresh()
+            return
+        }
+        let insertAt = engine.slots.isEmpty ? 0 : engine.focusIndex + 1
+        engine.insert(window: window.info, at: insertAt)
+        engine.compactStrip()
+        engine.focus(index: insertAt)
+        RestoreStore.save(engine: engine)
+        menuBar.refresh()
+    }
+
+    /// Tile every tileable floating window onto the strip in one shot.
+    func tileAllFloating() {
+        guard isManaging else { return }
+        let tileable = floatingWindows.filter { $0.canTile }
+        guard !tileable.isEmpty else { return }
+        var insertAt = engine.slots.isEmpty ? 0 : engine.focusIndex + 1
+        var lastInserted = insertAt
+        for w in tileable {
+            if engine.slots.contains(where: { CFEqual($0.window.element, w.element) }) { continue }
+            engine.insert(window: w.info, at: insertAt)
+            lastInserted = insertAt
+            insertAt += 1
+        }
+        engine.compactStrip()
+        engine.focus(index: lastInserted)
+        RestoreStore.save(engine: engine)
+        menuBar.refresh()
+    }
 
     // MARK: - Window operations passthrough
 
@@ -637,6 +703,47 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             }
             menu.addItem(.separator())
 
+            // Floating windows: open on this Space but NOT on the strip
+            // (dialogs, palettes, or windows not adopted). Listed so every
+            // on-screen window stays reachable from the menu bar; selecting one
+            // tiles it (or just raises a dialog/panel).
+            let floating = controller.floatingWindows
+            if !floating.isEmpty {
+                let fHeader = NSMenuItem(
+                    title: "Floating (not on strip): \(floating.count)",
+                    action: nil, keyEquivalent: ""
+                )
+                fHeader.isEnabled = false
+                menu.addItem(fHeader)
+
+                for (i, w) in floating.enumerated() {
+                    // ◇ = tileable normal window, · = dialog/panel (raise only).
+                    let marker = w.canTile ? "◇ " : "· "
+                    let hint = w.canTile ? "" : "  (dialog)"
+                    let item = NSMenuItem(
+                        title: String("\(marker)\(w.appName) — \(w.title)\(hint)".prefix(60)),
+                        action: #selector(selectFloating(_:)),
+                        keyEquivalent: ""
+                    )
+                    item.target = self
+                    item.tag = i
+                    item.toolTip = w.canTile
+                        ? "Tile this window onto the strip"
+                        : "Bring this dialog/panel to the front"
+                    menu.addItem(item)
+                }
+
+                if floating.contains(where: { $0.canTile }) {
+                    let tileAll = NSMenuItem(
+                        title: "Tile All Floating Windows onto Strip",
+                        action: #selector(tileAllFloatingAction), keyEquivalent: ""
+                    )
+                    tileAll.target = self
+                    menu.addItem(tileAll)
+                }
+                menu.addItem(.separator())
+            }
+
             let releaseItem = NSMenuItem(title: "Release Windows (restore original positions)", action: #selector(releaseAction), keyEquivalent: "")
             releaseItem.target = self
             menu.addItem(releaseItem)
@@ -724,6 +831,13 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     }
 
     @objc private func selectWindow(_ sender: NSMenuItem) { controller.focus(index: sender.tag) }
+    @objc private func selectFloating(_ sender: NSMenuItem) {
+        let floating = controller.floatingWindows
+        guard floating.indices.contains(sender.tag) else { return }
+        // Tile a normal window onto the strip; just raise a dialog/panel.
+        controller.tileFloating(floating[sender.tag])
+    }
+    @objc private func tileAllFloatingAction() { controller.tileAllFloating() }
     @objc private func arrangeAction() { controller.arrange() }
     @objc private func releaseAction() { controller.release() }
     @objc private func showAllAction() { controller.showAllWindows() }

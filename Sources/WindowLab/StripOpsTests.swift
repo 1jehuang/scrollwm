@@ -663,6 +663,90 @@ enum StripOpsTests {
         check("fitAll: crowded strip floors at minColumnWidth",
               efitMany.slots.allSatisfy { $0.width >= efitMany.minColumnWidth - 0.5 })
 
+        // --- FloatingWindows.classify (pure floating-window policy) ---
+        let std = kAXStandardWindowSubrole as String
+        let dlg = kAXDialogSubrole as String
+        // A normal current-Space window not on the strip is tileable floating.
+        check("classify: standard current-Space -> tileable",
+              FloatingWindows.classify(subrole: std, isMinimized: false, isFullscreen: false,
+                                       onCurrentSpace: true, isSelf: false) == .tileable)
+        // A dialog is listed but not tileable.
+        check("classify: dialog current-Space -> listOnly",
+              FloatingWindows.classify(subrole: dlg, isMinimized: false, isFullscreen: false,
+                                       onCurrentSpace: true, isSelf: false) == .listOnly)
+        // Off-Space windows are never floating "here".
+        check("classify: off-Space -> nil",
+              FloatingWindows.classify(subrole: std, isMinimized: false, isFullscreen: false,
+                                       onCurrentSpace: false, isSelf: false) == nil)
+        // Minimized / fullscreen / our own windows are excluded.
+        check("classify: minimized -> nil",
+              FloatingWindows.classify(subrole: std, isMinimized: true, isFullscreen: false,
+                                       onCurrentSpace: true, isSelf: false) == nil)
+        check("classify: fullscreen -> nil",
+              FloatingWindows.classify(subrole: std, isMinimized: false, isFullscreen: true,
+                                       onCurrentSpace: true, isSelf: false) == nil)
+        check("classify: self window -> nil",
+              FloatingWindows.classify(subrole: std, isMinimized: false, isFullscreen: false,
+                                       onCurrentSpace: true, isSelf: true) == nil)
+        // Unknown subrole (content view, sheet, nil) is not surfaced.
+        check("classify: unknown subrole -> nil",
+              FloatingWindows.classify(subrole: "AXUnknown", isMinimized: false, isFullscreen: false,
+                                       onCurrentSpace: true, isSelf: false) == nil)
+        check("classify: nil subrole -> nil",
+              FloatingWindows.classify(subrole: nil, isMinimized: false, isFullscreen: false,
+                                       onCurrentSpace: true, isSelf: false) == nil)
+
+        // --- FloatingWindows.compute (end-to-end over synthetic AX+CG) ---
+        // Build three AX windows for one fake app: a tiled one (already on the
+        // strip), an untiled normal one (should surface as tileable floating),
+        // and a dialog (should surface as list-only). Each gets a matching CG
+        // entry so the current-Space fuse succeeds.
+        func ax(_ pidBase: Int, _ sub: String, _ rect: CGRect, title: String) -> AXWindowInfo {
+            AXWindowInfo(
+                pid: pid_t(pidBase), appName: "FloatApp", element: AXUIElementCreateApplication(pid_t(pidBase)),
+                title: title, role: kAXWindowRole as String, subrole: sub,
+                frame: rect, isMinimized: false, isFullscreen: false
+            )
+        }
+        func cg(_ pidBase: Int, _ rect: CGRect, title: String) -> CGWindowInfo {
+            CGWindowInfo(
+                windowID: CGWindowID(pidBase), ownerPID: pid_t(pidBase), ownerName: "FloatApp",
+                title: title, bounds: rect, layer: 0, alpha: 1.0, isOnscreen: true, memoryUsage: 0
+            )
+        }
+        let stdSub = kAXStandardWindowSubrole as String
+        let dlgSub = kAXDialogSubrole as String
+        let tiled  = ax(70001, stdSub, CGRect(x: 0,   y: 0, width: 400, height: 300), title: "Tiled")
+        let normal = ax(70002, stdSub, CGRect(x: 500, y: 0, width: 400, height: 300), title: "Untiled")
+        let dialog = ax(70003, dlgSub, CGRect(x: 900, y: 0, width: 300, height: 200), title: "Save?")
+        // An off-Space window: present in AX, but NO matching CG entry.
+        let offspace = ax(70004, stdSub, CGRect(x: 50, y: 900, width: 400, height: 300), title: "OtherSpace")
+        let cgList = [
+            cg(70001, tiled.frame, title: "Tiled"),
+            cg(70002, normal.frame, title: "Untiled"),
+            cg(70003, dialog.frame, title: "Save?"),
+            // no CG for offspace -> not on current Space
+        ]
+        let floating = FloatingWindows.compute(
+            axWindows: [tiled, normal, dialog, offspace],
+            cgWindows: cgList,
+            managed: [tiled.element],   // `tiled` is on the strip
+            selfPID: 99999              // none of these are us
+        )
+        check("compute: tiled window excluded", !floating.contains { CFEqual($0.element, tiled.element) })
+        check("compute: off-Space window excluded", !floating.contains { CFEqual($0.element, offspace.element) })
+        check("compute: untiled normal surfaces as tileable",
+              floating.contains { CFEqual($0.element, normal.element) && $0.canTile })
+        check("compute: dialog surfaces as list-only",
+              floating.contains { CFEqual($0.element, dialog.element) && !$0.canTile })
+        check("compute: exactly 2 floating windows", floating.count == 2)
+        // Our own windows are never listed even if untiled + on current Space.
+        let mine = FloatingWindows.compute(
+            axWindows: [normal], cgWindows: [cg(70002, normal.frame, title: "Untiled")],
+            managed: [], selfPID: 70002
+        )
+        check("compute: self windows never floating", mine.isEmpty)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

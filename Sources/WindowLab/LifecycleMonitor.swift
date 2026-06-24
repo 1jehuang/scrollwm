@@ -37,7 +37,17 @@ final class LifecycleMonitor {
     private(set) var resyncCount = 0
     private(set) var lastResyncMs: Double = 0
 
+    /// Windows open on the user's CURRENT Space that are NOT tiled on the strip
+    /// (dialogs, panels, or normal windows not yet adopted). Recomputed every
+    /// resync from the same enumeration the diff uses, so it costs nothing
+    /// extra. Main-thread only. The menu bar reads this to list "floating"
+    /// windows alongside the strip.
+    private(set) var floatingWindows: [FloatingWindow] = []
+
     var onChange: ((_ adopted: Int, _ removed: Int) -> Void)?
+    /// Fired (main thread) whenever the floating-window set changes, so the menu
+    /// bar / status item can refresh.
+    var onFloatingChange: (() -> Void)?
 
     init(engine: TeleportEngine, interval: TimeInterval = 2.0) {
         self.engine = engine
@@ -138,6 +148,10 @@ final class LifecycleMonitor {
             DispatchQueue.main.async {
                 self.enumerating = false
                 self.applyResync(standard: standard, cg: cg)
+                // Floating list uses the FULL enumeration (dialogs/panels too),
+                // not just `standard`, and runs after `applyResync` so it sees
+                // the post-adoption strip. Reads `engine.slots` -> main thread.
+                self.refreshFloating(all: current, cg: cg)
             }
         }
     }
@@ -233,6 +247,25 @@ final class LifecycleMonitor {
             }
             onChange?(newWindows.count, removed)
         }
+    }
+
+    /// Recompute the "floating" set (current-Space windows not on the strip)
+    /// from a full AX enumeration fused with the on-screen CG list. MUST run on
+    /// the main thread (reads `engine.slots`). Fires `onFloatingChange` only
+    /// when the set actually changes, so the menu bar refresh is not spammed.
+    private func refreshFloating(all: [AXWindowInfo], cg: [CGWindowInfo]) {
+        let managed = engine.slots.map { $0.window.element }
+        let next = FloatingWindows.compute(
+            axWindows: all,
+            cgWindows: cg,
+            managed: managed,
+            selfPID: getpid()
+        )
+        // Cheap identity diff: same windows in the same order -> no refresh.
+        let changed = next.count != floatingWindows.count
+            || zip(next, floatingWindows).contains { !CFEqual($0.element, $1.element) }
+        floatingWindows = next
+        if changed { onFloatingChange?() }
     }
 
     /// Low-latency adoption for a window-created event. Enumerates ONLY the
