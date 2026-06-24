@@ -26,19 +26,24 @@ ScrollWM is built around a "never break the desktop" rule:
 
 ## Install
 
-ScrollWM is a single menu-bar app. Pick whichever install you like; all three
-land the same `ScrollWM.app` in `~/Applications` (or `/Applications`).
+ScrollWM is a single menu-bar app. The one-line installer below is the
+recommended path; all options land the same `ScrollWM.app` in `~/Applications`
+(or `/Applications`).
 
-### 1. One-line install (recommended)
+### Recommended: one-line install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/1jehuang/scrollwm/main/scripts/web-install.sh | bash
 ```
 
 Downloads the latest release, removes the Gatekeeper quarantine, installs to
-`~/Applications`, and launches it. Re-run the same command anytime to update.
+`~/Applications`, and launches it. No sudo, nothing on your desktop is touched
+until you click Arrange. Re-run the same command anytime to update.
 
-### 2. Homebrew
+<details>
+<summary>Other ways to install</summary>
+
+**Homebrew**
 
 ```bash
 brew install --cask 1jehuang/scrollwm/scrollwm
@@ -48,7 +53,7 @@ brew install --cask 1jehuang/scrollwm/scrollwm
 `brew tap 1jehuang/scrollwm https://github.com/1jehuang/scrollwm` then
 `brew install --cask scrollwm`.)
 
-### 3. Download the app
+**Download the app**
 
 Grab `ScrollWM-<version>.dmg` (or `.zip`) from the
 [latest release](https://github.com/1jehuang/scrollwm/releases/latest), drag
@@ -58,6 +63,8 @@ Grab `ScrollWM-<version>.dmg` (or `.zip`) from the
 > notarized), so macOS may say it "cannot be opened." Right-click the app →
 > **Open** → **Open**, just once. (The curl and Homebrew installs above handle
 > this for you.)
+
+</details>
 
 ### First launch
 
