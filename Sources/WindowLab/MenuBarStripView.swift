@@ -565,13 +565,15 @@ final class MenuBarStripView: NSView {
             NSGraphicsContext.restoreGraphicsState()
         }
 
-        // 3. Viewport frame.
-        let vx = mapX(viewportX.value)
-        let vw = max(CGFloat(viewportW.value) * scale, 4)
-        let vRect = NSRect(x: vx, y: rect.minY + 1.5,
-                           width: min(vw, rect.maxX - vx), height: rect.height - 3)
-        let vPath = NSBezierPath(roundedRect: vRect, xRadius: 3, yRadius: 3)
-        vPath.lineWidth = 1.2
+        // 3. Viewport frame: a thin outline that hugs the in-viewport columns.
+        let vInsetY: CGFloat = vInset + 1   // tuck inside the column band
+        let vx = mapX(viewportX.value) + 0.5
+        let vw = max(CGFloat(viewportW.value) * scale - 1, 3)
+        let vRect = NSRect(x: vx, y: rect.minY + vInsetY,
+                           width: min(vw, rect.maxX - vx - 0.5),
+                           height: rect.height - vInsetY * 2)
+        let vPath = NSBezierPath(roundedRect: vRect, xRadius: 2, yRadius: 2)
+        vPath.lineWidth = 0.75
         NSColor.labelColor.withAlphaComponent(0.95 * alpha).setStroke()
         vPath.stroke()
 
