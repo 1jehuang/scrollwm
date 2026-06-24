@@ -102,7 +102,12 @@ final class TeleportEngine {
         return false
     }
 
-    let screenFrame: CGRect       // visible frame, AX coordinates (top-left origin)
+    /// Visible frame of the strip's display, AX coordinates (top-left origin).
+    /// Mutable so the strip can follow a display resolution/arrangement change
+    /// or move to a different monitor at runtime (`rebindStripDisplay`); every
+    /// layout computation reads this live, so a rebind + `teleport()` relays the
+    /// whole strip onto the new geometry.
+    private(set) var screenFrame: CGRect
     /// Spacing between columns and at the strip's outer edges. Config-driven
     /// (`layout.columnGap`); defaults to 12.
     var gap: CGFloat = 12
@@ -568,6 +573,42 @@ final class TeleportEngine {
         let x = goRight ? s.maxX + margin : s.minX - margin
         let y = goBottom ? s.maxY + margin : s.minY - margin
         return CGPoint(x: x, y: y)
+    }
+
+    /// Re-bind the strip to a new display geometry at runtime and relay every
+    /// window onto it. Called when the strip's display changes resolution/scale,
+    /// is rearranged, or the user moves the strip to a different monitor.
+    ///
+    /// `newScreenFrame` is the new VISIBLE frame (AX top-left coords) the strip
+    /// should fill. The vertical band of every slot is re-pinned to the new
+    /// display's top (`y = newScreenFrame.origin.y`) and heights are clamped to
+    /// the new usable height, so a strip moved from a short laptop panel onto a
+    /// tall external (or vice versa) lands correctly instead of off the top/bottom.
+    /// Off-viewport parking is recomputed via the (separately set) display frames.
+    ///
+    /// Returns the number of AX position writes the relay issued. A no-op rebind
+    /// (geometry unchanged) costs nothing because `teleport` skips unmoved windows.
+    @discardableResult
+    func rebindStripDisplay(to newScreenFrame: CGRect) -> Int {
+        screenFrame = newScreenFrame
+        let topY = newScreenFrame.origin.y
+        let maxH = newScreenFrame.height
+        func repin(_ s: inout [Slot]) {
+            for i in s.indices {
+                s[i].y = topY
+                if s[i].height > maxH { s[i].height = maxH }
+            }
+        }
+        repin(&slots)
+        for i in workspaces.indices { repin(&workspaces[i].slots) }
+        // Keep the focused column visible under the new viewport width.
+        if slots.indices.contains(focusIndex) {
+            viewportX = viewportTarget(for: slots[focusIndex], mode: focusMode,
+                                       currentViewportX: viewportX)
+        }
+        let n = teleport()
+        onLayoutChange?()
+        return n
     }
 
     /// Test seam: set the viewport offset directly (production code sets it via

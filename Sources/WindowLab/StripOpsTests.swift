@@ -830,6 +830,83 @@ enum StripOpsTests {
         check("workspaces: releaseAll resets to single workspace", ewJump.workspaceCount == 1)
         check("workspaces: releaseAll resets active index", ewJump.stripState.activeWorkspace == 0)
 
+        // --- DisplayGeometry: pure coordinate + clamp helpers ----------------
+        // The user's REAL setup: built-in primary 1470x956 at AppKit (0,0); a
+        // taller external 2560x1440 at AppKit (-225, 956) ABOVE the built-in.
+        let primaryH: CGFloat = 956
+
+        // AppKit (bottom-left) -> AX (top-left). The primary sits at AX y=0.
+        let builtinAX = DisplayGeometry.axFrame(
+            appKitFrame: CGRect(x: 0, y: 0, width: 1470, height: 956), primaryHeight: primaryH)
+        check("geom: primary maps to AX origin", builtinAX == CGRect(x: 0, y: 0, width: 1470, height: 956))
+        // The external is ABOVE the primary in AppKit (y=956); in the top-left
+        // AX plane that becomes a NEGATIVE y (above the origin), with its own
+        // negative x carried through unchanged.
+        let extAX = DisplayGeometry.axFrame(
+            appKitFrame: CGRect(x: -225, y: 956, width: 2560, height: 1440), primaryHeight: primaryH)
+        check("geom: external-above maps to negative AX y",
+              extAX == CGRect(x: -225, y: -1440, width: 2560, height: 1440))
+        // Round-trip back to AppKit is exact.
+        check("geom: axFrame round-trips",
+              DisplayGeometry.appKitFrame(axFrame: extAX, primaryHeight: primaryH)
+                == CGRect(x: -225, y: 956, width: 2560, height: 1440))
+
+        let displays = [builtinAX, extAX]
+        // A window centered on the external overlaps it most.
+        check("geom: best-overlap picks the external",
+              DisplayGeometry.display(bestOverlapping:
+                CGRect(x: 100, y: -1200, width: 800, height: 600), displays: displays) == extAX)
+        // A window straddling the bezel goes to whichever it covers more of.
+        check("geom: best-overlap resolves a straddling window",
+              DisplayGeometry.display(bestOverlapping:
+                CGRect(x: 0, y: -200, width: 600, height: 600), displays: displays) != nil)
+        check("geom: no displays -> nil overlap",
+              DisplayGeometry.display(bestOverlapping: builtinAX, displays: []) == nil)
+
+        // Visibility: a frame fully on a display is visible; one parked far away
+        // (e.g. its monitor was unplugged) is not.
+        check("geom: on-display frame is visible",
+              DisplayGeometry.isMostlyVisible(CGRect(x: 50, y: 50, width: 400, height: 300), on: displays))
+        check("geom: orphaned frame is not visible",
+              !DisplayGeometry.isMostlyVisible(CGRect(x: 9000, y: 9000, width: 400, height: 300), on: displays))
+
+        // ensureVisible leaves an on-screen frame untouched but pulls an orphan
+        // back onto an available display (and never larger than that display).
+        let keep = CGRect(x: 100, y: 100, width: 400, height: 300)
+        check("geom: ensureVisible keeps an on-screen frame",
+              DisplayGeometry.ensureVisible(keep, displays: displays) == keep)
+        let rescued = DisplayGeometry.ensureVisible(
+            CGRect(x: 9000, y: 9000, width: 400, height: 300), displays: displays)
+        check("geom: ensureVisible rescues an orphan onto a display",
+              DisplayGeometry.isMostlyVisible(rescued, on: displays))
+        // A window larger than the target display is shrunk to fit it.
+        let huge = DisplayGeometry.clamp(
+            CGRect(x: 9000, y: 9000, width: 5000, height: 5000), into: builtinAX)
+        check("geom: clamp shrinks an oversize window to the display",
+              huge.width <= builtinAX.width && huge.height <= builtinAX.height
+                && builtinAX.contains(huge))
+
+        // --- TeleportEngine.rebindStripDisplay: relay onto new geometry ------
+        // Strip built on a 1600-wide display; rebind to a different display
+        // (origin shifted, shorter) and verify the model follows: slots re-pin
+        // their top Y, heights clamp to the new usable height, screenFrame moves.
+        let reb = makeEngine(count: 3, width: 400, screenWidth: 1600)
+        for i in reb.slots.indices { reb.slots[i].height = 900 }  // tall windows
+        let newFrame = CGRect(x: -225, y: -1440, width: 2560, height: 700)
+        reb.rebindStripDisplay(to: newFrame)
+        check("rebind: screenFrame updated", reb.screenFrame == newFrame)
+        check("rebind: slots re-pinned to new display top",
+              reb.slots.allSatisfy { $0.y == newFrame.origin.y })
+        check("rebind: tall slots clamped to new usable height",
+              reb.slots.allSatisfy { $0.height <= newFrame.height })
+        check("rebind: canvas X packing preserved (strip not torn up)",
+              reb.slots.map { $0.canvasX } == StripOpsTests.makeEngine(count: 3, width: 400).slots.map { $0.canvasX })
+        // A no-op rebind to the same frame keeps everything put.
+        let reb2 = makeEngine(count: 2)
+        let before = reb2.screenFrame
+        reb2.rebindStripDisplay(to: before)
+        check("rebind: same-frame rebind is stable", reb2.screenFrame == before)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

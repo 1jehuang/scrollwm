@@ -85,42 +85,60 @@ final class ScrollWMController: NSObject {
     /// Feed the multi-display layout (in AX top-left global coordinates) to the
     /// engine so its off-screen "parking corner" lands the unavoidable ~40px
     /// macOS clamp sliver on the STRIP's own display, never on a neighbor
-    /// monitor. Without this, on a multi-display setup a column scrolled off the
-    /// viewport peeks at the bottom-right of an adjacent screen.
+    /// monitor, AND keep the strip's own layout frame in sync with the live
+    /// geometry of the display it lives on (resolution/scale/arrangement change).
     ///
     /// AX global coords share one plane with the origin at the PRIMARY display's
-    /// top-left and Y growing downward; convert each NSScreen (AppKit bottom-left
-    /// origin) by flipping around the primary display's height.
-    private func refreshDisplayGeometry(stripDisplay: NSScreen) {
+    /// top-left and Y growing downward; `DisplayGeometry.axFrame` does the flip
+    /// around the primary display's height.
+    ///
+    /// When `relayout` is true and we are managing, the strip is re-bound to the
+    /// new visible frame and every window is relaid out onto it (handles the
+    /// laptop-panel <-> external resolution mismatch). Pass false during initial
+    /// setup, before any window is adopted.
+    private func refreshDisplayGeometry(stripDisplay: NSScreen, relayout: Bool = false) {
         // The primary display is the one whose frame origin is (0,0) in AppKit.
         // Its height defines the Y-flip used across the whole AX coordinate plane.
         let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
                              ?? NSScreen.main ?? stripDisplay).frame.height
-        func axFrame(_ s: NSScreen) -> CGRect {
-            let f = s.frame
-            return CGRect(x: f.origin.x,
-                          y: primaryHeight - f.maxY,
-                          width: f.width, height: f.height)
+        func axFull(_ s: NSScreen) -> CGRect {
+            DisplayGeometry.axFrame(appKitFrame: s.frame, primaryHeight: primaryHeight)
         }
-        let stripAX = axFrame(stripDisplay)
-        engine.stripDisplayFrame = stripAX
+        func axVisible(_ s: NSScreen) -> CGRect {
+            DisplayGeometry.axFrame(appKitFrame: s.visibleFrame, primaryHeight: primaryHeight)
+        }
+        engine.stripDisplayFrame = axFull(stripDisplay)
         engine.otherDisplayFrames = NSScreen.screens
             .filter { $0 !== stripDisplay }
-            .map(axFrame)
+            .map(axFull)
+
+        // Re-bind the strip's own usable area to the live visible frame so a
+        // resolution/scale change (or the strip moving displays) relays the
+        // whole strip onto the new geometry instead of leaving stale coords.
+        let visible = axVisible(stripDisplay)
+        if relayout && isManaging {
+            engine.rebindStripDisplay(to: visible)
+            RestoreStore.save(engine: engine)
+            menuBar.refresh()
+        }
     }
 
     /// Re-evaluate the display layout when monitors are plugged/unplugged or
-    /// rearranged. The strip's display is the one whose AX frame contains the
-    /// engine's `screenFrame` (the engine keeps its original strip display);
-    /// fall back to the main screen if it can't be identified.
+    /// rearranged. The strip's display is the one that best overlaps the
+    /// engine's current `screenFrame`; fall back to the main screen if it can't
+    /// be identified (e.g. the strip's display was just unplugged).
     @objc private func screenParametersChanged() {
+        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
+                             ?? NSScreen.main)?.frame.height ?? engine.screenFrame.height
         let target = engine.screenFrame
-        let strip = NSScreen.screens.first { s in
-            // Match by horizontal origin (AppKit X == AX X) and width: robust to
-            // the menu-bar visibleFrame inset that distinguishes frame vs engine.
-            abs(s.frame.origin.x - target.origin.x) < 1 && abs(s.frame.width - target.width) < 1
+        // Choose by maximum overlap with the strip's current AX frame: robust to
+        // a display that resized (origin/width shifted) but is "the same screen".
+        let strip = NSScreen.screens.max { a, b in
+            let fa = DisplayGeometry.axFrame(appKitFrame: a.visibleFrame, primaryHeight: primaryHeight)
+            let fb = DisplayGeometry.axFrame(appKitFrame: b.visibleFrame, primaryHeight: primaryHeight)
+            return DisplayGeometry.overlapArea(target, fa) < DisplayGeometry.overlapArea(target, fb)
         } ?? NSScreen.main
-        if let strip { refreshDisplayGeometry(stripDisplay: strip) }
+        if let strip { refreshDisplayGeometry(stripDisplay: strip, relayout: true) }
     }
 
     /// Re-read the config file and apply it live. Keybindings are reinstalled
