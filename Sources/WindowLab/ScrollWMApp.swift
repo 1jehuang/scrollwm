@@ -321,6 +321,28 @@ final class ScrollWMController: NSObject {
                 hotkeys.registerRaw(keyCode: key.rawValue, modifiers: jump.carbonModifiers) { [weak self] in self?.focus(index: i) }
             }
         }
+
+        // niri-style spawn bindings: chord -> shell command (always-on).
+        for (chord, command) in config.spawnBindings() {
+            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in
+                self?.runSpawn(command)
+            }
+        }
+    }
+
+    /// Run a configured `spawn` command in the background via `/bin/sh -c`.
+    /// Detached and non-blocking so the main thread (hotkeys/teleport/menu) is
+    /// never stalled by the launched process.
+    private func runSpawn(_ command: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        do {
+            try process.run()
+            print("spawn: launched `\(command)`")
+        } catch {
+            print("spawn: failed to launch `\(command)`: \(error.localizedDescription)")
+        }
     }
 
     /// Hotkeys that only make sense while managing, and that would otherwise

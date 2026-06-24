@@ -44,6 +44,12 @@ struct ScrollWMConfig: Equatable {
     /// several triggers (e.g. width via both Opt+1 and Cmd+1).
     var keybindings: [KeyAction: [String]] = KeyAction.defaultChords
 
+    /// niri-style "spawn" bindings: a chord -> an arbitrary shell command run
+    /// (via `/bin/sh -c`) when the chord fires. These are always-on global
+    /// Carbon hotkeys (active even when not managing), so they CANNOT use
+    /// macOS-reserved chords like Cmd+H/Cmd+M. Empty by default; users opt in.
+    var spawn: [String: String] = [:]
+
     // MARK: - Defaults
 
     static let `default` = ScrollWMConfig()
@@ -91,6 +97,7 @@ struct ScrollWMConfig: Equatable {
             ],
             "focusMode": focusMode.rawValue,
             "keybindings": Dictionary(uniqueKeysWithValues: keybindings.map { ($0.key.rawValue, $0.value) }),
+            "spawn": spawn,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]) else { return }
         try? data.write(to: Self.fileURL, options: .atomic)
@@ -138,6 +145,15 @@ struct ScrollWMConfig: Equatable {
                 config.keybindings[action] = chords
             }
         }
+        if let sp = obj["spawn"] as? [String: Any] {
+            for (chord, value) in sp {
+                guard let command = value as? String else {
+                    print("config: spawn binding '\(chord)' must map to a command string (ignored)")
+                    continue
+                }
+                config.spawn[chord] = command
+            }
+        }
         return config
     }
 
@@ -176,6 +192,23 @@ struct ScrollWMConfig: Equatable {
             if let chord = Chord(string: str) { return chord }
             print("config: could not parse chord '\(str)' for \(action.rawValue) (ignored)")
             return nil
+        }
+    }
+
+    /// Parse all configured `spawn` bindings into (chord, command) pairs,
+    /// skipping (with a warning) any chord that fails to parse or is
+    /// modifier-only (a spawn binding needs a real key to fire).
+    func spawnBindings() -> [(chord: Chord, command: String)] {
+        spawn.compactMap { (chordStr, command) in
+            guard let chord = Chord(string: chordStr) else {
+                print("config: could not parse spawn chord '\(chordStr)' (ignored)")
+                return nil
+            }
+            guard chord.hasKey else {
+                print("config: spawn chord '\(chordStr)' has no key; needs a real key (ignored)")
+                return nil
+            }
+            return (chord, command)
         }
     }
 
@@ -228,6 +261,16 @@ struct ScrollWMConfig: Equatable {
 
         "closeWindow": "cmd+q"                  // close focused window (while managing)
       }
+      // Optionally, niri-style "spawn" bindings: a chord -> a shell command run
+      // (via /bin/sh -c) when you press it. These are always-on global hotkeys,
+      // so they CANNOT use macOS-reserved chords (Cmd+H/Cmd+M). Each chord must
+      // include a real key (a modifier-only chord won't fire). Example:
+      //
+      // ,
+      // "spawn": {
+      //   "ctrl+opt+j": "open -na Ghostty --args --working-directory=$HOME/scrollwm -e $HOME/.local/bin/jcode",
+      //   "ctrl+opt+return": "open -na Ghostty"
+      // }
     }
 
     """

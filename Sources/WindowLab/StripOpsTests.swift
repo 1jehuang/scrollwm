@@ -350,6 +350,28 @@ enum StripOpsTests {
         do { _ = try ScrollWMConfig.parse(jsonc: "{ not json ]") } catch { threw = true }
         check("malformed config throws", threw)
 
+        // --- Config: niri-style spawn bindings ---
+        let spawnJsonc = """
+        {
+          "spawn": {
+            "ctrl+opt+j": "open -na Ghostty --args -e jcode",
+            "ctrl+opt": "echo modifier-only ignored at use time"
+          }
+        }
+        """
+        do {
+            let parsed = try ScrollWMConfig.parse(jsonc: spawnJsonc)
+            check("spawn binding parsed", parsed.spawn["ctrl+opt+j"] == "open -na Ghostty --args -e jcode")
+            // spawnBindings() resolves chords and drops modifier-only ones.
+            let resolved = parsed.spawnBindings()
+            check("spawn resolves chord with key", resolved.contains { $0.command == "open -na Ghostty --args -e jcode" && $0.chord.keyCode == 38 })
+            check("spawn drops modifier-only chord", !resolved.contains { $0.command.contains("modifier-only") })
+        } catch {
+            check("spawn config parses", false)
+        }
+        // Defaults ship with no spawn bindings (no personal config in product).
+        check("default config has empty spawn", ScrollWMConfig.default.spawn.isEmpty)
+
         // Every action has a parseable default chord (or is modifier-only).
         let allDefaultsParse = KeyAction.allCases.allSatisfy { action in
             (KeyAction.defaultChords[action] ?? []).allSatisfy { Chord(string: $0) != nil }
