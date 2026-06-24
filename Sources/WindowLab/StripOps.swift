@@ -152,6 +152,57 @@ extension TeleportEngine {
         return true
     }
 
+    /// Resolve the OS's currently-focused window to a managed column and, if it
+    /// is one of ours, make that the engine's `focusIndex`.
+    ///
+    /// ## Why this exists (the "Cmd+Q closed the wrong window" bug)
+    ///
+    /// The engine's `focusIndex` only moves when the user navigates via
+    /// ScrollWM itself (Cmd+H/L, jump keys, the menu). But focus also changes
+    /// OUTSIDE ScrollWM all the time: a mouse click on a window, Cmd+Tab,
+    /// Mission Control, an app stealing focus. After any of those, `focusIndex`
+    /// is stale, so a focus-dependent op (close/width/move) would act on the
+    /// last column ScrollWM navigated to, NOT the window the user is actually
+    /// on. The reported symptom: Cmd+Q closing "the window on the right"
+    /// instead of the focused one.
+    ///
+    /// We read the system-wide focused application's focused window (works
+    /// regardless of activation policy, unlike `frontmostApplication`) and, if
+    /// it is one of our managed slots, adopt it as the focus. If the focused
+    /// window is NOT managed (e.g. focus is on some unmanaged window), we leave
+    /// `focusIndex` untouched. We only update the index; we do NOT re-raise or
+    /// re-activate (the window is already focused), so there is no flicker and
+    /// no behavior change when ScrollWM's own focus already matches reality.
+    ///
+    /// Returns true when the live focused window was found among our slots.
+    @discardableResult
+    func syncFocusToSystemFocusedWindow() -> Bool {
+        guard !slots.isEmpty, let focused = TeleportEngine.systemFocusedWindowElement() else { return false }
+        guard let idx = slots.firstIndex(where: { CFEqual($0.window.element, focused) }) else { return false }
+        focusIndex = idx
+        return true
+    }
+
+    /// The AX window element that currently holds keyboard focus, system-wide,
+    /// or nil if it cannot be resolved. Uses the system-wide element so it works
+    /// for accessory apps too (`NSWorkspace.frontmostApplication` does not
+    /// reflect them).
+    static func systemFocusedWindowElement() -> AXUIElement? {
+        let systemWide = AXUIElementCreateSystemWide()
+        AXSource.setTimeout(systemWide, seconds: 0.1)
+
+        var appRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &appRef) == .success,
+              let appRef, CFGetTypeID(appRef) == AXUIElementGetTypeID() else { return nil }
+        let appElement = appRef as! AXUIElement
+        AXSource.setTimeout(appElement, seconds: 0.1)
+
+        var winRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+              let winRef, CFGetTypeID(winRef) == AXUIElementGetTypeID() else { return nil }
+        return (winRef as! AXUIElement)
+    }
+
     /// Close the focused window via its Accessibility close button, then drop
     /// it from the strip. Returns false when nothing is focused or the window
     /// has no usable close button.
@@ -160,6 +211,10 @@ extension TeleportEngine {
     /// the app owns teardown. We simply stop managing it.
     @discardableResult
     func closeFocused() -> Bool {
+        // Honor the window the user is REALLY on: focus may have moved outside
+        // ScrollWM (mouse click, Cmd+Tab) since our last navigation, so reconcile
+        // `focusIndex` with the live system focus before deciding what to close.
+        syncFocusToSystemFocusedWindow()
         guard slots.indices.contains(focusIndex) else { return false }
         let slot = slots[focusIndex]
         let element = slot.window.element

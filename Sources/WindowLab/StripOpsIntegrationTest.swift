@@ -128,12 +128,58 @@ func runStripOpsIntegrationTest() {
         check("focus follows moved window", engine.slots[engine.focusIndex].window.title == before[0])
         check("strip compact after move", StripOpsTests.isCompact(engine))
 
+        // --- FOCUS SYNC: the reported "Cmd+Q closes the wrong window" bug ---
+        // Simulate the user changing focus OUTSIDE ScrollWM (a mouse click /
+        // Cmd+Tab) after navigating: the engine's focusIndex is stale, pointing
+        // at one column, while the OS actually focuses a DIFFERENT managed
+        // window. closeFocused() must honor the live OS focus, not the stale
+        // index, and close the window the user is really on.
+        let staleIndex = 0
+        let liveFocusIndex = engine.slots.count - 1 // a different column
+        engine.focusIndex = staleIndex
+        let staleTitle = engine.slots[staleIndex].window.title
+        let liveTitle = engine.slots[liveFocusIndex].window.title
+        check("focus-sync precondition: stale != live target", staleTitle != liveTitle)
+
+        // Make the OS focus the live target window (like a user click): raise +
+        // mark main/focused + activate its app, exactly what a real focus change
+        // does, WITHOUT going through engine.focus (which would update the index).
+        let liveEl = engine.slots[liveFocusIndex].window.element
+        let livePid = engine.slots[liveFocusIndex].window.pid
+        DispatchQueue.main.sync {
+            AXUIElementPerformAction(liveEl, kAXRaiseAction as CFString)
+            _ = AXSource.setBool(liveEl, kAXMainAttribute as String, true)
+            _ = AXSource.setBool(liveEl, kAXFocusedAttribute as String, true)
+            NSRunningApplication(processIdentifier: livePid)?.activate()
+        }
+        Thread.sleep(forTimeInterval: 0.4)
+        // The engine, on its own, should resolve the live OS focus to the right
+        // column even though focusIndex still says `staleIndex`.
+        let resolved = DispatchQueue.main.sync { engine.syncFocusToSystemFocusedWindow() }
+        check("focus-sync: resolved the live OS-focused window", resolved)
+        check("focus-sync: focusIndex now points at the live-focused column",
+              engine.slots.indices.contains(engine.focusIndex) &&
+              engine.slots[engine.focusIndex].window.title == liveTitle)
+
+        // Now reset the stale index again and verify close honors live focus.
+        engine.focusIndex = staleIndex
+        let beforeFocusSyncClose = liveWindows().count
+        DispatchQueue.main.sync { _ = engine.closeFocused() }
+        Thread.sleep(forTimeInterval: 0.6)
+        check("focus-sync close: closed the OS-focused window (not the stale one)",
+              engine.slots.allSatisfy { $0.window.title != liveTitle })
+        check("focus-sync close: the stale-index window is STILL open",
+              engine.slots.contains { $0.window.title == staleTitle })
+        check("focus-sync close: a real window actually closed",
+              liveWindows().count == beforeFocusSyncClose - 1)
+
         // --- CLOSE: close focused window, verify it disappears for real ---
         let closeTitle = engine.slots[engine.focusIndex].window.title
+        let slotsBeforeClose = engine.slots.count
         let liveCountBefore = liveWindows().count
         DispatchQueue.main.sync { _ = engine.closeFocused() }
         Thread.sleep(forTimeInterval: 0.6)
-        check("close: dropped from strip", engine.slots.count == 3)
+        check("close: dropped from strip", engine.slots.count == slotsBeforeClose - 1)
         check("close: gone from strip model", engine.slots.allSatisfy { $0.window.title != closeTitle })
         let liveCountAfter = liveWindows().count
         check("close: real window count dropped", liveCountAfter == liveCountBefore - 1)
