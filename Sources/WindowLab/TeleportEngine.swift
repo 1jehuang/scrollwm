@@ -281,12 +281,64 @@ final class TeleportEngine {
         return CGPoint(x: screenFrame.origin.x + slot.canvasX - viewportX, y: slot.y)
     }
 
-    /// Shared off-screen parking point: far enough past the bottom-right that
-    /// macOS clamps every parked window to the SAME corner, stacking them into
-    /// a single minimal sliver rather than a row of peeking edges.
+    /// Full AX-frame (top-left origin) of the display the strip lives on. Set by
+    /// the controller from `NSScreen`. When nil we fall back to `screenFrame`
+    /// (the visible frame), which is correct for the common single-display case.
+    var stripDisplayFrame: CGRect?
+
+    /// Full AX-frames of every OTHER display (everything except the strip's).
+    /// Empty on single-display setups. macOS never lets a window move fully
+    /// off-screen - it clamps to keep ~40px visible at some display edge - so an
+    /// off-viewport column always leaves one small sliver. With multiple
+    /// displays the naive bottom-right corner clamps that sliver onto the
+    /// NEIGHBORING monitor (it "peeks" there). Knowing the other displays lets
+    /// us pick a corner whose sliver lands on the strip's OWN display, in a
+    /// direction with no adjacent screen.
+    var otherDisplayFrames: [CGRect] = []
+
+    /// Shared off-screen parking point: far enough past a free corner that macOS
+    /// clamps every parked window to the SAME spot, stacking them into a single
+    /// minimal sliver rather than a row of peeking edges. Display-aware: the
+    /// corner is chosen so the sliver stays on the strip's display and away from
+    /// any neighbor monitor (see `computeParkingPoint`).
     var parkingPoint: CGPoint {
-        CGPoint(x: screenFrame.origin.x + screenFrame.width + 4000,
-                y: screenFrame.origin.y + screenFrame.height + 4000)
+        TeleportEngine.computeParkingPoint(
+            stripDisplay: stripDisplayFrame ?? screenFrame,
+            others: otherDisplayFrames
+        )
+    }
+
+    /// Pure parking-corner policy (no side effects, unit-tested).
+    ///
+    /// Picks the corner of `stripDisplay` to shove parked windows past, so the
+    /// unavoidable ~40px macOS clamp sliver lands on `stripDisplay` along an edge
+    /// that has NO adjacent display. Pushing toward a free edge makes macOS slide
+    /// the window back to the strip display's own outer edge (40px visible there)
+    /// instead of onto a neighbor monitor.
+    ///
+    /// Direction preference per axis: a free edge if one exists, else the legacy
+    /// direction (right / bottom) as a graceful fallback when the strip display
+    /// is hemmed in on both sides of that axis.
+    static func computeParkingPoint(stripDisplay s: CGRect,
+                                    others: [CGRect],
+                                    margin: CGFloat = 4000) -> CGPoint {
+        // A neighbor only "blocks" an edge if it actually abuts that side AND
+        // overlaps along the perpendicular axis (a display diagonally offset does
+        // not catch a sliver pushed straight out that edge).
+        func vOverlap(_ d: CGRect) -> Bool { d.minY < s.maxY && d.maxY > s.minY }
+        func hOverlap(_ d: CGRect) -> Bool { d.minX < s.maxX && d.maxX > s.minX }
+        let leftBlocked  = others.contains { $0.maxX <= s.minX + 1 && vOverlap($0) }
+        let rightBlocked = others.contains { $0.minX >= s.maxX - 1 && vOverlap($0) }
+        let topBlocked   = others.contains { $0.maxY <= s.minY + 1 && hOverlap($0) }
+        let botBlocked   = others.contains { $0.minY >= s.maxY - 1 && hOverlap($0) }
+
+        // Prefer a free edge; keep legacy right/bottom when both sides are taken.
+        let goRight: Bool = !rightBlocked ? true : (!leftBlocked ? false : true)
+        let goBottom: Bool = !botBlocked ? true : (!topBlocked ? false : true)
+
+        let x = goRight ? s.maxX + margin : s.minX - margin
+        let y = goBottom ? s.maxY + margin : s.minY - margin
+        return CGPoint(x: x, y: y)
     }
 
     /// Test seam: set the viewport offset directly (production code sets it via

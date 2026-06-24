@@ -423,6 +423,67 @@ enum StripOpsTests {
         check("partially-visible column is not parked",
               ep.onScreenTarget(for: partial) != ep.parkingPoint)
 
+        // --- Display-aware parking corner (multi-monitor "peeking" fix) -------
+        // macOS clamps a window to keep ~40px on screen, so a parked column
+        // always leaves one sliver. The corner must be chosen so that sliver
+        // lands on the STRIP's OWN display, on an edge with no neighbor monitor,
+        // instead of peeking onto an adjacent screen.
+        let mainDisp = CGRect(x: 0, y: 0, width: 1470, height: 956)
+
+        // Single display: legacy behavior (push past bottom-right corner).
+        do {
+            let p = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [], margin: 4000)
+            check("park single-display: bottom-right corner",
+                  p == CGPoint(x: 1470 + 4000, y: 956 + 4000))
+        }
+
+        // External display to the RIGHT (user's real setup): the right edge is
+        // blocked, so park toward the LEFT so the sliver stays on the built-in.
+        do {
+            let ext = CGRect(x: 1470, y: 0, width: 1920, height: 1080)
+            let p = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [ext], margin: 4000)
+            check("park external-right: goes left (off-strip-display, away from neighbor)",
+                  p.x == mainDisp.minX - 4000)
+            check("park external-right: vertical stays bottom (free edge)",
+                  p.y == mainDisp.maxY + 4000)
+            // The resulting corner must NOT be inside/toward the external display.
+            check("park external-right: x is left of the external screen",
+                  p.x < ext.minX)
+        }
+
+        // External display to the LEFT: left edge blocked -> park toward RIGHT.
+        do {
+            let leftExt = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+            let p = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [leftExt], margin: 4000)
+            check("park external-left: goes right", p.x == mainDisp.maxX + 4000)
+        }
+
+        // Display directly BELOW (stacked): bottom blocked -> park toward TOP.
+        do {
+            let below = CGRect(x: 0, y: 956, width: 1470, height: 900)
+            let p = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [below], margin: 4000)
+            check("park display-below: goes up", p.y == mainDisp.minY - 4000)
+            check("park display-below: x stays right (free)", p.x == mainDisp.maxX + 4000)
+        }
+
+        // Diagonally-offset display does NOT block a straight push: a screen at
+        // the bottom-right corner only overlaps diagonally, so the legacy
+        // bottom-right corner is still fine (no perpendicular-axis overlap).
+        do {
+            let diag = CGRect(x: 1470, y: 956, width: 800, height: 600)
+            let p = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [diag], margin: 4000)
+            check("park diagonal neighbor: still bottom-right (no axis overlap)",
+                  p == CGPoint(x: 1470 + 4000, y: 956 + 4000))
+        }
+
+        // Hemmed in on both horizontal sides: fall back to legacy right.
+        do {
+            let l = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+            let r = CGRect(x: 1470, y: 0, width: 1920, height: 1080)
+            let p = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [l, r], margin: 4000)
+            check("park hemmed both sides: legacy right fallback", p.x == mainDisp.maxX + 4000)
+        }
+
         // --- ResyncPlanner: Space-aware adoption/removal policy ---
 
         // Nothing managed yet, two windows on the current Space -> adopt both.

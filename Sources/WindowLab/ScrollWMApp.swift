@@ -51,6 +51,12 @@ final class ScrollWMController: NSObject {
         super.init()
 
         applyConfigToEngine()
+        refreshDisplayGeometry(stripDisplay: screen)
+
+        // Keep parking display-aware across monitor hotplug / rearrange.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screenParametersChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
 
         menuBar = ProductionMenuBar(controller: self, engine: engine)
         installHotkeys()
@@ -74,6 +80,47 @@ final class ScrollWMController: NSObject {
         engine.minColumnWidth = config.layout.minColumnWidth
         engine.widthPresets = config.layout.widthPresets
         engine.focusMode = config.focusMode
+    }
+
+    /// Feed the multi-display layout (in AX top-left global coordinates) to the
+    /// engine so its off-screen "parking corner" lands the unavoidable ~40px
+    /// macOS clamp sliver on the STRIP's own display, never on a neighbor
+    /// monitor. Without this, on a multi-display setup a column scrolled off the
+    /// viewport peeks at the bottom-right of an adjacent screen.
+    ///
+    /// AX global coords share one plane with the origin at the PRIMARY display's
+    /// top-left and Y growing downward; convert each NSScreen (AppKit bottom-left
+    /// origin) by flipping around the primary display's height.
+    private func refreshDisplayGeometry(stripDisplay: NSScreen) {
+        // The primary display is the one whose frame origin is (0,0) in AppKit.
+        // Its height defines the Y-flip used across the whole AX coordinate plane.
+        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
+                             ?? NSScreen.main ?? stripDisplay).frame.height
+        func axFrame(_ s: NSScreen) -> CGRect {
+            let f = s.frame
+            return CGRect(x: f.origin.x,
+                          y: primaryHeight - f.maxY,
+                          width: f.width, height: f.height)
+        }
+        let stripAX = axFrame(stripDisplay)
+        engine.stripDisplayFrame = stripAX
+        engine.otherDisplayFrames = NSScreen.screens
+            .filter { $0 !== stripDisplay }
+            .map(axFrame)
+    }
+
+    /// Re-evaluate the display layout when monitors are plugged/unplugged or
+    /// rearranged. The strip's display is the one whose AX frame contains the
+    /// engine's `screenFrame` (the engine keeps its original strip display);
+    /// fall back to the main screen if it can't be identified.
+    @objc private func screenParametersChanged() {
+        let target = engine.screenFrame
+        let strip = NSScreen.screens.first { s in
+            // Match by horizontal origin (AppKit X == AX X) and width: robust to
+            // the menu-bar visibleFrame inset that distinguishes frame vs engine.
+            abs(s.frame.origin.x - target.origin.x) < 1 && abs(s.frame.width - target.width) < 1
+        } ?? NSScreen.main
+        if let strip { refreshDisplayGeometry(stripDisplay: strip) }
     }
 
     /// Re-read the config file and apply it live. Keybindings are reinstalled
