@@ -113,14 +113,16 @@ Developer account and a "Developer ID Application" certificate; without one the
 pipeline still works and falls back to ad-hoc (the cask strips quarantine).
 
 ```bash
-./scripts/package-release.sh 0.1.2     # universal build, signed (auto-detected identity)
-./scripts/notarize.sh 0.1.2            # submit to Apple, staple, repackage zip/dmg
-./scripts/update-cask.sh 0.1.2         # sync the Homebrew cask sha256 (+drops the xattr hack when notarized)
+make notary-setup                # one-time: guided Developer ID + notary setup
+make release                     # build + sign + notarize + staple + cask
+make release-publish             # ...and upload the GitHub Release (needs gh)
 ```
 
-CI does this automatically on a `v*` tag when the signing secrets are configured
-(see the comments in `.github/workflows/release.yml`). Full setup, including the
-one-time `notarytool store-credentials`, is in [docs/SIGNING.md](docs/SIGNING.md).
+`make release` wraps `scripts/release.sh`, which runs build → notarize → cask in
+order and degrades gracefully when a cert is missing. CI does the same on a `v*`
+tag when the signing secrets are configured (see the comments in
+`.github/workflows/release.yml`). Full setup, including the one-time
+`notarytool store-credentials`, is in [docs/SIGNING.md](docs/SIGNING.md).
 
 ## Uninstall
 

@@ -44,7 +44,17 @@ local installs use the same identity as releases.
 
 ## Notarized distribution (Apple Developer account)
 
-### One-time setup
+### Fastest path: the guided setup
+
+```bash
+./scripts/setup-developer-id.sh     # or: make notary-setup
+```
+
+This walks you through the two steps that need your Apple ID (cert + notary
+credentials), validates each, and can optionally push the GitHub Actions secrets
+for you. It is idempotent. The manual equivalents are below if you prefer.
+
+### One-time setup (manual)
 
 1. **Install a Developer ID Application certificate.**
    Xcode → Settings → Accounts → (your team) → Manage Certificates →
@@ -69,6 +79,17 @@ local installs use the same identity as releases.
    Override the profile name anywhere with `SCROLLWM_NOTARY_PROFILE=...`.
 
 ### Cut a release
+
+One command does build → notarize → cask (and optionally the GitHub Release):
+
+```bash
+make release                 # = scripts/release.sh <VERSION>
+make release-publish         # ...and upload the GitHub Release via gh
+# or explicitly:
+./scripts/release.sh 0.1.2 [--publish]
+```
+
+Under the hood that runs the three steps (also usable individually):
 
 ```bash
 ./scripts/package-release.sh 0.1.2   # universal build, Developer ID + hardened runtime
