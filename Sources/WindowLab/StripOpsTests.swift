@@ -316,6 +316,11 @@ enum StripOpsTests {
         check("unknown key rejected", Chord(string: "cmd+squimbus") == nil)
         check("double key rejected", Chord(string: "a+b") == nil)
         check("symbol modifiers parse", Chord(string: "⌘⇧l")?.keyCode == 37)
+        // Punctuation keys: literal glyph and spoken name both resolve.
+        check("chord cmd+\\ parses to backslash keycode", Chord(string: "cmd+\\")?.keyCode == 42)
+        check("chord cmd+backslash parses to same keycode", Chord(string: "cmd+backslash")?.keyCode == 42)
+        check("chord cmd+/ parses to slash keycode", Chord(string: "cmd+/")?.keyCode == 44)
+        check("chord cmd+; parses to semicolon keycode", Chord(string: "cmd+;")?.keyCode == 41)
 
         // --- Config: JSONC parsing (comments + overrides) ---
         let jsonc = """

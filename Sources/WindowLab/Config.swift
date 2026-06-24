@@ -368,5 +368,20 @@ struct Chord: Equatable {
         "return": 36, "enter": 36, "tab": 48, "space": 49,
         "delete": 51, "escape": 53, "esc": 53,
         "left": 123, "right": 124, "down": 125, "up": 126,
+        // Punctuation. Both the literal glyph and a spoken name are accepted so
+        // chords like "cmd+\\" or "cmd+backslash" both parse. (The tokenizer
+        // splits on "+", "-", and space, so those three keys can only be named,
+        // not given as a glyph.)
+        "\\": 42, "backslash": 42,
+        "/": 44, "slash": 44,
+        ";": 41, "semicolon": 41,
+        "'": 39, "quote": 39, "apostrophe": 39,
+        ",": 43, "comma": 43,
+        ".": 47, "period": 47, "dot": 47,
+        "=": 24, "equal": 24, "equals": 24,
+        "`": 50, "grave": 50, "backtick": 50,
+        "[": 33, "leftbracket": 33,
+        "]": 30, "rightbracket": 30,
+        "minus": 27, "hyphen": 27,
     ]
 }
