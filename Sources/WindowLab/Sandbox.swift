@@ -19,7 +19,12 @@ import AppKit
 ///                                    stay live so you can drive the real
 ///                                    hotkeys against them. Ctrl-C / Quit
 ///                                    restores + cleans up the test windows.
-func runSandbox(windowCount: Int) {
+///   WindowLab sandbox [n] --display M
+///                                    spawn the windows on monitor M (0-based,
+///                                    left-to-right) instead of the main display,
+///                                    so you can exercise multi-display behavior
+///                                    live. Out-of-range falls back to main.
+func runSandbox(windowCount: Int, displayIndex: Int? = nil) {
     guard AXSource.isTrusted else {
         print("sandbox: needs Accessibility permission. Grant it and re-run.")
         exit(2)
@@ -32,14 +37,28 @@ func runSandbox(windowCount: Int) {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
 
-    print("[sandbox] spawning \(windowCount) disposable test windows...")
-    let spawned = spawnTestWindows(count: windowCount)
+    // Pick the target monitor. nil (default) keeps the historical main-display
+    // behavior; an explicit `--display M` tiles the disposable windows on that
+    // monitor so the sandbox can be driven on an external screen.
+    let targetScreen = displayIndex.flatMap(displayForIndex)
+    if let displayIndex, targetScreen == nil {
+        print("[sandbox] --display \(displayIndex) out of range "
+              + "(\(NSScreen.screens.count) display(s)); using main display.")
+    }
+    let whereStr = targetScreen.map { "display \(displayIndex!) \($0.frame.debugDescription)" } ?? "main display"
+    print("[sandbox] spawning \(windowCount) disposable test windows on \(whereStr)...")
+    let spawned = spawnTestWindows(count: windowCount, onDisplay: targetScreen)
     let pids = Set(spawned.map { $0.processIdentifier })
 
     // Build the real controller and LOCK it to the sandbox windows.
     let controller = ScrollWMController()
     controller.sandboxPIDs = pids
     scrollWMControllerKeepAlive = controller
+
+    // If the sandbox targets a non-main monitor, move the STRIP onto it too so
+    // arrange places the columns where the windows were spawned (otherwise the
+    // strip would yank them back to the main display). No-op for the default.
+    if let targetScreen { controller.bindStripToDisplay(targetScreen) }
 
     // Expose a control socket so `scrollwm <verb>` can drive the sandbox.
     // Point the CLI at it with SCROLLWM_CONTROL_SOCK (printed below).

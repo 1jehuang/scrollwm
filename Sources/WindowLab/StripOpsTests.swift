@@ -1308,6 +1308,36 @@ enum StripOpsTests {
               DisplaySelector.pick(spec: "largest", displays: one) == 0)
         check("select: single display, 'next' wraps to itself -> 0",
               DisplaySelector.pick(spec: "next", displays: one, current: 0) == 0)
+        // --- testWindowTiles: multi-display spawn placement (pure) -----------
+        // Primary display (origin 0,0): layout is unchanged from the original
+        // single-display tiling, so existing callers spawn identically.
+        let tilePrimary = CGRect(x: 0, y: 0, width: 1470, height: 956)
+        let pTiles = testWindowTiles(count: 4, displayFrame: tilePrimary)
+        check("tiles: count matches request", pTiles.count == 4)
+        check("tiles: first window at the historical (40, top) origin",
+              pTiles[0].x == 40 && pTiles[0].y == 956 - 120 - 240)
+        check("tiles: columns step by width+20",
+              pTiles[1].x == 40 + 320 + 20 && pTiles[1].y == pTiles[0].y)
+        // A monitor placed ABOVE-and-LEFT of the primary (negative AppKit origin,
+        // like the real external Samsung at (-225, 956)): every tile must be
+        // anchored to THAT display's origin so windows land on it, not on (0,0).
+        let tileExternal = CGRect(x: -225, y: 956, width: 2560, height: 1440)
+        let eTiles = testWindowTiles(count: 4, displayFrame: tileExternal)
+        check("tiles: external tiles carry the display's negative X origin",
+              eTiles[0].x == -225 + 40)
+        check("tiles: external tiles sit on the external's Y band",
+              eTiles[0].y == 956 + 1440 - 120 - 240)
+        check("tiles: every external tile lies within the external AppKit frame",
+              eTiles.allSatisfy { t in
+                  t.x >= tileExternal.minX && t.x + t.width <= tileExternal.maxX
+                      && t.y >= tileExternal.minY && t.y + t.height <= tileExternal.maxY
+              })
+        // Grid wraps to a new row after `cols` windows (default 4).
+        let wrap = testWindowTiles(count: 5, displayFrame: tilePrimary)
+        check("tiles: 5th window wraps to a new (lower) row",
+              wrap[4].x == wrap[0].x && wrap[4].y < wrap[0].y)
+        check("tiles: zero count yields no tiles",
+              testWindowTiles(count: 0, displayFrame: tilePrimary).isEmpty)
 
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0

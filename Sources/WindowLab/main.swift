@@ -211,8 +211,21 @@ case "statusbench":
     let n = args.dropFirst().compactMap { Int($0) }.first ?? 24
     runStatusItemBench(steps: n)
 case "sandbox":
-    let n = args.dropFirst().compactMap { Int($0) }.first ?? 4
-    runSandbox(windowCount: n)
+    // `--display N` (0-based, left-to-right) spawns the sandbox on a specific
+    // monitor; the Int right after the flag is its index. Default = main display.
+    var sandboxDisplay: Int? = nil
+    var sandboxDisplayValueIdx: Int? = nil
+    if let di = args.firstIndex(of: "--display") {
+        sandboxDisplayValueIdx = di + 1
+        sandboxDisplay = args.indices.contains(di + 1) ? Int(args[di + 1]) : nil
+    }
+    // Window count = first bare integer that is NOT the --display value.
+    let n = args.enumerated().dropFirst()
+        .compactMap { (i, a) in i == sandboxDisplayValueIdx ? nil : Int(a) }
+        .first ?? 4
+    runSandbox(windowCount: n, displayIndex: sandboxDisplay)
+case "displaytest":
+    runDisplayTest()
 case "e2etest":
     runE2EKeybindingTest()
 case "hotkeyprobe":
@@ -271,11 +284,21 @@ default:
                                width/move/close via the engine, verify + restore.
       WindowLab spawnlatency   measure how fast a NEW window in a managed app is
                                adopted (AX observer fast path vs poll).
-      WindowLab sandbox [n]    run the REAL controller locked to n disposable
+      WindowLab sandbox [n] [--display M]
+                               run the REAL controller locked to n disposable
                                windows it spawns (default 4). Drive the real
                                hotkeys safely; your real windows are untouched.
+                               --display M tiles them on monitor M (0-based,
+                               left-to-right) so you can sandbox on an external.
       WindowLab e2etest        end-to-end: run the real controller, synthesize
                                Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q, verify effects.
+      WindowLab displaytest    multi-display integration: spawn disposable
+                               windows, run the REAL controller locked to them,
+                               and assert (vs live AX) that strip windows land on
+                               the strip display, the off-screen parking sliver
+                               stays on the strip display (not a neighbor), and a
+                               strip rebind moves windows onto the other display.
+                               Adapts to 1- or 2-display hardware; restores after.
       WindowLab hotkeyprobe [secs]
                                register Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q globally
                                and report which key combos Carbon actually delivers.
