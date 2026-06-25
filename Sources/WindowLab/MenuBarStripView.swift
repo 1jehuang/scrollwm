@@ -183,31 +183,6 @@ enum MenuBarMetrics {
     }
 }
 
-// MARK: - Transient visual flourishes
-
-/// Short-lived particle/effect overlaid on the mini-map. Each carries the
-/// canvas coordinates it is anchored to (so it tracks the live mapping) and a
-/// birth time; the view fades it out over `duration`.
-private struct Flourish {
-    enum Kind {
-        case sparkle      // window opened: expanding burst at insertion point
-        case poof         // window closed: dissolving ring
-        case sweep        // arrange: bright vertical line crossing the map
-        case focusPulse   // window switch: ring blooming on the new focus
-    }
-    let kind: Kind
-    let canvasX: Double
-    let birth: CFTimeInterval
-    let duration: CFTimeInterval
-    var hue: NSColor
-
-    func progress(_ now: CFTimeInterval) -> Double {
-        guard duration > 0 else { return 1 }
-        return min(1, max(0, (now - birth) / duration))
-    }
-    func alive(_ now: CFTimeInterval) -> Bool { now - birth < duration }
-}
-
 // MARK: - Visual slot
 
 /// One animated column. Geometry lives in canvas points (matching the engine's
@@ -321,8 +296,6 @@ final class MenuBarStripView: NSView {
     private var focusGlow = Spring(0, response: 0.32, dampingFraction: 0.7)
     private var focusGlowActive = false
 
-    private var flourishes: [Flourish] = []
-
     private var displayLink: CADisplayLink?
     private var lastTickNs: UInt64 = 0
     private var dormant = true
@@ -415,11 +388,6 @@ final class MenuBarStripView: NSView {
         let w = Double(max(bounds.width, 24))
         pageSlide.value = Double(direction) * w
         pageSlide.target = 0
-        // A bright sweep in the travel direction sells the transition.
-        flourishes.append(Flourish(
-            kind: .sweep, canvasX: 0, birth: CACurrentMediaTime(),
-            duration: 0.42, hue: NSColor.controlAccentColor
-        ))
         ensureAnimating()
     }
 
@@ -433,10 +401,6 @@ final class MenuBarStripView: NSView {
         // AppKit coords), so seed +/- accordingly.
         pageSlideY.value = Double(-direction) * h
         pageSlideY.target = 0
-        flourishes.append(Flourish(
-            kind: .sweep, canvasX: 0, birth: CACurrentMediaTime(),
-            duration: 0.42, hue: NSColor.controlAccentColor
-        ))
         ensureAnimating()
     }
 
@@ -489,35 +453,22 @@ final class MenuBarStripView: NSView {
                 v.activateAt = now + Double(i) * 0.035
                 v.presence.value = 0
             }
-            flourishes.append(Flourish(kind: .sweep, canvasX: 0, birth: now,
-                                       duration: 0.45, hue: .controlAccentColor))
 
         case .release:
             for v in slots { v.presence.target = 0; v.width.target = max(2, v.width.value * 0.2) }
 
         case .focusChanged(let toID, _):
             for v in slots { v.focus.target = (v.id == toID) ? 1 : 0 }
-            if let v = slots.first(where: { $0.id == toID }) {
-                v.pop.kick(7.5) // gentle scale pop on the newly focused column
-                // (Blue focus-pulse ring removed.)
-            }
+            // Gentle scale pop on the newly focused column.
+            slots.first(where: { $0.id == toID })?.pop.kick(7.5)
 
         case .added(let ids):
-            for id in ids {
-                if let v = slots.first(where: { $0.id == id }) {
-                    v.pop.kick(6)
-                    flourishes.append(Flourish(kind: .sparkle, canvasX: v.x.target + v.width.target / 2,
-                                               birth: now, duration: 0.5, hue: .controlAccentColor))
-                }
-            }
+            // Pop the new column in; no overlay particles.
+            for id in ids { slots.first(where: { $0.id == id })?.pop.kick(6) }
 
-        case .removed(let ids):
-            for id in ids {
-                if let v = slots.first(where: { $0.id == id }) {
-                    flourishes.append(Flourish(kind: .poof, canvasX: v.x.value + v.width.value / 2,
-                                               birth: now, duration: 0.45, hue: .secondaryLabelColor))
-                }
-            }
+        case .removed:
+            // Columns collapse + fade via their springs; no overlay particles.
+            break
 
         case .resized(let ids):
             for id in ids { slots.first(where: { $0.id == id })?.pop.kick(4) }
@@ -566,9 +517,8 @@ final class MenuBarStripView: NSView {
         pageSlide.step(dt); pageSlideY.step(dt); focusGlow.step(dt)
         for s in slots { s.step(dt, now: now) }
 
-        // Reap fully-exited columns and dead flourishes.
+        // Reap fully-exited columns.
         slots.removeAll { $0.exiting && $0.presence.value < 0.02 && $0.presence.isSettled }
-        flourishes.removeAll { !$0.alive(now) }
 
         needsDisplay = true
     }
@@ -576,7 +526,7 @@ final class MenuBarStripView: NSView {
     private func everythingSettled() -> Bool {
         modeFade.isSettled && viewportX.isSettled && viewportW.isSettled &&
         pageSlide.isSettled && pageSlideY.isSettled && focusGlow.isSettled &&
-        flourishes.isEmpty && slots.allSatisfy { $0.settled }
+        slots.allSatisfy { $0.settled }
     }
 
     // MARK: - Drawing
@@ -683,11 +633,7 @@ final class MenuBarStripView: NSView {
         NSColor.labelColor.withAlphaComponent(0.95 * alpha).setStroke()
         vPath.stroke()
 
-        // 4. Flourishes on top.
-        let now = CACurrentMediaTime()
-        for f in flourishes { drawFlourish(f, now: now, mapX: mapX, top: top, bottomH: bottomH, alpha: alpha) }
-
-        // 5. Vertical-workspace indicator: a tiny stack of dots at the top-left,
+        // 4. Vertical-workspace indicator: a tiny stack of dots at the top-left,
         // one per workspace, the active one filled. Only when >1 workspace.
         drawWorkspaceIndicator(in: rect, alpha: alpha)
     }
@@ -713,55 +659,6 @@ final class MenuBarStripView: NSView {
         }
     }
 
-    private func drawFlourish(_ f: Flourish, now: CFTimeInterval,
-                              mapX: (Double) -> CGFloat, top: CGFloat, bottomH: CGFloat, alpha: Double) {
-        let p = f.progress(now)
-        let cy = top + bottomH / 2
-        switch f.kind {
-        case .focusPulse:
-            let cx = mapX(f.canvasX)
-            let radius = 2 + CGFloat(easeOut(p)) * (bottomH * 0.9)
-            let a = (1 - p) * 0.6 * alpha
-            let ring = NSBezierPath(ovalIn: NSRect(x: cx - radius, y: cy - radius,
-                                                   width: radius * 2, height: radius * 2))
-            ring.lineWidth = 1.4
-            f.hue.withAlphaComponent(CGFloat(a)).setStroke()
-            ring.stroke()
-
-        case .sparkle:
-            let cx = mapX(f.canvasX)
-            let reach = 2 + CGFloat(easeOut(p)) * 6
-            let a = (1 - p) * 0.9 * alpha
-            f.hue.withAlphaComponent(CGFloat(a)).setStroke()
-            let star = NSBezierPath()
-            star.lineWidth = 1.2
-            for ang in stride(from: 0.0, to: Double.pi * 2, by: Double.pi / 2) {
-                let dx = CGFloat(cos(ang)) * reach, dy = CGFloat(sin(ang)) * reach
-                star.move(to: NSPoint(x: cx, y: cy))
-                star.line(to: NSPoint(x: cx + dx, y: cy + dy))
-            }
-            star.stroke()
-
-        case .poof:
-            let cx = mapX(f.canvasX)
-            let radius = 1 + CGFloat(easeOut(p)) * (bottomH * 0.7)
-            let a = (1 - p) * 0.7 * alpha
-            let ring = NSBezierPath(ovalIn: NSRect(x: cx - radius, y: cy - radius,
-                                                   width: radius * 2, height: radius * 2))
-            ring.lineWidth = 1.2
-            f.hue.withAlphaComponent(CGFloat(a)).setStroke()
-            ring.stroke()
-
-        case .sweep:
-            // A bright vertical bar wiping across the whole map.
-            let x = bounds.minX + CGFloat(easeInOut(p)) * bounds.width
-            let a = sin(p * Double.pi) * 0.8 * alpha // fade in and out
-            let bar = NSBezierPath(rect: NSRect(x: x - 1.5, y: top, width: 3, height: bottomH))
-            f.hue.withAlphaComponent(CGFloat(a)).setFill()
-            bar.fill()
-        }
-    }
-
     // MARK: - Helpers
 
     private func blend(_ a: NSColor, _ b: NSColor, _ t: CGFloat) -> NSColor {
@@ -773,11 +670,6 @@ final class MenuBarStripView: NSView {
             blue: ca.blueComponent + (cb.blueComponent - ca.blueComponent) * t,
             alpha: ca.alphaComponent + (cb.alphaComponent - ca.alphaComponent) * t
         )
-    }
-
-    private func easeOut(_ t: Double) -> Double { 1 - pow(1 - t, 3) }
-    private func easeInOut(_ t: Double) -> Double {
-        t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
     }
 
     deinit { displayLink?.invalidate() }
