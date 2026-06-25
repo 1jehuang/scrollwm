@@ -702,8 +702,18 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         let clamped = max(stripView.minContentWidth, min(width, stripView.maxContentWidth))
         guard abs(clamped - contentWidth) >= 0.5 else { return }
         contentWidth = clamped
-        statusItem?.length = clamped + Self.hPadding
+        if Self.profileStatusItem {
+            let ms = Clock.measureMs { statusItem?.length = clamped + Self.hPadding }
+            FileHandle.standardError.write(
+                Data(String(format: "[statusprofile] length=%.0f set in %.3f ms\n", clamped + Self.hPadding, ms).utf8))
+        } else {
+            statusItem?.length = clamped + Self.hPadding
+        }
     }
+
+    /// Opt-in live profiling of the status-item resize on the real menu bar
+    /// (set SCROLLWM_PROFILE_STATUSITEM=1). Logs each `.length` write's cost.
+    static let profileStatusItem = ProcessInfo.processInfo.environment["SCROLLWM_PROFILE_STATUSITEM"] == "1"
 
     private var healAttempt = 0
     private func ensureVisible() {

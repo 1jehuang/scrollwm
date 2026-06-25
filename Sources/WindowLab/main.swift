@@ -207,6 +207,9 @@ case "opstest":
     runStripOpsIntegrationTest()
 case "spawnlatency":
     runSpawnLatencyTest()
+case "statusbench":
+    let n = args.dropFirst().compactMap { Int($0) }.first ?? 24
+    runStatusItemBench(steps: n)
 case "sandbox":
     let n = args.dropFirst().compactMap { Int($0) }.first ?? 4
     runSandbox(windowCount: n)
