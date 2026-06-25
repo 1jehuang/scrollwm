@@ -441,6 +441,7 @@ enum StripOpsTests {
           "layout": { "columnGap": 20, "minColumnWidth": 150,
                       "widthPresets": [0.3, 0.6, 0.9], "stripDisplay": "largest" },
           "focusMode": "centered",
+          "arrangeOnFirstGrant": false,
           "keybindings": {
             "focusNext": "ctrl+opt+k",           // override
             "width25": ["opt+1", "cmd+1"]
@@ -454,6 +455,7 @@ enum StripOpsTests {
             check("config widthPresets parsed", parsed.layout.widthPresets == [0.3, 0.6, 0.9])
             check("config stripDisplay parsed", parsed.layout.stripDisplay == "largest")  // [md-select]
             check("config focusMode parsed", parsed.focusMode == .centered)
+            check("config arrangeOnFirstGrant parsed (false override)", parsed.arrangeOnFirstGrant == false)
             check("config keybinding override", parsed.keybindings[.focusNext] == ["ctrl+opt+k"])
             check("config keybinding array", parsed.keybindings[.width25] == ["opt+1", "cmd+1"])
             // Untouched bindings keep their defaults.
@@ -461,6 +463,9 @@ enum StripOpsTests {
                   parsed.keybindings[.toggleArrange] == KeyAction.defaultChords[.toggleArrange])
             // spawnWidth unset in this JSON -> keeps the default (0.5).
             check("config spawnWidth defaults when unset", parsed.layout.spawnWidth == 0.5)
+            // arrangeOnFirstGrant defaults to on (the no-extra-click first run).
+            check("config arrangeOnFirstGrant defaults on",
+                  ScrollWMConfig.default.arrangeOnFirstGrant == true)
         } catch {
             check("config JSONC parses", false)
         }

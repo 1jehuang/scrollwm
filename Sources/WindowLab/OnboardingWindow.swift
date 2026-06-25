@@ -18,7 +18,7 @@ import AppKit
 ///
 /// All work happens on the main thread (AppKit), driven by the permission
 /// coordinator's main-thread callbacks.
-final class OnboardingWindowController: NSObject {
+final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private let permission = AccessibilityPermission.shared
     private var window: NSWindow?
 
@@ -26,6 +26,14 @@ final class OnboardingWindowController: NSObject {
     private var statusDot: NSView?
     private var primaryButton: NSButton?
     private var troubleshootLabel: NSTextField?
+
+    /// True while we have hidden the user's other apps to focus onboarding, so
+    /// we know to restore them when the window goes away.
+    private var didHideOthers = false
+
+    /// Guards the one-time granted hook so the live observer can re-deliver
+    /// `.granted` without arranging twice.
+    private var didFinish = false
 
     /// Invoked once, on the main thread, when permission becomes granted.
     var onGranted: (() -> Void)?
@@ -37,6 +45,18 @@ final class OnboardingWindowController: NSObject {
             return
         }
         buildWindow()
+
+        // Focus the user on exactly two things: these instructions and the
+        // Accessibility toggle. Hide every other app so the desktop is calm,
+        // pin this window to the LEFT edge, and open the Accessibility pane on
+        // the right (its per-row switches sit on the right, clear of our
+        // left-pinned window). Hidden apps are restored automatically on grant
+        // or whenever this window closes.
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.hideOtherApplications(nil)
+        didHideOthers = true
+        positionLeftEdge()
+
         // Fire the system modal ONLY on a genuine first run (untrusted and
         // never asked before). On any later launch we deep-link to Settings and
         // poll instead, so a stale-`false` reading or a TCC hiccup can never
@@ -45,6 +65,9 @@ final class OnboardingWindowController: NSObject {
                                                     hasPrompted: permission.hasPrompted) {
             _ = permission.requestSystemPrompt()
         }
+        // Always land the user on the exact pane with the switch, on the right.
+        permission.openSystemSettings()
+
         // React live: the moment trust appears, finish onboarding.
         permission.observe { [weak self] state in
             self?.apply(state: state)
@@ -52,27 +75,48 @@ final class OnboardingWindowController: NSObject {
         apply(state: permission.state)
 
         window?.makeKeyAndOrderFront(nil)
-        window?.center()
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func close() {
+        // windowWillClose restores the hidden apps; closing fires it.
         window?.close()
         window = nil
+    }
+
+    /// Pin the onboarding window to the left edge of the main screen, centered
+    /// vertically, so it sits beside the Settings window instead of over it.
+    private func positionLeftEdge() {
+        guard let win = window, let screen = NSScreen.main else { return }
+        let vf = screen.visibleFrame
+        var frame = win.frame
+        frame.origin.x = vf.minX + 28
+        frame.origin.y = vf.midY - frame.height / 2
+        win.setFrame(frame, display: true)
+    }
+
+    /// Restore the apps we hid for focus when onboarding goes away (granted,
+    /// dismissed, or closed by the user). Safe to call more than once.
+    func windowWillClose(_ notification: Notification) {
+        if didHideOthers {
+            NSApp.unhideAllApplications(nil)
+            didHideOthers = false
+        }
     }
 
     // MARK: - UI construction
 
     private func buildWindow() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 400),
+            styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        win.title = "Welcome to ScrollWM"
+        win.title = "Set up ScrollWM"
         win.isReleasedWhenClosed = false
         win.level = .floating
+        win.delegate = self
 
         let content = NSView(frame: win.contentLayoutRect)
         content.autoresizingMask = [.width, .height]
@@ -80,8 +124,8 @@ final class OnboardingWindowController: NSObject {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 14
-        stack.edgeInsets = NSEdgeInsets(top: 24, left: 28, bottom: 24, right: 28)
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 22, right: 24)
         stack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -91,28 +135,27 @@ final class OnboardingWindowController: NSObject {
             stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor),
         ])
 
-        // Title.
-        let title = label("ScrollWM needs one permission", font: .systemFont(ofSize: 18, weight: .bold))
+        // Title — short and clear.
+        let title = label("Turn on Accessibility", font: .systemFont(ofSize: 19, weight: .bold))
         stack.addArrangedSubview(title)
 
-        // Explanation.
-        let body = label(
-            "ScrollWM arranges your windows into a scrolling strip. To move "
-            + "windows for you, macOS requires the Accessibility permission — "
-            + "this one switch is the only thing ScrollWM ever needs. No screen "
-            + "recording, no input monitoring.",
-            font: .systemFont(ofSize: 13)
-        )
-        body.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(body)
+        let subtitle = label("It's the one permission ScrollWM needs to move your windows.",
+                             font: .systemFont(ofSize: 13))
+        subtitle.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(subtitle)
 
-        // Reassurance.
-        let calm = label(
-            "Nothing moves yet. ScrollWM stays dormant until you choose Arrange.",
-            font: .systemFont(ofSize: 12, weight: .medium)
-        )
-        calm.textColor = .tertiaryLabelColor
-        stack.addArrangedSubview(calm)
+        // Numbered steps — the whole point: dead simple, super concise. These
+        // match exactly what the user sees in the Settings pane opened to the
+        // right of this window.
+        let steps = NSStackView()
+        steps.orientation = .vertical
+        steps.alignment = .leading
+        steps.spacing = 10
+        steps.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        steps.addArrangedSubview(stepRow(1, "Find ScrollWM in the list on the right."))
+        steps.addArrangedSubview(stepRow(2, "Flip its switch ON."))
+        steps.addArrangedSubview(stepRow(3, "Done — your windows arrange instantly."))
+        stack.addArrangedSubview(steps)
 
         // Live status row: dot + text.
         let statusRow = NSStackView()
@@ -127,7 +170,7 @@ final class OnboardingWindowController: NSObject {
             dot.widthAnchor.constraint(equalToConstant: 10),
             dot.heightAnchor.constraint(equalToConstant: 10),
         ])
-        let status = label("Checking permission…", font: .systemFont(ofSize: 13, weight: .semibold))
+        let status = label("Waiting for the switch…", font: .systemFont(ofSize: 13, weight: .semibold))
         statusRow.addArrangedSubview(dot)
         statusRow.addArrangedSubview(status)
         stack.addArrangedSubview(statusRow)
@@ -141,26 +184,55 @@ final class OnboardingWindowController: NSObject {
         stack.addArrangedSubview(trouble)
         self.troubleshootLabel = trouble
 
-        // Button row.
+        // Button row — primary reopens the pane; the rest are escape hatches.
         let buttonRow = NSStackView()
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 10
         let primary = NSButton(title: "Open Accessibility Settings", target: self, action: #selector(openSettings))
         primary.bezelStyle = .rounded
         primary.keyEquivalent = "\r"
-        let reveal = NSButton(title: "Show ScrollWM in Finder", target: self, action: #selector(revealInFinder))
+        let reveal = NSButton(title: "Show in Finder", target: self, action: #selector(revealInFinder))
         reveal.bezelStyle = .rounded
         reveal.toolTip = "If ScrollWM isn't in the list, drag it from here into the Accessibility list."
-        let copyForAgent = NSButton(title: "Copy setup steps for my AI assistant", target: self, action: #selector(copyAgentInstructions))
-        copyForAgent.bezelStyle = .rounded
         buttonRow.addArrangedSubview(primary)
         buttonRow.addArrangedSubview(reveal)
-        buttonRow.addArrangedSubview(copyForAgent)
         stack.addArrangedSubview(buttonRow)
         self.primaryButton = primary
 
+        // Quiet escape hatch on its own line so the main flow stays clean.
+        let copyForAgent = NSButton(title: "Copy setup steps for my AI assistant", target: self, action: #selector(copyAgentInstructions))
+        copyForAgent.bezelStyle = .inline
+        copyForAgent.controlSize = .small
+        copyForAgent.contentTintColor = .secondaryLabelColor
+        stack.addArrangedSubview(copyForAgent)
+
         win.contentView = content
         self.window = win
+    }
+
+    /// A "① text" step row: a circled number badge beside a concise line.
+    private func stepRow(_ n: Int, _ text: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 9
+        let badge = label("\(n)", font: .systemFont(ofSize: 13, weight: .bold))
+        badge.textColor = .white
+        badge.alignment = .center
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        badge.layer?.cornerRadius = 10
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        badge.setContentHuggingPriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            badge.widthAnchor.constraint(equalToConstant: 20),
+            badge.heightAnchor.constraint(equalToConstant: 20),
+        ])
+        let text = label(text, font: .systemFont(ofSize: 13, weight: .medium))
+        text.preferredMaxLayoutWidth = 290
+        row.addArrangedSubview(badge)
+        row.addArrangedSubview(text)
+        return row
     }
 
     private func label(_ text: String, font: NSFont) -> NSTextField {
@@ -180,11 +252,15 @@ final class OnboardingWindowController: NSObject {
         switch state {
         case .granted:
             statusDot?.layer?.backgroundColor = NSColor.systemGreen.cgColor
-            statusLabel?.stringValue = "Granted — ScrollWM is ready."
+            statusLabel?.stringValue = "Granted — arranging your windows…"
             statusLabel?.textColor = .systemGreen
             troubleshootLabel?.isHidden = true
             primaryButton?.isEnabled = false
-            // Auto-continue, no relaunch. Briefly let the user see the green.
+            // Fire the granted hook exactly once (the observer can re-deliver
+            // .granted), restore the apps we hid, and auto-continue with no
+            // relaunch. Brief beat so the user sees the green confirmation.
+            guard !didFinish else { return }
+            didFinish = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard let self else { return }
                 self.onGranted?()

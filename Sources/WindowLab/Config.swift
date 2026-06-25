@@ -98,6 +98,14 @@ struct ScrollWMConfig: Equatable {
     var update = Update()
     var focusMode: TeleportEngine.FocusMode = .fit
 
+    /// When the user grants Accessibility through first-run onboarding, arrange
+    /// every current-Space window into the strip immediately, so the very first
+    /// thing they see ScrollWM do is tidy their desktop (no extra click). Only
+    /// fires on that fresh, user-initiated grant — never on ordinary launches of
+    /// an already-trusted app (where we respect a deliberate release). Set false
+    /// to start dormant even on first grant.
+    var arrangeOnFirstGrant: Bool = true
+
     /// Action -> one or more chords. Multiple chords let an action have
     /// several triggers (e.g. width via both Opt+1 and Cmd+1).
     var keybindings: [KeyAction: [String]] = KeyAction.defaultChords
@@ -170,6 +178,7 @@ struct ScrollWMConfig: Equatable {
                 "allowPrerelease": update.allowPrerelease,
             ],
             "focusMode": focusMode.rawValue,
+            "arrangeOnFirstGrant": arrangeOnFirstGrant,
             "keybindings": Dictionary(uniqueKeysWithValues: keybindings.map { ($0.key.rawValue, $0.value) }),
             "spawn": spawn,
         ]
@@ -245,6 +254,7 @@ struct ScrollWMConfig: Equatable {
         if let fm = obj["focusMode"] as? String, let mode = TeleportEngine.FocusMode(rawValue: fm) {
             config.focusMode = mode
         }
+        if let a = obj["arrangeOnFirstGrant"] as? Bool { config.arrangeOnFirstGrant = a }
         if let kb = obj["keybindings"] as? [String: Any] {
             for (key, value) in kb {
                 guard let action = KeyAction(rawValue: key) else {
@@ -394,6 +404,13 @@ struct ScrollWMConfig: Equatable {
       //   "fit"      = scroll only when the focused column is off screen
       //   "centered" = always center the focused column
       "focusMode": "fit",
+
+      // When you grant Accessibility during first-run onboarding, immediately
+      // arrange every current-Space window into the strip, so ScrollWM's first
+      // visible act is to tidy your desktop (no extra click). Only fires on that
+      // fresh, user-initiated grant; ordinary launches of an already-trusted app
+      // start dormant and respect any release. Set false to always start dormant.
+      "arrangeOnFirstGrant": true,
 
       // Keybindings. Modifiers: cmd, opt (alt), ctrl, shift. Keys: letters,
       // digits, "left"/"right"/"up"/"down", "escape", "space", "return", "tab".

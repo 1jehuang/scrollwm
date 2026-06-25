@@ -567,6 +567,22 @@ final class ScrollWMController: NSObject {
         isManaging ? release() : arrange()
     }
 
+    /// Arrange immediately after the user grants Accessibility in first-run
+    /// onboarding, so ScrollWM's first visible act is to tidy the desktop with
+    /// zero extra clicks. Gated on the `arrangeOnFirstGrant` config (default on)
+    /// and a no-op if the user already arranged (e.g. via the CLI in the gap).
+    /// Adopts everything on the current Space, including hidden/minimized
+    /// windows, exactly like the "Arrange All Windows" menu action.
+    func arrangeOnFirstGrant() {
+        guard config.arrangeOnFirstGrant else {
+            print("first grant: arrangeOnFirstGrant disabled; staying dormant")
+            return
+        }
+        guard !isManaging else { return }
+        print("first grant: arranging the desktop automatically")
+        arrangeAllWindows()
+    }
+
     /// "Show All Windows": equalize every managed column so all windows are
     /// visible on screen at once (an overview), scrolled to the strip's start.
     /// No-op while dormant. Persists the new frames for crash recovery.
@@ -1534,7 +1550,17 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         }
         func presentOnboarding() {
             let ob = OnboardingWindowController()
-            ob.onGranted = { startOnce() }
+            ob.onGranted = {
+                startOnce()
+                // This is a FRESH, user-initiated grant via onboarding (not a
+                // transient relaunch of an already-trusted app), so arrange the
+                // desktop right away — ScrollWM's first visible act tidies the
+                // windows with zero extra clicks. Defer a beat so the onboarding
+                // window has finished closing / restoring hidden apps first.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                    controller.arrangeOnFirstGrant()
+                }
+            }
             ob.present()
             onboardingKeepAlive = ob
         }
