@@ -28,16 +28,10 @@ import ApplicationServices
 ///      dismisses, the controller starts, the menu updates. No relaunch, and
 ///      no second prompt.
 final class AccessibilityPermission {
-    enum State: Equatable {
-        /// Trusted: we may drive the Accessibility API.
-        case granted
-        /// Never prompted on this machine: show first-run onboarding.
-        case notDetermined
-        /// Prompted before but currently off: show troubleshooting copy.
-        case denied
-
-        var isGranted: Bool { self == .granted }
-    }
+    /// The resolved permission state. The decision logic lives in the PURE,
+    /// unit-tested `PermissionPolicy`; this alias keeps `AccessibilityPermission.State`
+    /// working for every existing call site (menu, onboarding, launch flow).
+    typealias State = PermissionPolicy.State
 
     static let shared = AccessibilityPermission()
 
@@ -60,15 +54,11 @@ final class AccessibilityPermission {
 
     /// Should onboarding auto-fire the one-time system Accessibility modal?
     ///
-    /// Only on a *genuine first run*: currently untrusted AND never prompted
-    /// before on this machine. This is the single guard that stops the
-    /// "ScrollWM keeps asking me to turn on Accessibility" dialog spam:
-    ///   - Trusted already   -> never (the modal must never appear when we
-    ///     don't actually need the user; a stale-`false` must not trigger it).
-    ///   - Already prompted  -> never auto-fire again; deep-link to Settings
-    ///     and poll instead, so repeat launches are silent.
+    /// Thin delegate to the PURE `PermissionPolicy.shouldAutoPrompt` (which
+    /// documents and tests the guarantee). Kept here as the stable entry point
+    /// the onboarding window and the `unittest` runner already call.
     static func shouldAutoPrompt(isTrusted: Bool, hasPrompted: Bool) -> Bool {
-        !isTrusted && !hasPrompted
+        PermissionPolicy.shouldAutoPrompt(isTrusted: isTrusted, hasPrompted: hasPrompted)
     }
 
     // MARK: - Persisted "we have prompted" marker
@@ -108,9 +98,12 @@ final class AccessibilityPermission {
 
     // MARK: - State resolution
 
+    /// Resolve the live state by feeding the current trust reading and the
+    /// persisted prompted marker into the PURE policy. Keeping the impure read
+    /// (`AXIsProcessTrusted()`) here and the decision in `PermissionPolicy`
+    /// means the disambiguation is unit-tested without touching real TCC.
     private static func resolveImmediate(hasPrompted: Bool) -> State {
-        if AXIsProcessTrusted() { return .granted }
-        return hasPrompted ? .denied : .notDetermined
+        PermissionPolicy.resolveState(isTrusted: AXIsProcessTrusted(), hasPrompted: hasPrompted)
     }
 
     /// Recompute and broadcast if the state changed. Cheap; safe to call often.
@@ -126,6 +119,24 @@ final class AccessibilityPermission {
     }
 
     // MARK: - Public API
+
+    /// The unified launch decision (start / wait silently / show onboarding),
+    /// as a pure function of live trust plus the persisted markers. A thin
+    /// delegate to `PermissionPolicy.launchAction` so the launch flow consults
+    /// ONE tested brain instead of re-deriving the `hasEverBeenGranted` /
+    /// stale-`false` rules inline. `elapsed` is seconds since launch resolution
+    /// began.
+    func launchAction(elapsed: TimeInterval,
+                      launchGrace: TimeInterval = PermissionPolicy.defaultLaunchGrace,
+                      silentGrace: TimeInterval = PermissionPolicy.defaultSilentGrace)
+        -> PermissionPolicy.LaunchAction {
+        PermissionPolicy.launchAction(isTrusted: isTrustedNow,
+                                      hasPrompted: hasPrompted,
+                                      hasEverBeenGranted: hasEverBeenGranted,
+                                      elapsed: elapsed,
+                                      launchGrace: launchGrace,
+                                      silentGrace: silentGrace)
+    }
 
     /// Subscribe to live state changes. The closure is invoked on the main
     /// thread whenever the resolved state changes (e.g. the user flips the
@@ -145,23 +156,28 @@ final class AccessibilityPermission {
     /// or `.denied` so the caller can show onboarding.
     func resolveAtLaunch(graceSeconds: TimeInterval = 2.0,
                          completion: @escaping (State) -> Void) {
-        let deadline = Date().addingTimeInterval(graceSeconds)
+        let started = Date()
 
         func tick() {
-            if refresh() == .granted {
+            // refresh() updates the cached state + the granted marker; its
+            // result is the live trust reading we feed the PURE grace policy.
+            let isGranted = refresh() == .granted
+            let elapsed = Date().timeIntervalSince(started)
+            switch PermissionPolicy.graceTick(isTrusted: isGranted,
+                                              elapsed: elapsed,
+                                              graceSeconds: graceSeconds) {
+            case .resolvedGranted:
                 ensurePolling()
                 completion(.granted)
-                return
-            }
-            if Date() < deadline {
+            case .keepWaiting:
                 // Still inside the stale-false grace window: re-check soon,
                 // showing no UI and firing no prompt.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: tick)
-                return
+            case .graceExpired:
+                // Genuinely untrusted after the grace window.
+                ensurePolling()
+                completion(state)
             }
-            // Genuinely untrusted after the grace window.
-            ensurePolling()
-            completion(state)
         }
         tick()
     }
