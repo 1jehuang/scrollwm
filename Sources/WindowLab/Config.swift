@@ -81,10 +81,11 @@ struct ScrollWMConfig: Equatable {
         /// contacts GitHub on its own (the menu's "Check for Updates…" and the
         /// `scrollwm update` CLI still work on demand).
         var enabled: Bool = true
-        /// When true, a found update is downloaded, verified, and installed
-        /// automatically (the app relaunches into it). When false (default),
-        /// the user is told and chooses; we never swap the app behind their back.
-        var automatic: Bool = false
+        /// When true (default), a found update is downloaded, verified, and
+        /// installed automatically (the app restores windows, replaces itself,
+        /// and relaunches). When false, the user is prompted and chooses; we
+        /// never swap the app behind their back.
+        var automatic: Bool = true
         /// Hours between background checks. Clamped to a sane floor so a typo
         /// can't hammer the API. Also checked ~shortly after launch.
         var checkIntervalHours: Double = 24
@@ -395,7 +396,7 @@ struct ScrollWMConfig: Equatable {
       // (`scrollwm update` / `scrollwm update --install`).
       "update": {
         "enabled": true,          // check GitHub for newer releases in the background
-        "automatic": false,       // false: notify + let you click; true: download+install silently
+        "automatic": true,        // true: download+install silently then relaunch; false: prompt first
         "checkIntervalHours": 24, // hours between background checks (min 1)
         "allowPrerelease": false  // also offer -dev / -rc tags
       },

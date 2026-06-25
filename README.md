@@ -101,12 +101,12 @@ cd scrollwm
 
 ## Updating
 
-ScrollWM updates **itself**. Installed app bundles check GitHub Releases in the
-background (every 24h by default, plus shortly after launch) and, when a newer
-version is published, offer to download it, verify its SHA-256, replace the app
-in place, and relaunch (your windows are restored on quit first, so nothing is
-lost). Check on demand anytime from the menu bar (**Check for Updates…**) or the
-CLI:
+ScrollWM updates **itself, automatically**. Installed app bundles check GitHub
+Releases in the background (every 24h by default, plus shortly after launch) and,
+when a newer version is published, download it, verify its SHA-256, restore your
+windows, replace the app in place, and relaunch into the new version. Your
+windows are restored on quit first, so nothing is lost. Check on demand anytime
+from the menu bar (**Check for Updates…**) or the CLI:
 
 ```bash
 scrollwm update              # report whether a newer release exists
@@ -114,9 +114,10 @@ scrollwm update --install    # download + verify + apply it, then relaunch
 ```
 
 Tune it in the config file's `update` block: `enabled` (background check on/off),
-`automatic` (silently install vs. prompt, prompt being the default), `checkIntervalHours`,
-and `allowPrerelease`. Set `"enabled": false` to opt out entirely; manual checks
-still work. Other ways to update:
+`automatic` (silently install vs. prompt first, silent being the default),
+`checkIntervalHours`, and `allowPrerelease`. Set `"automatic": false` to be asked
+before each update, or `"enabled": false` to opt out entirely (manual checks
+still work). Other ways to update:
 
 - Installed via curl: re-run the one-line command.
 - Installed via Homebrew: `brew upgrade --cask scrollwm`.
