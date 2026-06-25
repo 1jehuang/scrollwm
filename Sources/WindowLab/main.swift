@@ -206,6 +206,8 @@ case "opstest":
     runStripOpsIntegrationTest()
 case "spawnlatency":
     runSpawnLatencyTest()
+case "newwintest":
+    runNewWindowAdoptTest()
 case "statusbench":
     let n = args.dropFirst().compactMap { Int($0) }.first ?? 24
     runStatusItemBench(steps: n)
@@ -286,6 +288,11 @@ default:
                                width/move/close via the engine, verify + restore.
       WindowLab spawnlatency   measure how fast a NEW window in a managed app is
                                adopted (AX observer fast path vs poll).
+      WindowLab newwintest     multi-display adoption scope: spawn windows on the
+                               strip AND on the external, then prove (live AX) the
+                               external windows are LEFT ALONE (no yank) while a
+                               new window on the strip display is adopted fast.
+                               Skips cleanly on single-display hardware.
       WindowLab sandbox [n] [--display M]
                                run the REAL controller locked to n disposable
                                windows it spawns (default 4). Drive the real
