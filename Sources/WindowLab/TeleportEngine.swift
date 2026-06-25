@@ -165,6 +165,28 @@ final class TeleportEngine {
 
     // MARK: - Adoption
 
+    /// Restrict adoption candidates to the windows that belong on the strip's
+    /// display under the active `adoptScope`. PURE policy lives in
+    /// `AdoptionScope`; this is the thin glue that feeds it the engine's own
+    /// display geometry (`stripDisplayFrame`/`otherDisplayFrames`). Used by both
+    /// the initial arrange path and the live resync/fast-adopt paths so the rule
+    /// is applied identically everywhere.
+    ///
+    /// `frame(_:)` projects each candidate to its AX frame (top-left global).
+    /// Returns the kept candidates in their original order.
+    func filterByAdoptScope<T>(_ candidates: [T], frame: (T) -> CGRect) -> [T] {
+        guard adoptScope != .allDisplays else { return candidates }
+        let strip = stripDisplayFrame ?? screenFrame
+        let kept = AdoptionScope.filter(
+            frames: candidates.map(frame),
+            stripDisplay: strip,
+            others: otherDisplayFrames,
+            scope: adoptScope
+        )
+        let keep = Set(kept)
+        return candidates.indices.filter { keep.contains($0) }.map { candidates[$0] }
+    }
+
     /// Lay out adopted windows as a strip of columns, preserving sizes.
     /// The strip opens with a `gap` leading margin so the first column is not
     /// flush against the screen edge (symmetric with the trailing margin).
@@ -543,6 +565,12 @@ final class TeleportEngine {
     /// us pick a corner whose sliver lands on the strip's OWN display, in a
     /// direction with no adjacent screen.
     var otherDisplayFrames: [CGRect] = []
+
+    /// Which displays' windows the strip is allowed to adopt. Pushed from
+    /// `config.layout.adoptScope` (single source of truth), so both the initial
+    /// arrange and the live resync/fast-adopt paths apply the SAME rule, and a
+    /// `reloadConfig` updates it for the running monitor. See `AdoptionScope`.
+    var adoptScope: AdoptionScope.Scope = .stripDisplay
 
     /// Which horizontal edge a parked window should slide toward. Mirrors the
     /// side a column scrolled off, so the nub lands where the content went.

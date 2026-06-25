@@ -42,6 +42,11 @@ struct ScrollWMConfig: Equatable {
         /// larger minimum keep their size (we read back the real frame), so this
         /// is best-effort and never corrupts the layout. Defaults to 0.5.
         var spawnWidth: CGFloat? = 0.5
+        /// Which displays' windows the strip adopts. `stripDisplay` (default)
+        /// manages ONLY the strip's own monitor and leaves the others alone;
+        /// `allDisplays` is the legacy "one strip swallows every monitor"
+        /// behavior. See `AdoptionScope`.
+        var adoptScope: AdoptionScope.Scope = .stripDisplay
     }
 
     /// Menu-bar mini-map sizing. The icon grows with the strip instead of being
@@ -116,6 +121,7 @@ struct ScrollWMConfig: Equatable {
                 "widthPresets": layout.widthPresets.map { Double($0) },
                 // A configured fraction, or JSON null to preserve native size.
                 "spawnWidth": layout.spawnWidth.map { Double($0) } ?? NSNull(),
+                "adoptScope": layout.adoptScope.rawValue,
             ],
             "menuBar": [
                 "pointsPerScreen": Double(menuBar.pointsPerScreen),
@@ -163,6 +169,13 @@ struct ScrollWMConfig: Equatable {
                     config.layout.spawnWidth = min(1.0, max(0.05, CGFloat(sw.doubleValue)))
                 } else {
                     config.layout.spawnWidth = nil
+                }
+            }
+            if let s = layout["adoptScope"] as? String {
+                if let scope = AdoptionScope.Scope(configValue: s) {
+                    config.layout.adoptScope = scope
+                } else {
+                    print("config: unknown layout.adoptScope '\(s)' (expected 'stripDisplay' or 'allDisplays'); using default")
                 }
             }
         }
@@ -281,7 +294,15 @@ struct ScrollWMConfig: Equatable {
         // them on adoption so they land at a tidy column. Set to null to keep
         // each window's own native size instead. Apps that enforce a larger
         // minimum keep their size (we never shrink below what the app allows).
-        "spawnWidth": 0.5
+        "spawnWidth": 0.5,
+
+        // Which displays' windows the strip manages:
+        //   "stripDisplay" = ONLY the monitor the strip lives on; windows on
+        //                    other monitors are left exactly where they are
+        //                    (PaperWM/niri-style; the default).
+        //   "allDisplays"  = legacy: one strip swallows every current-Space
+        //                    window across ALL monitors.
+        "adoptScope": "stripDisplay"
       },
 
       // Menu-bar mini-map sizing. The icon GROWS with the strip instead of
