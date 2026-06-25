@@ -36,9 +36,10 @@ recommended path; all options land the same `ScrollWM.app` in `~/Applications`
 curl -fsSL https://raw.githubusercontent.com/1jehuang/scrollwm/main/scripts/web-install.sh | bash
 ```
 
-Downloads the latest release, removes the Gatekeeper quarantine, installs to
-`~/Applications`, and launches it. No sudo, nothing on your desktop is touched
-until you click Arrange. Re-run the same command anytime to update.
+Downloads the latest release (`.zip`, or the `.dmg` if that's all that's
+published), strips the Gatekeeper quarantine, installs to `~/Applications`, and
+launches it. No sudo, no system files touched. Re-run the same command anytime
+to update in place.
 
 <details>
 <summary>Other ways to install</summary>
@@ -70,8 +71,11 @@ Grab `ScrollWM-<version>.dmg` (or `.zip`) from the
 
 ScrollWM shows a one-step onboarding window explaining its single permission and
 opens the right Settings pane for you. Flip the **Accessibility** switch for
-ScrollWM and the app continues automatically — no relaunch. If permission is
-already granted, ScrollWM starts silently (it never asks when it doesn't need
+ScrollWM and the app continues automatically (no relaunch): on that first grant
+it arranges your current windows into the strip, so its very first act tidies
+the desktop with zero extra clicks. After that it's dormant until you Arrange
+again. If permission is already granted from a previous install, ScrollWM skips
+the onboarding entirely and starts silently (it never asks when it doesn't need
 to).
 
 > **Run from Applications.** If you open ScrollWM straight from a download, the
@@ -82,11 +86,10 @@ to).
 > you grant Accessibility exactly **once**. The curl/Homebrew installs already
 > place it in `~/Applications`, so they skip this entirely.
 
-> Stuck? The onboarding window has **Show ScrollWM in Finder** (drag the app
-> into the Accessibility list if it isn't there) and **Copy setup steps for my
-> AI assistant**, which puts plain instructions on your clipboard for any
-> assistant you already use. Both are optional escape hatches, never a
-> dependency.
+> Stuck? The onboarding window has **Show in Finder** (drag the app into the
+> Accessibility list if it isn't there) and **Copy setup steps for my AI
+> assistant**, which puts plain instructions on your clipboard for any assistant
+> you already use. Both are optional escape hatches, never a dependency.
 
 ## Build from source
 
