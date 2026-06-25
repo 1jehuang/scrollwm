@@ -100,7 +100,8 @@ func runNewWindowAdoptTest() {
                 return AXSource.windows(for: a)
             }.filter { $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen }
         }
-        func liveFrame(_ title: String) -> CGRect? { liveWindows().first { $0.title == title }?.frame }
+        func liveInfo(_ title: String) -> AXWindowInfo? { liveWindows().first { $0.title == title } }
+        func liveFrame(_ title: String) -> CGRect? { liveInfo(title)?.frame }
         func bestIsStrip(_ f: CGRect) -> Bool {
             DisplayGeometry.display(bestOverlapping: f, displays: [stripFull] + otherFulls)
                 .map { $0 == stripFull } ?? false
@@ -110,6 +111,32 @@ func runNewWindowAdoptTest() {
             for p in spawned where p.isRunning { p.terminate() }
             RestoreStore.clear()
             exit(code)
+        }
+
+        // DETERMINISM: macOS may open an NSWindow on the active display
+        // regardless of the requested contentRect, so a spawn position is not
+        // reliable. Force each seed to a verified AX position (top-left global)
+        // and confirm the readback before asserting anything. This is the only
+        // way to GUARANTEE the external seed is truly on the external monitor.
+        func place(_ title: String, at origin: CGPoint, mustBeStrip: Bool) -> Bool {
+            for _ in 0..<8 {
+                guard let info = liveInfo(title) else { Thread.sleep(forTimeInterval: 0.15); continue }
+                _ = AXSource.setPoint(info.element, kAXPositionAttribute as String, origin)
+                Thread.sleep(forTimeInterval: 0.2)
+                if let f = liveFrame(title), bestIsStrip(f) == mustBeStrip { return true }
+            }
+            return false
+        }
+        // Two strip seeds well inside the built-in; one external seed well inside
+        // the external (its AX frame is (-225,-1080,1920x1080)).
+        let placedA = place("NW-Strip-A", at: CGPoint(x: 120, y: 120), mustBeStrip: true)
+        let placedB = place("NW-Strip-B", at: CGPoint(x: 540, y: 120), mustBeStrip: true)
+        let placedE = place("NW-External", at: CGPoint(x: extFull.minX + 300, y: extFull.minY + 300),
+                            mustBeStrip: false)
+        check("seeds placed: 2 on strip display", placedA && placedB)
+        check("seed placed: 1 on the external monitor", placedE)
+        guard placedA && placedB && placedE else {
+            print("[newwintest] could not deterministically place seeds; aborting"); cleanupAndExit(1)
         }
 
         // Sanity: the external seed really did land on the external monitor.
@@ -156,31 +183,47 @@ func runNewWindowAdoptTest() {
         }
 
         // Start the REAL lifecycle monitor (scoped to our pids) so the
-        // kAXWindowCreated fast path drives the next two phases. Slow poll (5s)
-        // so any adoption we observe came from the AX observer, not the poll.
+        // kAXWindowCreated fast path drives the strip-display phase. Slow poll
+        // (5s) so any adoption we observe came from the AX observer, not the poll.
         let monitor = LifecycleMonitor(engine: engine, interval: 5.0)
         monitor.pidFilter = pids
         DispatchQueue.main.sync { monitor.start() }
         Thread.sleep(forTimeInterval: 0.4)
 
-        // ===== Phase B: NEW window opened ON the external is IGNORED ===========
-        print("[newwintest] opening a NEW window on the EXTERNAL monitor...")
+        // ===== Phase B: a window genuinely ON the external is IGNORED ==========
+        // macOS opens a brand-new NSWindow on the ACTIVE display first, so a
+        // freshly-spawned window briefly lives on the built-in before we can move
+        // it - racing the fast path. To test the SCOPE FILTER deterministically
+        // we stop the monitor, open the window, FORCE it onto the external with a
+        // confirmed readback, then drive the production resync() (poll path,
+        // which runs the SAME engine.filterByAdoptScope). A genuinely-external
+        // window must be dropped, never yanked onto the strip.
+        DispatchQueue.main.sync { monitor.stop() }
+        print("[newwintest] opening a NEW window, then forcing it onto the EXTERNAL...")
         let countBeforeB = DispatchQueue.main.sync { engine.slots.count }
-        kill(xE.processIdentifier, SIGUSR1)               // opens "NW-External-2" near the external seed
-        // Give the observer + coalesce + a generous settle window. It must NOT adopt.
-        Thread.sleep(forTimeInterval: 1.5)
+        kill(xE.processIdentifier, SIGUSR1)               // opens "NW-External-2"
+        let placedNew = place("NW-External-2",
+                              at: CGPoint(x: extFull.minX + 500, y: extFull.minY + 500),
+                              mustBeStrip: false)
+        check("(b) new window confirmed ON the external monitor before resync", placedNew)
+        // Drive the real resync (the safety-net path that re-adopts current-Space
+        // windows). It must scope-drop the external one.
+        DispatchQueue.main.sync { monitor.resync() }
+        Thread.sleep(forTimeInterval: 0.8)
         let countAfterB = DispatchQueue.main.sync { engine.slots.count }
-        check("(b) new window on the external did NOT grow the strip",
+        check("(b) resync did NOT adopt the external window (no yank)",
               countAfterB == countBeforeB)
-        if let nf = liveFrame("NW-External-2") {
-            check("(b) the new external window stayed on the external monitor", !bestIsStrip(nf))
-        } else {
-            check("(b) new external window readback", false)
-        }
         let titlesB = DispatchQueue.main.sync { engine.slots.map { $0.window.title } }
-        check("(b) new external window is not on the strip", !titlesB.contains("NW-External-2"))
+        check("(b) external window is not on the strip after resync",
+              !titlesB.contains("NW-External-2"))
+        if let nf = liveFrame("NW-External-2") {
+            check("(b) the external window stayed on the external monitor", !bestIsStrip(nf))
+        }
 
         // ===== Phase C: NEW window on the STRIP display IS adopted fast ========
+        // Restart the monitor so the kAXWindowCreated fast path is live again.
+        DispatchQueue.main.sync { monitor.start() }
+        Thread.sleep(forTimeInterval: 0.4)
         print("[newwintest] opening a NEW window on the STRIP display...")
         let countBeforeC = DispatchQueue.main.sync { engine.slots.count }
         let t0 = Clock.nowAbsNs()
@@ -205,8 +248,8 @@ func runNewWindowAdoptTest() {
             check("(c) new strip-display window WAS adopted", false)
         }
 
-        // Final invariant: the external window is STILL not on the strip after
-        // everything (no late yank from a poll tick).
+        // Final invariant: NO external window ever entered the strip (no late
+        // yank from a fast-path or poll tick during phase C).
         Thread.sleep(forTimeInterval: 0.3)
         let finalTitles = DispatchQueue.main.sync { engine.slots.map { $0.window.title } }
         check("external windows never entered the strip (final check)",
