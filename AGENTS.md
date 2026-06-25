@@ -102,6 +102,9 @@ Add a test for any behavior you change; prefer extracting pure functions (e.g.
 - `HeadlessHarness.swift`    headless test scaffolding + `headlesstest` suite runner
 - `HeadlessTests.swift`      headless ops/e2e/reveal/spawnlatency/display suites
 - `Config.swift`             JSONC config file (single source of truth for keybinds)
+- `AppLocation.swift`        PURE launch-location classifier (translocation /
+                             download / dmg) + relocate-to-`~/Applications` so
+                             the Accessibility grant sticks (unit-tested)
 
 ## Key invariants / gotchas
 

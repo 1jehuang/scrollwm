@@ -1479,6 +1479,19 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
 
+    // Before anything else: if we are running from a Gatekeeper-translocated
+    // ghost path or a transient home (a download / mounted .dmg), the
+    // Accessibility grant can never stick. Relocate to ~/Applications and
+    // relaunch from there so the user grants the permission exactly once.
+    // Skipped automatically during tests/dev (selftest, or non-`.app` binary).
+    if !selftest && crashPhase == .none && AppRelocator.relocateIfNeeded() {
+        // We've launched the stable copy and are about to exit; do not start
+        // the controller, menu bar, or AX flow from this throwaway process.
+        DispatchQueue.main.async { NSApp.terminate(nil) }
+        app.run()
+        return
+    }
+
     // Create the controller and bring up the control plane IMMEDIATELY, before
     // (and independent of) the Accessibility check. The controller is dormant
     // until `arrange`, so this touches nothing; but it means the `scrollwm` CLI

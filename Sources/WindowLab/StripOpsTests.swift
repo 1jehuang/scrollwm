@@ -729,6 +729,59 @@ enum StripOpsTests {
         check("autoprompt: untrusted but asked before -> never re-prompt (deep-link instead)",
               AccessibilityPermission.shouldAutoPrompt(isTrusted: false, hasPrompted: true) == false)
 
+        // --- App launch-location policy (translocation / transient homes) ----
+        // PURE classification that drives "move me to ~/Applications so the
+        // Accessibility grant sticks". The whole point is to kill the silent
+        // onboarding cliff where a granted switch does nothing.
+        let home = "/Users/tester"
+        func loc(_ path: String, app: Bool = true) -> AppLocation.Kind {
+            AppLocation.classify(bundlePath: path, isAppBundle: app, homeDir: home)
+        }
+        // The dev/CLI binary is never relocated.
+        check("location: non-.app is devBinary",
+              loc("/Users/tester/scrollwm/.build/debug/WindowLab", app: false) == .devBinary)
+        // Gatekeeper translocation ghost -> must relocate (grant can't stick).
+        check("location: AppTranslocation ghost -> translocated",
+              loc("/private/var/folders/aa/bb/X/d/AppTranslocation/UUID/d/ScrollWM.app") == .translocated)
+        // Stable installs run in place.
+        check("location: ~/Applications -> installed",
+              loc("/Users/tester/Applications/ScrollWM.app") == .installed)
+        check("location: /Applications -> installed",
+              loc("/Applications/ScrollWM.app") == .installed)
+        // Transient homes are offered relocation.
+        check("location: mounted .dmg (/Volumes) -> removableOrTemporary",
+              loc("/Volumes/ScrollWM 0.2.0/ScrollWM.app") == .removableOrTemporary)
+        check("location: ~/Downloads -> removableOrTemporary",
+              loc("/Users/tester/Downloads/ScrollWM.app") == .removableOrTemporary)
+        check("location: ~/Desktop -> removableOrTemporary",
+              loc("/Users/tester/Desktop/ScrollWM.app") == .removableOrTemporary)
+        // A deliberate custom location is left alone (no nag).
+        check("location: custom dir -> otherLocation",
+              loc("/Users/tester/dev/ScrollWM.app") == .otherLocation)
+        // Only translocated + transient offer relocation.
+        check("location: translocated offers relocation",
+              AppLocation.Kind.translocated.shouldOfferRelocation == true)
+        check("location: removableOrTemporary offers relocation",
+              AppLocation.Kind.removableOrTemporary.shouldOfferRelocation == true)
+        check("location: installed does NOT offer relocation",
+              AppLocation.Kind.installed.shouldOfferRelocation == false)
+        check("location: otherLocation does NOT offer relocation",
+              AppLocation.Kind.otherLocation.shouldOfferRelocation == false)
+        check("location: devBinary does NOT offer relocation",
+              AppLocation.Kind.devBinary.shouldOfferRelocation == false)
+        // Destination + path helpers.
+        check("location: destination is ~/Applications/<name>",
+              AppLocation.destination(forBundleNamed: "ScrollWM.app", homeDir: home)
+                == "/Users/tester/Applications/ScrollWM.app")
+        check("location: isUnder treats dir itself as inside",
+              AppLocation.isUnder("/Applications", dir: "/Applications") == true)
+        check("location: isUnder matches nested, not sibling prefixes",
+              AppLocation.isUnder("/Applications/ScrollWM.app", dir: "/Applications") == true
+                && AppLocation.isUnder("/ApplicationsX/ScrollWM.app", dir: "/Applications") == false)
+        check("location: trailing slash on home is normalized",
+              AppLocation.classify(bundlePath: "/Users/tester/Applications/ScrollWM.app",
+                                   isAppBundle: true, homeDir: "/Users/tester/") == .installed)
+
         // MARK: - CLI width parsing (scrollwm width <arg>)
         // Accepts percents (25/50/75/100) and fractions (0.0-1.0); rejects junk.
         func widthApprox(_ s: String, _ want: CGFloat) -> Bool {

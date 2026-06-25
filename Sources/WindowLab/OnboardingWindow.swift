@@ -148,9 +148,13 @@ final class OnboardingWindowController: NSObject {
         let primary = NSButton(title: "Open Accessibility Settings", target: self, action: #selector(openSettings))
         primary.bezelStyle = .rounded
         primary.keyEquivalent = "\r"
+        let reveal = NSButton(title: "Show ScrollWM in Finder", target: self, action: #selector(revealInFinder))
+        reveal.bezelStyle = .rounded
+        reveal.toolTip = "If ScrollWM isn't in the list, drag it from here into the Accessibility list."
         let copyForAgent = NSButton(title: "Copy setup steps for my AI assistant", target: self, action: #selector(copyAgentInstructions))
         copyForAgent.bezelStyle = .rounded
         buttonRow.addArrangedSubview(primary)
+        buttonRow.addArrangedSubview(reveal)
         buttonRow.addArrangedSubview(copyForAgent)
         stack.addArrangedSubview(buttonRow)
         self.primaryButton = primary
@@ -207,6 +211,15 @@ final class OnboardingWindowController: NSObject {
 
     @objc private func openSettings() {
         permission.openSystemSettings()
+    }
+
+    /// Reveal ScrollWM.app in Finder so the user can drag it directly into the
+    /// Accessibility list when the system prompt didn't pre-populate it (a
+    /// common case for downloaded copies). No-op for the dev binary.
+    @objc private func revealInFinder() {
+        let bundleURL = Bundle.main.bundleURL
+        guard bundleURL.pathExtension == "app" else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([bundleURL])
     }
 
     @objc private func copyAgentInstructions() {

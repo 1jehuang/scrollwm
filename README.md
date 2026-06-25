@@ -74,9 +74,19 @@ ScrollWM and the app continues automatically — no relaunch. If permission is
 already granted, ScrollWM starts silently (it never asks when it doesn't need
 to).
 
-> Stuck? The onboarding window has a "Copy setup steps for my AI assistant"
-> button that puts plain instructions on your clipboard for any assistant you
-> already use. This is an optional escape hatch, never a dependency.
+> **Run from Applications.** If you open ScrollWM straight from a download, the
+> Desktop, or a mounted disk image, macOS runs it from a temporary, read-only
+> copy (App Translocation) where the Accessibility grant can never stick — you
+> flip the switch and nothing happens. ScrollWM detects this on first launch and
+> offers to move itself into your Applications folder and reopen from there, so
+> you grant Accessibility exactly **once**. The curl/Homebrew installs already
+> place it in `~/Applications`, so they skip this entirely.
+
+> Stuck? The onboarding window has **Show ScrollWM in Finder** (drag the app
+> into the Accessibility list if it isn't there) and **Copy setup steps for my
+> AI assistant**, which puts plain instructions on your clipboard for any
+> assistant you already use. Both are optional escape hatches, never a
+> dependency.
 
 ## Build from source
 
@@ -247,6 +257,7 @@ Sources/WindowLab/
   AXSource.swift             timeout-protected Accessibility wrapper
   AccessibilityPermission.swift  single source of truth for the AX grant
   OnboardingWindow.swift     first-run permission onboarding UI
+  AppLocation.swift          relocate to ~/Applications so the AX grant sticks
   Config.swift               config file (settings + rebindable keys)
   TutorialWindow.swift       in-app tutorial / cheat sheet (config-driven)
   CGWindowSource.swift       WindowServer enumeration (CGWindowList)
