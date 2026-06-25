@@ -1246,6 +1246,108 @@ enum StripOpsTests {
         check("scope-engine: single display keeps everything",
               engNoOthers.filterByAdoptScope(frames) { $0 } == frames)
 
+        // === AdoptionScope on the REAL negative-origin external ([md-newwin]) ==
+        // The block above used a hypothetical 2560x1440 external. Pin the policy
+        // to the ACTUAL live hardware this swarm runs on, so these are a faithful
+        // regression guard for BOTH the multi-display "yank" bug (arrange/resync)
+        // and the new-window adoption path (the kAXWindowCreated fast path):
+        //   strip (built-in, full AX frame): (0,0,1470x956)
+        //   external (full AX frame):        (-225,-1080,1920x1080) ABOVE-AND-LEFT
+        // The external sits ABOVE the built-in (its AX maxY == the built-in's
+        // minY == 0), so the seam between them is HORIZONTAL: a straddling window
+        // crosses the y=0 line.
+        let nwStrip = CGRect(x: 0, y: 0, width: 1470, height: 956)
+        let nwExt   = CGRect(x: -225, y: -1080, width: 1920, height: 1080)
+        let nwStripWin = CGRect(x: 120, y: 80, width: 900, height: 600)     // squarely on built-in
+        let nwExtWin   = CGRect(x: -100, y: -800, width: 1000, height: 700) // squarely on external
+
+        // (a) THE YANK BUG: a window living on the real external must NOT be
+        // classified onto the strip's display, so arrange/resync never yank it.
+        check("md-newwin (a): real external window does NOT belong to the strip",
+              !AdoptionScope.belongsToStripDisplay(nwExtWin, stripDisplay: nwStrip, others: [nwExt]))
+        check("md-newwin: built-in window belongs to the strip",
+              AdoptionScope.belongsToStripDisplay(nwStripWin, stripDisplay: nwStrip, others: [nwExt]))
+        let nwFrames = [nwStripWin, nwExtWin]
+        check("md-newwin (a): stripDisplay scope drops the external window (no yank)",
+              AdoptionScope.filter(frames: nwFrames, stripDisplay: nwStrip,
+                                   others: [nwExt], scope: .stripDisplay) == [0])
+        // (e) Legacy allDisplays still adopts EVERYTHING across monitors.
+        check("md-newwin (e): allDisplays scope adopts every window",
+              AdoptionScope.filter(frames: nwFrames, stripDisplay: nwStrip,
+                                   others: [nwExt], scope: .allDisplays) == [0, 1])
+
+        // (d) Bezel straddle, classified by best-overlap. An EXACT 50/50 split
+        // across the y=0 seam (equal area on each monitor) resolves IN FAVOR of
+        // the strip (the strip is weighed first, and best-overlap keeps the first
+        // maximum). x∈[200,1100] is inside BOTH displays' x-range, so the
+        // horizontal overlap is identical; y∈[-300,300] is 300pt on each side.
+        let nwTie = CGRect(x: 200, y: -300, width: 900, height: 600)
+        check("md-newwin (d): exact bezel tie favors the strip display",
+              AdoptionScope.belongsToStripDisplay(nwTie, stripDisplay: nwStrip, others: [nwExt]))
+        // Tilt the SAME window majority-onto-external (500 ext vs 100 strip) ->
+        // dropped; majority-onto-strip (100 ext vs 500 strip) -> kept.
+        let nwMostlyExt   = CGRect(x: 200, y: -500, width: 900, height: 600)
+        let nwMostlyStrip = CGRect(x: 200, y: -100, width: 900, height: 600)
+        check("md-newwin (d): majority-on-external straddler is dropped",
+              !AdoptionScope.belongsToStripDisplay(nwMostlyExt, stripDisplay: nwStrip, others: [nwExt]))
+        check("md-newwin (d): majority-on-strip straddler is kept",
+              AdoptionScope.belongsToStripDisplay(nwMostlyStrip, stripDisplay: nwStrip, others: [nwExt]))
+
+        // (b)+(c) NEW-window adoption runs through the SAME engine glue the
+        // fast-adopt (kAXWindowCreated) and resync paths call
+        // (`filterByAdoptScope`). Build an engine bound to the built-in with the
+        // real external registered and feed it the AX frames a freshly-opened
+        // window would carry. This is the exact decision `LifecycleMonitor`
+        // makes for a brand-new window.
+        func nwEngine(_ scope: AdoptionScope.Scope) -> TeleportEngine {
+            let eng = TeleportEngine(screenFrame: nwStrip)
+            eng.stripDisplayFrame = nwStrip
+            eng.otherDisplayFrames = [nwExt]
+            eng.adoptScope = scope
+            return eng
+        }
+        // (b) a new window opened ON the external is IGNORED by a stripDisplay
+        // strip (the fast path drops it before insert -> no yank).
+        check("md-newwin (b): new window on the external is ignored (fast-adopt scope)",
+              nwEngine(.stripDisplay).filterByAdoptScope([nwExtWin]) { $0 } == [])
+        // (c) a new window opened on the STRIP display IS adopted.
+        check("md-newwin (c): new window on the strip display is adopted",
+              nwEngine(.stripDisplay).filterByAdoptScope([nwStripWin]) { $0 } == [nwStripWin])
+        // A mixed burst (one window per monitor opening together, as the
+        // coalesced kAXWindowCreated path can deliver) adopts ONLY the strip one.
+        check("md-newwin (b+c): mixed new-window burst adopts only the strip window",
+              nwEngine(.stripDisplay).filterByAdoptScope([nwExtWin, nwStripWin]) { $0 } == [nwStripWin])
+        // (e) allDisplays keeps both even through the engine glue.
+        check("md-newwin (e): allDisplays engine glue adopts both new windows",
+              nwEngine(.allDisplays).filterByAdoptScope([nwExtWin, nwStripWin]) { $0 } == [nwExtWin, nwStripWin])
+
+        // Multi-external robustness (3 displays): a SECOND external further left
+        // must not confuse scoping - a window on EITHER external is dropped, only
+        // the strip's own survives. Guards the >2-display layouts the hotplug
+        // resolver allows, where two non-strip displays could tie each other.
+        let nwExt2    = CGRect(x: -2145, y: -1080, width: 1920, height: 1080) // further left
+        let nwExt2Win = CGRect(x: -2000, y: -800, width: 1000, height: 700)   // squarely on ext2
+        check("md-newwin: 3-display keeps only strip-display windows",
+              AdoptionScope.filter(frames: [nwStripWin, nwExtWin, nwExt2Win],
+                                   stripDisplay: nwStrip, others: [nwExt, nwExt2],
+                                   scope: .stripDisplay) == [0])
+
+        // Single-display fallback at the REAL strip geometry: once the external
+        // is unplugged (`others` empty) every window is on the strip, so even a
+        // frame that WOULD have been on the external is kept (never dropped onto
+        // a monitor that no longer exists).
+        let nwUnplugged = TeleportEngine(screenFrame: nwStrip)
+        nwUnplugged.stripDisplayFrame = nwStrip
+        nwUnplugged.otherDisplayFrames = []          // external gone
+        nwUnplugged.adoptScope = .stripDisplay
+        check("md-newwin: single-display keeps the would-be-external window",
+              nwUnplugged.filterByAdoptScope([nwExtWin]) { $0 } == [nwExtWin])
+        // Safety bias on the real geometry: a window overlapping NONE of the 3
+        // displays (degenerate / far-parked frame) is KEPT, never silently lost.
+        let nwOrphan = CGRect(x: 50_000, y: 50_000, width: 400, height: 300)
+        check("md-newwin: window overlapping no display is kept (never lose a window)",
+              AdoptionScope.belongsToStripDisplay(nwOrphan, stripDisplay: nwStrip, others: [nwExt, nwExt2]))
+
         // --- DisplaySelector: pure strip-display PICK policy ([md-select]) ----
         // Model the user's REAL hardware in NSScreen.screens order: built-in
         // primary 1470x956 at AppKit (0,0) (also `main`), and the bigger external
