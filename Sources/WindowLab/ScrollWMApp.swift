@@ -36,6 +36,13 @@ final class ScrollWMController: NSObject {
     /// hotplug burst, short enough to feel instant.
     private let displayChangeDebounceInterval: TimeInterval = 0.25
 
+    /// Stable `CGDirectDisplayID` of the display the strip is currently bound to.
+    /// Tracked alongside the strip's geometry so `applySettledDisplayChange` can
+    /// follow the strip's PHYSICAL display by identity across an arrangement swap
+    /// or a large resolution change - cases pure geometry overlap gets wrong.
+    /// Updated on every bind (`refreshDisplayGeometry`, `bindStripToDisplay`).
+    private var stripDisplayID: CGDirectDisplayID?
+
     /// Lazily-created tutorial window controller (config-driven cheat sheet).
     private lazy var tutorial = TutorialWindowController(configProvider: { [weak self] in
         self?.config ?? .default
@@ -59,13 +66,26 @@ final class ScrollWMController: NSObject {
         // (layout.stripDisplay), defaulting to NSScreen.main. Falls back to main
         // if the spec is unknown / out of range.
         let screen = Self.screen(forSpec: config.layout.stripDisplay) ?? NSScreen.main!
-        let vf = screen.visibleFrame
-        let axFrame = CGRect(
-            x: vf.origin.x,
-            y: screen.frame.height - vf.maxY,
-            width: vf.width,
-            height: vf.height
-        )
+        // The strip's usable area in AX top-left coords. Use the SHARED pure
+        // binding (primary-display Y-flip) rather than a hand-rolled
+        // `screen.frame.height - vf.maxY`: that local flip is only correct when
+        // the configured strip display IS the primary. On a non-primary strip
+        // (e.g. a configured external with a negative AppKit origin) it shoved
+        // the whole strip vertically by (stripHeight - primaryHeight) — 124px on
+        // the real hardware — landing every window off the intended display.
+        let axFrame: CGRect = {
+            if let i = NSScreen.screens.firstIndex(of: screen),
+               let b = StripDisplayBinding.bind(displays: Self.displayFrames(),
+                                                stripIndex: i,
+                                                mainIndex: Self.mainScreenIndex()) {
+                return b.stripVisible
+            }
+            // Single-display / degenerate fallback: a primary strip flips
+            // identically under either height, so this is exact there.
+            let vf = screen.visibleFrame
+            return CGRect(x: vf.origin.x, y: screen.frame.height - vf.maxY,
+                          width: vf.width, height: vf.height)
+        }()
         engine = TeleportEngine(screenFrame: axFrame)
         super.init()
 
@@ -132,15 +152,25 @@ final class ScrollWMController: NSObject {
         engine.otherDisplayFrames = NSScreen.screens
             .filter { $0 !== stripDisplay }
             .map(axFull)
+        // Remember which PHYSICAL display the strip is bound to, so a later
+        // hotplug can follow it by stable id across arrangement/resolution change.
+        stripDisplayID = stripDisplay.displayID
 
         // Re-bind the strip's own usable area to the live visible frame so a
         // resolution/scale change (or the strip moving displays) relays the
         // whole strip onto the new geometry instead of leaving stale coords.
+        // The rebind runs even while DORMANT: on an empty strip it is a pure
+        // no-op except updating `screenFrame`, which is exactly what we need so
+        // the NEXT arrange lands on the display's CURRENT geometry rather than a
+        // stale (possibly unplugged/resized) frame. Persistence + menu refresh
+        // only matter while actively managing.
         let visible = axVisible(stripDisplay)
-        if relayout && isManaging {
+        if relayout {
             engine.rebindStripDisplay(to: visible)
-            RestoreStore.save(engine: engine)
-            menuBar.refresh()
+            if isManaging {
+                RestoreStore.save(engine: engine)
+                menuBar.refresh()
+            }
         }
     }
 
@@ -176,11 +206,21 @@ final class ScrollWMController: NSObject {
         let visibleFrames = screens.map {
             DisplayGeometry.axFrame(appKitFrame: $0.visibleFrame, primaryHeight: primaryHeight)
         }
+        // Parallel stable display ids (same order as `screens`/`visibleFrames`).
+        // Only pass them through when EVERY screen vended one, so the resolver's
+        // well-formed-arrays guard either uses identity for all or none of them
+        // (a partial id list would silently disable identity tracking anyway).
+        let ids = screens.map { $0.displayID }
+        let displayIDs: [CGDirectDisplayID]? = ids.allSatisfy { $0 != nil }
+            ? ids.compactMap { $0 } : nil
 
-        // Pure policy: same display (resized) -> follow it; strip display gone
-        // -> migrate to the best survivor; no displays -> keep put.
+        // Pure policy: same display (by stable id, else resized/overlap) -> follow
+        // it; strip display gone -> migrate to the best survivor; none -> keep put.
         let decision = StripDisplayResolver.resolve(
-            stripFrame: engine.screenFrame, displays: visibleFrames)
+            stripFrame: engine.screenFrame,
+            displays: visibleFrames,
+            stripDisplayID: stripDisplayID,
+            displayIDs: displayIDs)
         guard let idx = decision.displayIndex else { return }
 
         if decision.migrated {
@@ -207,6 +247,24 @@ final class ScrollWMController: NSObject {
         }
     }
 
+    /// Map `NSScreen.screens` to the pure `StripDisplayBinding.DisplayFrames`
+    /// view (full + visible AppKit frames, parallel order), so the AppKit ->
+    /// AX flip lives in ONE unit-tested place (`StripDisplayBinding.bind`) used
+    /// by launch, runtime move, and the sandbox bind alike.
+    private static func displayFrames() -> [StripDisplayBinding.DisplayFrames] {
+        NSScreen.screens.map {
+            StripDisplayBinding.DisplayFrames(full: $0.frame, visible: $0.visibleFrame)
+        }
+    }
+
+    /// Index of `NSScreen.main` within `NSScreen.screens` (the active display),
+    /// or nil if it cannot be found. Feeds `StripDisplayBinding`'s primary-height
+    /// fallback so the pure result matches production in degenerate layouts.
+    private static func mainScreenIndex() -> Int? {
+        guard let main = NSScreen.main else { return nil }
+        return NSScreen.screens.firstIndex(of: main)
+    }
+
     /// Resolve a strip-display spec ("main"/"primary"/"largest"/"next"/index) to
     /// a concrete `NSScreen`, or nil when the spec is unknown / out of range.
     /// `current` is the strip's present display index, used only by `"next"`.
@@ -220,6 +278,14 @@ final class ScrollWMController: NSObject {
     /// on, by maximum overlap with the engine's live AX frame. nil if it cannot
     /// be identified. Drives the `"next"` cycle so it advances from where we are.
     private func currentStripDisplayIndex() -> Int? {
+        // Prefer stable identity: if we know the strip's display id and it is
+        // still attached, that index is authoritative even after an arrangement
+        // swap moved the strip's frame onto another screen's old origin.
+        if let id = stripDisplayID,
+           let idx = NSScreen.screens.firstIndex(where: { $0.displayID == id }) {
+            return idx
+        }
+        // Fallback (no id, or the id is gone): best geometry overlap.
         let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
                              ?? NSScreen.main)?.frame.height ?? engine.screenFrame.height
         let target = engine.screenFrame
@@ -279,18 +345,20 @@ final class ScrollWMController: NSObject {
     /// to run the whole sandbox on an external screen). Relays any already-
     /// managed windows onto the new geometry.
     func bindStripToDisplay(_ stripDisplay: NSScreen) {
-        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
-                             ?? NSScreen.main ?? stripDisplay).frame.height
-        func axFull(_ s: NSScreen) -> CGRect {
-            DisplayGeometry.axFrame(appKitFrame: s.frame, primaryHeight: primaryHeight)
+        guard let idx = NSScreen.screens.firstIndex(of: stripDisplay),
+              let b = StripDisplayBinding.bind(displays: Self.displayFrames(),
+                                               stripIndex: idx,
+                                               mainIndex: Self.mainScreenIndex()) else {
+            return
         }
-        engine.stripDisplayFrame = axFull(stripDisplay)
-        engine.otherDisplayFrames = NSScreen.screens.filter { $0 !== stripDisplay }.map(axFull)
+        engine.stripDisplayFrame = b.stripFull
+        engine.otherDisplayFrames = b.others
+        // Track the strip's PHYSICAL display by stable id so a later hotplug can
+        // follow it across an arrangement/resolution change (see hotplug fix).
+        stripDisplayID = stripDisplay.displayID
         // rebindStripDisplay sets `screenFrame` and relays; on an empty strip the
         // relay is a no-op, so this safely repositions the strip pre-arrange.
-        engine.rebindStripDisplay(
-            to: DisplayGeometry.axFrame(appKitFrame: stripDisplay.visibleFrame, primaryHeight: primaryHeight)
-        )
+        engine.rebindStripDisplay(to: b.stripVisible)
     }
 
     /// Re-read the config file and apply it live. Keybindings are reinstalled

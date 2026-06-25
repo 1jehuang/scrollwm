@@ -211,6 +211,8 @@ case "opstest":
     args.contains("--live") ? runStripOpsIntegrationTest() : runHeadlessOpsTest()
 case "spawnlatency":
     args.contains("--live") ? runSpawnLatencyTest() : runHeadlessSpawnLatencyTest()
+case "newwintest":
+    runNewWindowAdoptTest()
 case "statusbench":
     let n = args.dropFirst().compactMap { Int($0) }.first ?? 24
     runStatusItemBench(steps: n)
@@ -230,6 +232,8 @@ case "sandbox":
     runSandbox(windowCount: n, displayIndex: sandboxDisplay)
 case "displaytest":
     args.contains("--live") ? runDisplayTest() : runHeadlessDisplayTest()
+case "displaybindcheck":
+    runDisplayBindCheck()
 case "e2etest":
     args.contains("--live") ? runE2EKeybindingTest() : runHeadlessE2ETest()
 case "revealtest":
@@ -308,6 +312,16 @@ default:
                                --live to exercise REAL spawned windows instead.
       WindowLab spawnlatency   new-window adoption latency (AX-observer fast path
                                vs poll). HEADLESS by default; --live for real AX.
+      WindowLab newwintest     multi-display adoption scope: spawn windows on the
+                               strip AND on the external, then prove (live AX) the
+                               external windows are LEFT ALONE (no yank) while a
+                               new window on the strip display is adopted fast.
+                               Skips cleanly on single-display hardware.
+      WindowLab displaybindcheck
+                               live check of the strip-move bind path: verify the
+                               primary-height Y-flip lands the strip on the right
+                               display (incl. a non-primary external). Spawns its
+                               own disposable windows; restores them after.
       WindowLab sandbox [n] [--display M]
                                run the REAL controller locked to n disposable
                                windows it spawns (default 4). Drive the real

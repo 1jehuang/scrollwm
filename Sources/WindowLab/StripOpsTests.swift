@@ -1019,6 +1019,19 @@ enum StripOpsTests {
         reb2.rebindStripDisplay(to: before)
         check("rebind: same-frame rebind is stable", reb2.screenFrame == before)
 
+        // DORMANT rebind ([md-hotplug]): a strip with NO adopted windows (the
+        // dormant state) must still update `screenFrame` when its display's
+        // geometry changes, so the NEXT arrange lands on the display's CURRENT
+        // frame instead of a stale (unplugged/resized) one. This is the engine
+        // guarantee `refreshDisplayGeometry` relies on now that it rebinds even
+        // while dormant. The relay issues zero AX writes (no windows).
+        let dormant = TeleportEngine(screenFrame: CGRect(x: -225, y: -1440, width: 2560, height: 1440))
+        let migratedFrame = CGRect(x: 0, y: 0, width: 1470, height: 923)
+        let writes = dormant.rebindStripDisplay(to: migratedFrame)
+        check("rebind: dormant (empty) strip still adopts the new screenFrame",
+              dormant.screenFrame == migratedFrame)
+        check("rebind: dormant rebind issues no AX writes (no windows)", writes == 0)
+
         // --- StripDisplayResolver: hotplug strip-migration policy ------------
         // Pure decision for "which display does the strip bind to after a
         // monitor plug/unplug?". AX top-left plane; mirrors the user's real rig:
@@ -1108,6 +1121,131 @@ enum StripOpsTests {
             let chunk = CGRect(x: 700, y: 0, width: 1000, height: 1000)
             let dHere = StripDisplayResolver.resolve(stripFrame: strip, displays: [chunk])
             check("resolver: 30% overlap is above threshold -> follow", !dHere.migrated)
+        }
+
+        // --- StripDisplayResolver: STABLE DISPLAY IDENTITY ([md-hotplug]) -----
+        // Geometry overlap alone is ambiguous on two real macOS hotplug events:
+        //   (e) ARRANGEMENT SWAP: two displays exchange origins. The strip's
+        //       OLD frame is now occupied by the OTHER physical monitor, so a
+        //       pure-overlap resolver binds the strip to the WRONG screen.
+        //   (d) BIG RESOLUTION/SCALE CHANGE: the strip's own display shrinks so
+        //       much (or its visible frame shifts under a scale change) that the
+        //       overlap with its NEW frame drops below threshold, and a pure
+        //       overlap resolver spuriously MIGRATES off a display that is in
+        //       fact still present.
+        // When the caller supplies stable CGDirectDisplayIDs, the resolver must
+        // track the strip's OWN display by identity and follow it, regardless of
+        // how its geometry moved.
+        let idBuiltin: CGDirectDisplayID = 1   // built-in panel
+        let idExternal: CGDirectDisplayID = 2  // external monitor
+
+        // (e) Arrangement swap: strip lives on the EXTERNAL (id 2) at its old
+        // frame; the user swaps the two displays' origins so the BUILT-IN now
+        // occupies the external's old region. Geometry says "bind to whatever is
+        // at the old frame" (the built-in). Identity says "follow display 2 to
+        // its NEW frame". Identity must win and it is NOT a migration (same
+        // physical screen, just rearranged).
+        do {
+            let extOldFrame = rExternal                                  // (-225,-1440,2560,1440)
+            let builtinNowHere = CGRect(x: -225, y: -1440, width: 1470, height: 956) // built-in moved into ext's spot
+            let extNowThere    = CGRect(x: 0, y: 0, width: 2560, height: 1440)        // ext moved to the origin region
+            let d = StripDisplayResolver.resolve(
+                stripFrame: extOldFrame,
+                displays:   [builtinNowHere, extNowThere],
+                stripDisplayID: idExternal,
+                displayIDs: [idBuiltin, idExternal])
+            check("resolver: arrangement swap follows the strip's display by ID",
+                  d.frame == extNowThere && d.displayIndex == 1 && !d.migrated)
+        }
+
+        // (d) Big resolution drop with NO overlap: the strip's display (id 2) is
+        // still attached but its new visible frame no longer overlaps the old
+        // one at all, AND a DIFFERENT display is the largest survivor. Pure
+        // geometry would MIGRATE to that other display; identity recognizes id 2
+        // as the SAME screen and follows it (no spurious migration).
+        do {
+            let extOld = rExternal                                         // (-225,-1440,2560,1440)
+            let extResizedFar = CGRect(x: 4000, y: 0, width: 1280, height: 720) // moved far, zero overlap
+            let d = StripDisplayResolver.resolve(
+                stripFrame: extOld,
+                displays:   [rBuiltin, extResizedFar],
+                stripDisplayID: idExternal,
+                displayIDs: [idBuiltin, idExternal])
+            check("resolver: same display by ID is followed even with zero overlap",
+                  d.frame == extResizedFar && d.displayIndex == 1 && !d.migrated)
+        }
+
+        // Strip's display id is GONE from the live id set (truly unplugged):
+        // identity cannot find it, so we MIGRATE to the largest survivor exactly
+        // as the geometry path would. Proves identity does not mask a real unplug.
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rExternal,
+                displays:   [rBuiltin],
+                stripDisplayID: idExternal,
+                displayIDs: [idBuiltin])
+            check("resolver: strip display id absent -> migrate to survivor",
+                  d.frame == rBuiltin && d.displayIndex == 0 && d.migrated)
+        }
+
+        // Defensive: malformed identity input (id count != display count) must
+        // not crash or pick out of range; the resolver falls back to geometry.
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin,
+                displays:   [rBuiltin, rExternal],
+                stripDisplayID: idBuiltin,
+                displayIDs: [idBuiltin])   // wrong length on purpose
+            check("resolver: mismatched id array falls back to geometry safely",
+                  d.frame == rBuiltin && d.displayIndex == 0 && !d.migrated)
+        }
+
+        // Identity supplied but the strip's own id is unknown (nil): behave like
+        // the pure-geometry path (no identity to anchor on).
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin,
+                displays:   [rBuiltin, rExternal],
+                stripDisplayID: nil,
+                displayIDs: [idBuiltin, idExternal])
+            check("resolver: nil strip id falls back to geometry",
+                  d.frame == rBuiltin && d.displayIndex == 0 && !d.migrated)
+        }
+
+        // (b) RE-PLUG: the strip lives on the built-in (id 1); the OTHER display
+        // (the external) is unplugged and then re-plugged. After re-plug both
+        // displays are present again; identity keeps the strip on id 1 (no
+        // surprise jump onto the freshly-returned monitor).
+        do {
+            // External gone: only the built-in survives, strip stays on id 1.
+            let gone = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin],
+                stripDisplayID: idBuiltin, displayIDs: [idBuiltin])
+            check("resolver: re-plug step 1, other display gone leaves strip on id",
+                  gone.frame == rBuiltin && gone.displayIndex == 0 && !gone.migrated)
+            // External back: both present, strip still on id 1, no migration.
+            let back = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin, rExternal],
+                stripDisplayID: idBuiltin, displayIDs: [idBuiltin, idExternal])
+            check("resolver: re-plug step 2, returned display does not yank strip",
+                  back.frame == rBuiltin && back.displayIndex == 0 && !back.migrated)
+        }
+
+        // (f) ALL DISPLAYS ASLEEP then WAKE: the strip is on the external (id 2).
+        // During sleep macOS reports NO screens, so the resolver keeps the last
+        // frame and signals "no choice" (caller leaves the strip put). On wake
+        // both displays return; identity rebinds to id 2's frame, not migrated.
+        do {
+            let asleep = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [],
+                stripDisplayID: idExternal, displayIDs: [])
+            check("resolver: all displays asleep -> keep last frame, no choice",
+                  asleep.frame == rExternal && asleep.displayIndex == nil && !asleep.migrated)
+            let awake = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [rBuiltin, rExternal],
+                stripDisplayID: idExternal, displayIDs: [idBuiltin, idExternal])
+            check("resolver: wake rebinds the strip to its own display by id",
+                  awake.frame == rExternal && awake.displayIndex == 1 && !awake.migrated)
         }
 
         // --- Display-safe RESTORE: monitor unplugged before Release ----------
@@ -1271,6 +1409,108 @@ enum StripOpsTests {
         check("scope-engine: single display keeps everything",
               engNoOthers.filterByAdoptScope(frames) { $0 } == frames)
 
+        // === AdoptionScope on the REAL negative-origin external ([md-newwin]) ==
+        // The block above used a hypothetical 2560x1440 external. Pin the policy
+        // to the ACTUAL live hardware this swarm runs on, so these are a faithful
+        // regression guard for BOTH the multi-display "yank" bug (arrange/resync)
+        // and the new-window adoption path (the kAXWindowCreated fast path):
+        //   strip (built-in, full AX frame): (0,0,1470x956)
+        //   external (full AX frame):        (-225,-1080,1920x1080) ABOVE-AND-LEFT
+        // The external sits ABOVE the built-in (its AX maxY == the built-in's
+        // minY == 0), so the seam between them is HORIZONTAL: a straddling window
+        // crosses the y=0 line.
+        let nwStrip = CGRect(x: 0, y: 0, width: 1470, height: 956)
+        let nwExt   = CGRect(x: -225, y: -1080, width: 1920, height: 1080)
+        let nwStripWin = CGRect(x: 120, y: 80, width: 900, height: 600)     // squarely on built-in
+        let nwExtWin   = CGRect(x: -100, y: -800, width: 1000, height: 700) // squarely on external
+
+        // (a) THE YANK BUG: a window living on the real external must NOT be
+        // classified onto the strip's display, so arrange/resync never yank it.
+        check("md-newwin (a): real external window does NOT belong to the strip",
+              !AdoptionScope.belongsToStripDisplay(nwExtWin, stripDisplay: nwStrip, others: [nwExt]))
+        check("md-newwin: built-in window belongs to the strip",
+              AdoptionScope.belongsToStripDisplay(nwStripWin, stripDisplay: nwStrip, others: [nwExt]))
+        let nwFrames = [nwStripWin, nwExtWin]
+        check("md-newwin (a): stripDisplay scope drops the external window (no yank)",
+              AdoptionScope.filter(frames: nwFrames, stripDisplay: nwStrip,
+                                   others: [nwExt], scope: .stripDisplay) == [0])
+        // (e) Legacy allDisplays still adopts EVERYTHING across monitors.
+        check("md-newwin (e): allDisplays scope adopts every window",
+              AdoptionScope.filter(frames: nwFrames, stripDisplay: nwStrip,
+                                   others: [nwExt], scope: .allDisplays) == [0, 1])
+
+        // (d) Bezel straddle, classified by best-overlap. An EXACT 50/50 split
+        // across the y=0 seam (equal area on each monitor) resolves IN FAVOR of
+        // the strip (the strip is weighed first, and best-overlap keeps the first
+        // maximum). x∈[200,1100] is inside BOTH displays' x-range, so the
+        // horizontal overlap is identical; y∈[-300,300] is 300pt on each side.
+        let nwTie = CGRect(x: 200, y: -300, width: 900, height: 600)
+        check("md-newwin (d): exact bezel tie favors the strip display",
+              AdoptionScope.belongsToStripDisplay(nwTie, stripDisplay: nwStrip, others: [nwExt]))
+        // Tilt the SAME window majority-onto-external (500 ext vs 100 strip) ->
+        // dropped; majority-onto-strip (100 ext vs 500 strip) -> kept.
+        let nwMostlyExt   = CGRect(x: 200, y: -500, width: 900, height: 600)
+        let nwMostlyStrip = CGRect(x: 200, y: -100, width: 900, height: 600)
+        check("md-newwin (d): majority-on-external straddler is dropped",
+              !AdoptionScope.belongsToStripDisplay(nwMostlyExt, stripDisplay: nwStrip, others: [nwExt]))
+        check("md-newwin (d): majority-on-strip straddler is kept",
+              AdoptionScope.belongsToStripDisplay(nwMostlyStrip, stripDisplay: nwStrip, others: [nwExt]))
+
+        // (b)+(c) NEW-window adoption runs through the SAME engine glue the
+        // fast-adopt (kAXWindowCreated) and resync paths call
+        // (`filterByAdoptScope`). Build an engine bound to the built-in with the
+        // real external registered and feed it the AX frames a freshly-opened
+        // window would carry. This is the exact decision `LifecycleMonitor`
+        // makes for a brand-new window.
+        func nwEngine(_ scope: AdoptionScope.Scope) -> TeleportEngine {
+            let eng = TeleportEngine(screenFrame: nwStrip)
+            eng.stripDisplayFrame = nwStrip
+            eng.otherDisplayFrames = [nwExt]
+            eng.adoptScope = scope
+            return eng
+        }
+        // (b) a new window opened ON the external is IGNORED by a stripDisplay
+        // strip (the fast path drops it before insert -> no yank).
+        check("md-newwin (b): new window on the external is ignored (fast-adopt scope)",
+              nwEngine(.stripDisplay).filterByAdoptScope([nwExtWin]) { $0 } == [])
+        // (c) a new window opened on the STRIP display IS adopted.
+        check("md-newwin (c): new window on the strip display is adopted",
+              nwEngine(.stripDisplay).filterByAdoptScope([nwStripWin]) { $0 } == [nwStripWin])
+        // A mixed burst (one window per monitor opening together, as the
+        // coalesced kAXWindowCreated path can deliver) adopts ONLY the strip one.
+        check("md-newwin (b+c): mixed new-window burst adopts only the strip window",
+              nwEngine(.stripDisplay).filterByAdoptScope([nwExtWin, nwStripWin]) { $0 } == [nwStripWin])
+        // (e) allDisplays keeps both even through the engine glue.
+        check("md-newwin (e): allDisplays engine glue adopts both new windows",
+              nwEngine(.allDisplays).filterByAdoptScope([nwExtWin, nwStripWin]) { $0 } == [nwExtWin, nwStripWin])
+
+        // Multi-external robustness (3 displays): a SECOND external further left
+        // must not confuse scoping - a window on EITHER external is dropped, only
+        // the strip's own survives. Guards the >2-display layouts the hotplug
+        // resolver allows, where two non-strip displays could tie each other.
+        let nwExt2    = CGRect(x: -2145, y: -1080, width: 1920, height: 1080) // further left
+        let nwExt2Win = CGRect(x: -2000, y: -800, width: 1000, height: 700)   // squarely on ext2
+        check("md-newwin: 3-display keeps only strip-display windows",
+              AdoptionScope.filter(frames: [nwStripWin, nwExtWin, nwExt2Win],
+                                   stripDisplay: nwStrip, others: [nwExt, nwExt2],
+                                   scope: .stripDisplay) == [0])
+
+        // Single-display fallback at the REAL strip geometry: once the external
+        // is unplugged (`others` empty) every window is on the strip, so even a
+        // frame that WOULD have been on the external is kept (never dropped onto
+        // a monitor that no longer exists).
+        let nwUnplugged = TeleportEngine(screenFrame: nwStrip)
+        nwUnplugged.stripDisplayFrame = nwStrip
+        nwUnplugged.otherDisplayFrames = []          // external gone
+        nwUnplugged.adoptScope = .stripDisplay
+        check("md-newwin: single-display keeps the would-be-external window",
+              nwUnplugged.filterByAdoptScope([nwExtWin]) { $0 } == [nwExtWin])
+        // Safety bias on the real geometry: a window overlapping NONE of the 3
+        // displays (degenerate / far-parked frame) is KEPT, never silently lost.
+        let nwOrphan = CGRect(x: 50_000, y: 50_000, width: 400, height: 300)
+        check("md-newwin: window overlapping no display is kept (never lose a window)",
+              AdoptionScope.belongsToStripDisplay(nwOrphan, stripDisplay: nwStrip, others: [nwExt, nwExt2]))
+
         // --- DisplaySelector: pure strip-display PICK policy ([md-select]) ----
         // Model the user's REAL hardware in NSScreen.screens order: built-in
         // primary 1470x956 at AppKit (0,0) (also `main`), and the bigger external
@@ -1333,6 +1573,133 @@ enum StripOpsTests {
               DisplaySelector.pick(spec: "largest", displays: one) == 0)
         check("select: single display, 'next' wraps to itself -> 0",
               DisplaySelector.pick(spec: "next", displays: one, current: 0) == 0)
+
+        // 'next' from an out-of-range / nonsense `current` must not crash and
+        // must land in range (defends moveStripToDisplay when the strip's index
+        // could not be identified). `current` -1 -> (-1+1)%2 == 0.
+        check("select: 'next' from current -1 stays in range (0)",
+              DisplaySelector.pick(spec: "next", displays: twoDisplays, current: -1) == 0)
+        // Whitespace-only / blank spec behaves like empty -> main.
+        check("select: blank '   ' spec defaults to main",
+              DisplaySelector.pick(spec: "   ", displays: twoDisplays) == 0)
+        // A non-integer numeric-looking spec is rejected (not silently floored).
+        check("select: '1.5' is not a valid index -> nil",
+              DisplaySelector.pick(spec: "1.5", displays: twoDisplays) == nil)
+        check("select: negative index '-1' -> nil",
+              DisplaySelector.pick(spec: "-1", displays: twoDisplays) == nil)
+
+        // --- StripDisplayBinding: launch/move AX flip ([md-move]) -------------
+        // REPRODUCE the launch bug: the strip on a NON-PRIMARY external must use
+        // the PRIMARY display's height for the Y-flip, not its own height.
+        // Real hardware in NSScreen order: built-in primary (0,0,1470,956) is
+        // also `main`; external (-225,956,1920,1080) sits ABOVE-and-LEFT.
+        let bdBuiltin = StripDisplayBinding.DisplayFrames(
+            full: CGRect(x: 0, y: 0, width: 1470, height: 956),
+            visible: CGRect(x: 0, y: 33, width: 1470, height: 890))   // menu bar @ top
+        let bdExternal = StripDisplayBinding.DisplayFrames(
+            full: CGRect(x: -225, y: 956, width: 1920, height: 1080),
+            visible: CGRect(x: -225, y: 956, width: 1920, height: 1080)) // no menu bar
+        let bdDisplays = [bdBuiltin, bdExternal]
+
+        // Strip on the PRIMARY built-in (index 0): AX == AppKit flipped about its
+        // own height (the two heights are the same here), the historical case.
+        let bindBuiltin = StripDisplayBinding.bind(displays: bdDisplays, stripIndex: 0, mainIndex: 0)
+        check("bind: builtin strip full flips about primary height (AX y=0)",
+              bindBuiltin?.stripFull == CGRect(x: 0, y: 0, width: 1470, height: 956))
+        check("bind: builtin strip visible AX top under the menu bar (y=33)",
+              bindBuiltin?.stripVisible == CGRect(x: 0, y: 33, width: 1470, height: 890))
+        check("bind: builtin strip's 'other' is the external, flipped to AX y=-1080",
+              bindBuiltin?.others == [CGRect(x: -225, y: -1080, width: 1920, height: 1080)])
+
+        // Strip on the NON-PRIMARY external (index 1): the WHOLE point. AX y must
+        // be primaryHeight(956) - extMaxY(2036) = -1080 (the brief's ground
+        // truth). The OLD hand-rolled flip used the external's own height 1080,
+        // giving y = 1080 - 2036 = -956 — 124px too low, off the display.
+        let bindExternal = StripDisplayBinding.bind(displays: bdDisplays, stripIndex: 1, mainIndex: 0)
+        check("bind: external strip uses PRIMARY height for Y-flip (AX y=-1080)",
+              bindExternal?.stripVisible == CGRect(x: -225, y: -1080, width: 1920, height: 1080))
+        check("bind: external strip full matches (negative-origin external)",
+              bindExternal?.stripFull == CGRect(x: -225, y: -1080, width: 1920, height: 1080))
+        check("bind: external strip's 'other' is the built-in at AX y=0",
+              bindExternal?.others == [CGRect(x: 0, y: 0, width: 1470, height: 956)])
+        // The exact regression guard: the buggy own-height flip would have put
+        // the external strip 124px too low. Assert we are NOT there.
+        check("bind: external strip is NOT at the buggy own-height y (-956)",
+              bindExternal?.stripVisible.origin.y == -1080 && bindExternal?.stripVisible.origin.y != -956)
+
+        // Out-of-range / empty are clean nils (caller keeps prior binding).
+        check("bind: out-of-range stripIndex -> nil",
+              StripDisplayBinding.bind(displays: bdDisplays, stripIndex: 2, mainIndex: 0) == nil)
+        check("bind: empty display list -> nil",
+              StripDisplayBinding.bind(displays: [], stripIndex: 0, mainIndex: nil) == nil)
+
+        // primaryHeight resolution order: origin-(0,0) display wins even when it
+        // is NOT main; falls back to main, then strip, in degenerate layouts.
+        check("bind: primaryHeight prefers the AppKit-origin display (956)",
+              StripDisplayBinding.primaryHeight(displays: bdDisplays, mainIndex: 1, stripIndex: 1) == 956)
+        let noOrigin = [
+            StripDisplayBinding.DisplayFrames(full: CGRect(x: -225, y: 956, width: 1920, height: 1080),
+                                              visible: CGRect(x: -225, y: 956, width: 1920, height: 1080)),
+            StripDisplayBinding.DisplayFrames(full: CGRect(x: 100, y: 100, width: 800, height: 600),
+                                              visible: CGRect(x: 100, y: 100, width: 800, height: 600)),
+        ]
+        check("bind: no origin display -> falls back to main's height (1080)",
+              StripDisplayBinding.primaryHeight(displays: noOrigin, mainIndex: 0, stripIndex: 1) == 1080)
+        check("bind: no origin + no main -> falls back to strip's height (600)",
+              StripDisplayBinding.primaryHeight(displays: noOrigin, mainIndex: nil, stripIndex: 1) == 600)
+
+        // --- rebindStripDisplay: cross-size relay (1470 -> 1920) ([md-move]) --
+        // Moving the strip from the narrow built-in onto the wider external must
+        // re-anchor every column's vertical band to the NEW display top and let
+        // width fractions scale to the NEW viewport width — the size-mismatch the
+        // brief calls out (1470 wide vs 1920 wide).
+        let narrow = CGRect(x: 0, y: 33, width: 1470, height: 890)   // built-in visible
+        let wide   = CGRect(x: -225, y: -1080, width: 1920, height: 1080) // external visible (AX)
+        let relayEng = makeEngine(count: 3, width: 300, screenWidth: narrow.width)
+        // Seed realistic top/heights as if arranged on the built-in.
+        for i in relayEng.slots.indices { relayEng.slots[i].y = narrow.minY; relayEng.slots[i].height = 600 }
+        let widthHalfNarrow = relayEng.width(forFraction: 0.5)
+        relayEng.rebindStripDisplay(to: wide)
+        check("rebind: screenFrame follows to the wide external",
+              relayEng.screenFrame.width == 1920)
+        check("rebind: every column re-pinned to the NEW display top (AX y=-1080)",
+              relayEng.slots.allSatisfy { abs($0.y - wide.minY) < 0.5 })
+        let widthHalfWide = relayEng.width(forFraction: 0.5)
+        check("rebind: a 50% width is WIDER on the 1920 display than the 1470 one",
+              widthHalfWide > widthHalfNarrow)
+        check("rebind: 50% width tracks the new viewport math exactly",
+              abs(widthHalfWide - (0.5 * (1920 - relayEng.gap) - relayEng.gap)) < 0.5)
+        // Heights TALLER than the new usable height are clamped; shorter kept.
+        let tallEng = makeEngine(count: 1, width: 300, screenWidth: 1470)
+        tallEng.slots[0].height = 2000                 // taller than 1080
+        tallEng.rebindStripDisplay(to: wide)
+        check("rebind: an over-tall column is clamped to the new display height",
+              tallEng.slots[0].height == wide.height)
+        let shortEng = makeEngine(count: 1, width: 300, screenWidth: 1470)
+        shortEng.slots[0].height = 500
+        shortEng.rebindStripDisplay(to: wide)
+        check("rebind: a column shorter than the new height is left unchanged",
+              shortEng.slots[0].height == 500)
+
+        // No-op rebind to the SAME geometry leaves the layout untouched
+        // (display-already-on safety: moving the strip to the display it is
+        // already on must not tear up the horizontal packing or corrupt heights).
+        // rebind always re-pins each column to the display TOP, which is a no-op
+        // here because an already-arranged strip's columns sit at that top
+        // (`y == screenFrame.minY`). The controller's moveStripToDisplay calls
+        // rebind unconditionally, so this is the model guarantee that "move to
+        // the current display" is harmless.
+        let sameEng = makeEngine(count: 3, width: 300, screenWidth: 1470)
+        for i in sameEng.slots.indices { sameEng.slots[i].y = sameEng.screenFrame.minY; sameEng.slots[i].height = 500 }
+        let ysBefore = sameEng.slots.map { $0.y }
+        let xsBefore = sameEng.slots.map { $0.canvasX }
+        let hsBefore = sameEng.slots.map { $0.height }
+        sameEng.rebindStripDisplay(to: sameEng.screenFrame)
+        check("rebind: same-frame rebind keeps every slot y/canvasX/height stable",
+              sameEng.slots.map { $0.y } == ysBefore
+                  && sameEng.slots.map { $0.canvasX } == xsBefore
+                  && sameEng.slots.map { $0.height } == hsBefore)
+
         // --- testWindowTiles: multi-display spawn placement (pure) -----------
         // Primary display (origin 0,0): layout is unchanged from the original
         // single-display tiling, so existing callers spawn identically.
@@ -1393,6 +1760,12 @@ enum StripOpsTests {
               WindowReveal.Result(unhiddenApps: 1, unminimizedWindows: 0).didReveal)
         check("reveal: didReveal true when a window was unminimized",
               WindowReveal.Result(unhiddenApps: 0, unminimizedWindows: 2).didReveal)
+
+        // --- Negative-origin external hardening (own file, merges clean) ------
+        // Parking/restore/round-trip correctness pinned to the LIVE 1920x1080
+        // external at AX (-225,-1080) — both axes negative, stacked above the
+        // built-in. See GeometryHardeningTests for the rationale per check.
+        GeometryHardeningTests.run(check)
 
         // --- SemVer parse + ordering (in-app updater) -----------------------
         func sv(_ s: String) -> SemVer? { SemVer(s) }
@@ -1493,7 +1866,6 @@ enum StripOpsTests {
         check("updater: no releases -> up to date",
               Updater.evaluate(releases: [], current: SemVer("0.1.1")!, allowPrerelease: false)
                 == .upToDate(current: SemVer("0.1.1")!))
-
 
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0

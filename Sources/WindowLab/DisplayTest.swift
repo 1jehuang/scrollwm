@@ -71,6 +71,49 @@ func runDisplayTest() {
         let layoutNote = multiDisplay ? "other=\(otherStr)" : "single-display: synthetic neighbor/target"
         print("[displaytest] displays: \(NSScreen.screens.count) strip=\(rectStr(stripFull)) \(layoutNote)")
 
+        // ============ Phase 0: stable display identity ([md-hotplug]) ==========
+        // Prove the hotplug fix on REAL hardware: every attached display vends a
+        // stable CGDirectDisplayID, and StripDisplayResolver follows the strip's
+        // PHYSICAL display BY ID even when its geometry is perturbed (the
+        // arrangement-swap / big-resolution-change cases pure overlap gets wrong).
+        let liveIDs = NSScreen.screens.map { $0.displayID }
+        print("[displaytest] display ids: "
+              + zip(NSScreen.screens, liveIDs).map { s, id in
+                    "\(s.localizedName)=\(id.map(String.init) ?? "nil")"
+                }.joined(separator: ", "))
+        check("every real display vends a stable CGDirectDisplayID",
+              liveIDs.allSatisfy { ($0 ?? 0) != 0 })
+        check("real display ids are unique", Set(liveIDs.compactMap { $0 }).count == liveIDs.count)
+        if multiDisplay, liveIDs.allSatisfy({ $0 != nil }) {
+            let ids = liveIDs.compactMap { $0 }
+            let visibles = NSScreen.screens.map(axVisible)
+            // Pick the strip's display (main) and its id.
+            let stripIdx = NSScreen.screens.firstIndex { $0 === stripScreen } ?? 0
+            let stripID = ids[stripIdx]
+            // Perturb ONLY the strip display's frame far away (simulate a big
+            // resolution/origin change) so it no longer overlaps its old self,
+            // and make a DIFFERENT display the largest survivor. Identity must
+            // still follow the strip's own id, not migrate.
+            var perturbed = visibles
+            perturbed[stripIdx] = CGRect(x: 99_000, y: 99_000,
+                                         width: visibles[stripIdx].width,
+                                         height: visibles[stripIdx].height)
+            let d = StripDisplayResolver.resolve(
+                stripFrame: visibles[stripIdx], displays: perturbed,
+                stripDisplayID: stripID, displayIDs: ids)
+            check("resolver follows the strip's display by id across a big move (live)",
+                  d.displayIndex == stripIdx && d.frame == perturbed[stripIdx] && !d.migrated)
+            // Now drop the strip's id from the live set (simulate a real unplug):
+            // identity is absent -> must MIGRATE to a survivor.
+            let survivors = Array(visibles.enumerated().filter { $0.offset != stripIdx }.map { $0.element })
+            let survivorIDs = Array(ids.enumerated().filter { $0.offset != stripIdx }.map { $0.element })
+            let unplug = StripDisplayResolver.resolve(
+                stripFrame: visibles[stripIdx], displays: survivors,
+                stripDisplayID: stripID, displayIDs: survivorIDs)
+            check("resolver migrates when the strip's id is truly gone (live)",
+                  unplug.migrated && unplug.displayIndex != nil)
+        }
+
         // --- Spawn disposable windows ON the strip display, then LOCK the
         // controller to their PIDs so no real window can ever be touched.
         print("[displaytest] spawning 4 test windows on the strip display...")
