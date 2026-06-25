@@ -169,6 +169,43 @@ func runHeadlessOpsTest() {
     t.check("focus-sync close: a real (sim) window actually closed",
             liveWindows().count == beforeFocusSyncClose - 1)
 
+    // --- FOCUS SYNC: width keys honor the live OS focus, not a stale index ---
+    // Repro for "resize the window on the right but the wrong column grows / the
+    // viewport never scrolls to fit it." Mirrors the closeFocused fix: clicking
+    // a window moves OS focus, so a width key must resize THAT window and scroll
+    // the viewport to reveal it, not act on the last column ScrollWM navigated to.
+    do {
+        let n = engine.slots.count
+        guard n >= 2 else { t.check("width-focus-sync: enough columns", false); return }
+        let stale = 0
+        let liveIdx = n - 1
+        engine.focusIndex = stale
+        let staleTitle = engine.slots[stale].window.title
+        let liveTitle = engine.slots[liveIdx].window.title
+        // The user clicks the rightmost window: OS focus moves there.
+        world.setSystemFocus(engine.slots[liveIdx].window.element)
+        let want100 = engine.width(forFraction: 1.0)
+        engine.setFocusedWidth(fraction: 1.0)
+        Headless.pump()
+        // The clicked (live-focused) window must be the one that resized ...
+        let liveW = liveSize(title: liveTitle)?.width ?? 0
+        let staleW = liveSize(title: staleTitle)?.width ?? 0
+        t.check("width-focus-sync: the OS-focused (clicked) window resized to 100%",
+                abs(liveW - want100) <= 2)
+        t.check("width-focus-sync: the stale-index window did NOT resize",
+                abs(staleW - want100) > 2)
+        // ... and the engine's focus + viewport now track that window so it is fully visible.
+        let fi = engine.focusIndex
+        t.check("width-focus-sync: focusIndex tracks the clicked window",
+                engine.slots.indices.contains(fi) &&
+                engine.slots[fi].window.title == liveTitle)
+        let s = engine.slots[fi]
+        let visLeft = s.canvasX - engine.viewportX
+        let visRight = visLeft + s.width
+        t.check("width-focus-sync: viewport scrolled so the resized window is fully visible",
+                visLeft >= -1 && visRight <= engine.screenFrame.width + 1)
+    }
+
     // --- CLOSE: close focused window, verify it disappears ---
     let closeTitle = engine.slots[engine.focusIndex].window.title
     world.setSystemFocus(engine.slots[engine.focusIndex].window.element)

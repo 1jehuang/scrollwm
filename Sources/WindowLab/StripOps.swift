@@ -47,6 +47,15 @@ extension TeleportEngine {
     /// columns overlap and the viewport mini-map drift).
     @discardableResult
     func setFocusedWidth(fraction: CGFloat) -> Bool {
+        // Honor the window the user is REALLY on: focus may have moved outside
+        // ScrollWM (mouse click, Cmd+Tab) since our last navigation, so the
+        // engine's `focusIndex` can be stale. Without this, pressing a width key
+        // after clicking a window on the right would resize the LAST column
+        // ScrollWM navigated to and never scroll the viewport to the window the
+        // user is actually looking at - the exact "the window on the right does
+        // not size up / the viewport does not follow it" symptom. Same fix as
+        // `closeFocused`'s focus reconcile.
+        syncFocusToSystemFocusedWindow()
         guard slots.indices.contains(focusIndex) else { return false }
         let requestedWidth = width(forFraction: fraction)
 
@@ -223,6 +232,10 @@ extension TeleportEngine {
     /// nothing is focused.
     @discardableResult
     func moveFocused(by delta: Int) -> Bool {
+        // Act on the window the user is REALLY on (focus may have moved via a
+        // mouse click / Cmd+Tab since our last navigation), same as the width
+        // and close ops.
+        syncFocusToSystemFocusedWindow()
         guard slots.indices.contains(focusIndex), slots.count > 1 else { return false }
         let target = focusIndex + delta
         guard slots.indices.contains(target) else { return false }
