@@ -228,6 +228,8 @@ case "displaytest":
     runDisplayTest()
 case "e2etest":
     runE2EKeybindingTest()
+case "revealtest":
+    runWindowRevealTest()
 case "hotkeyprobe":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 20
     runHotkeyProbe(seconds: seconds)
@@ -292,6 +294,9 @@ default:
                                left-to-right) so you can sandbox on an external.
       WindowLab e2etest        end-to-end: run the real controller, synthesize
                                Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q, verify effects.
+      WindowLab revealtest     integration: spawn windows, minimize some, then
+                               verify "Arrange All" reveals + adopts EVERY window
+                               (hidden/minimized included). Restores after.
       WindowLab displaytest    multi-display integration: spawn disposable
                                windows, run the REAL controller locked to them,
                                and assert (vs live AX) that strip windows land on

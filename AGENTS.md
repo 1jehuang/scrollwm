@@ -41,6 +41,7 @@ All of these are headless-ish and safe (spawn disposable windows or pure logic):
 .build/debug/WindowLab unittest       # pure logic: strip ops, ResyncPlanner, config (no AX)
 .build/debug/WindowLab opstest        # integration: width/move/close vs live AX readback
 .build/debug/WindowLab e2etest        # real controller + synthesized hotkeys
+.build/debug/WindowLab revealtest     # "Arrange All" reveals + adopts hidden/minimized
 .build/debug/WindowLab spawnlatency   # new-window adoption latency (AX observer fast path)
 .build/debug/WindowLab displaytest    # multi-display: real controller locked to spawned
                                       #   windows; asserts on-display/parking/rebind vs AX

@@ -1339,6 +1339,36 @@ enum StripOpsTests {
         check("tiles: zero count yields no tiles",
               testWindowTiles(count: 0, displayFrame: tilePrimary).isEmpty)
 
+        // --- WindowReveal: which apps/windows "Arrange All" reveals (pure) ----
+        // Only hidden apps are unhidden; visible ones are left alone.
+        let revealApps: [(pid: pid_t, isHidden: Bool)] =
+            [(1, true), (2, false), (3, true), (4, false)]
+        check("reveal: unhides exactly the hidden apps",
+              WindowReveal.appsToUnhide(revealApps) == [1, 3])
+        check("reveal: no hidden apps -> nothing to unhide",
+              WindowReveal.appsToUnhide([(7, false), (8, false)]).isEmpty)
+
+        // Only MINIMIZED top-level windows (role AXWindow) are de-miniaturized.
+        // We key on ROLE not subrole because macOS flips a minimized window's
+        // subrole to AXDialog in the Dock; a subrole gate would miss them.
+        let winRole = kAXWindowRole as String
+        check("reveal: minimized AXWindow -> unminimize",
+              WindowReveal.shouldUnminimize(role: winRole, isMinimized: true))
+        check("reveal: visible AXWindow -> leave alone",
+              !WindowReveal.shouldUnminimize(role: winRole, isMinimized: false))
+        check("reveal: minimized non-window role (e.g. AXSheet) -> leave alone",
+              !WindowReveal.shouldUnminimize(role: "AXSheet", isMinimized: true))
+        check("reveal: minimized unknown role -> leave alone",
+              !WindowReveal.shouldUnminimize(role: nil, isMinimized: true))
+
+        // Result.didReveal is true iff something was acted on.
+        check("reveal: didReveal false when nothing revealed",
+              !WindowReveal.Result().didReveal)
+        check("reveal: didReveal true when an app was unhidden",
+              WindowReveal.Result(unhiddenApps: 1, unminimizedWindows: 0).didReveal)
+        check("reveal: didReveal true when a window was unminimized",
+              WindowReveal.Result(unhiddenApps: 0, unminimizedWindows: 2).didReveal)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

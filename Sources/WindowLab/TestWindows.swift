@@ -21,7 +21,7 @@ func runTestWindow(args: [String]) {
 
     let window = NSWindow(
         contentRect: NSRect(x: x, y: y, width: w, height: h),
-        styleMask: [.titled, .closable, .resizable],
+        styleMask: [.titled, .closable, .miniaturizable, .resizable],
         backing: .buffered,
         defer: false
     )
@@ -42,7 +42,7 @@ func runTestWindow(args: [String]) {
     sigSrc.setEventHandler {
         let extra = NSWindow(
             contentRect: NSRect(x: x + 60, y: y - 60, width: w, height: h),
-            styleMask: [.titled, .closable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )

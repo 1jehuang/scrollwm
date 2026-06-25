@@ -435,22 +435,45 @@ final class ScrollWMController: NSObject {
         print("show all: equalized \(engine.slots.count) columns to fit")
     }
 
-    /// "Arrange All Windows": arrange the desktop when dormant, or force a full
-    /// resync when already managing so any windows opened since the last arrange
-    /// are adopted, then show them all. This is the one-shot "tidy everything"
-    /// action from the menu.
+    /// "Arrange All Windows": adopt EVERY window into the strip, even ones that
+    /// are currently hidden (Cmd+H'd app) or minimized to the Dock. Hidden and
+    /// minimized windows are first revealed onto the CURRENT Space (so the
+    /// Space-safety contract still holds - we never reach into another Space),
+    /// then the ordinary adopt path picks them up. Arranges the desktop when
+    /// dormant, or forces a full resync when already managing. The one-shot
+    /// "tidy everything" action from the menu.
     func arrangeAllWindows() {
+        // Reveal hidden apps + minimized windows first so they materialize on
+        // the current Space and become adoptable. Sandbox/test lock flows
+        // straight through, so this can only ever touch the locked pids.
+        let reveal = WindowReveal.reveal(pidFilter: sandboxPIDs)
+        if reveal.didReveal {
+            print("arrange all: revealed \(reveal.unhiddenApps) hidden app(s), "
+                  + "\(reveal.unminimizedWindows) minimized window(s)")
+        }
+        // Unhide / de-miniaturize is animated and lands the windows on-screen a
+        // beat later, so adopt after a short delay (skip the wait when nothing
+        // was revealed - the common case stays snappy).
+        let settle = reveal.didReveal ? 0.45 : 0.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self] in
+            self?.adoptEverythingNow()
+        }
+    }
+
+    /// Adopt all current-Space windows into the strip and equalize so they are
+    /// all visible. Assumes any hidden/minimized windows were already revealed.
+    private func adoptEverythingNow() {
         if !isManaging {
             arrange()
             // Equalize right after arranging so the user sees everything at once.
             if isManaging { engine.fitAllColumns(); RestoreStore.save(engine: engine); menuBar.refresh() }
             return
         }
-        // Already managing: pull in any newly-opened current-Space windows, then
-        // equalize so the freshly-adopted ones are visible too. `resync` runs its
-        // heavy enumeration on a background queue and applies on main, so we
-        // equalize once now (current columns) and again shortly after for any
-        // windows the resync adopts.
+        // Already managing: pull in any newly-revealed/opened current-Space
+        // windows, then equalize so the freshly-adopted ones are visible too.
+        // `resync` runs its heavy enumeration on a background queue and applies
+        // on main, so we equalize once now (current columns) and again shortly
+        // after for any windows the resync adopts.
         lifecycle?.resync()
         engine.fitAllColumns()
         RestoreStore.save(engine: engine)
@@ -1069,7 +1092,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             showAllItem.target = self
             menu.addItem(showAllItem)
 
-            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (adopt new + fit)", action: #selector(arrangeAllAction), keyEquivalent: "")
+            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (incl. hidden & minimized)", action: #selector(arrangeAllAction), keyEquivalent: "")
             arrangeAllItem.target = self
             menu.addItem(arrangeAllItem)
 
@@ -1086,7 +1109,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             arrangeItem.target = self
             menu.addItem(arrangeItem)
 
-            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (adopt new + fit)", action: #selector(arrangeAllAction), keyEquivalent: "")
+            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (incl. hidden & minimized)", action: #selector(arrangeAllAction), keyEquivalent: "")
             arrangeAllItem.target = self
             menu.addItem(arrangeAllItem)
 
