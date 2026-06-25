@@ -98,6 +98,11 @@ final class LifecycleMonitor {
     /// AX queries fail with attributeUnsupported (-25205) for everything;
     /// trusting them would mass-remove the strip and clobber restore data.
     static func sessionIsActive() -> Bool {
+        // Headless tests install a sim backend and never touch real windows, so
+        // the lock/console guard is meaningless there (and would falsely fail in
+        // a CI/agent environment with no active console session). Treat the
+        // session as active whenever a test backend is installed.
+        if AXSource.backend != nil { return true }
         guard let dict = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
         let locked = (dict["CGSSessionScreenIsLocked"] as? Bool) ?? false
         let onConsole = (dict[kCGSessionOnConsoleKey as String] as? Bool) ?? true

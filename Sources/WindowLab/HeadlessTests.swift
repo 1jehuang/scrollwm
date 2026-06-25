@@ -224,6 +224,14 @@ func runHeadlessE2ETest() {
     let want100 = controller.debugWidth(forFraction: 1.0)
     t.check("Cmd+4 set focused width to ~100%", abs(controller.debugFocusedWidth - want100) <= 1)
 
+    // --- Key-hint HUD: the menu-bar icon flashes the chord + action ---
+    t.check("Cmd+4 flashed a key hint", controller.debugHintText != nil)
+    t.check("hint shows the chord + action", controller.debugHintText == "⌘4  Width 100%")
+    key("cmd+1")
+    t.check("hint retargets on the next press", controller.debugHintText == "⌘1  Width 25%")
+    // Reset width back to 100% so later assertions keep their footing.
+    key("cmd+4")
+
     // --- Cmd+L focus next, Cmd+H focus prev ---
     controller.focus(index: 0); Headless.pump(0.05)
     key("cmd+l")

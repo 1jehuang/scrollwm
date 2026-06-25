@@ -300,6 +300,43 @@ final class MenuBarStripView: NSView {
     private var lastTickNs: UInt64 = 0
     private var dormant = true
 
+    // MARK: - Key-hint HUD
+
+    /// Text currently flashing in the icon ("⌘L  Focus →"), or nil when idle.
+    /// Set by `flashKeyHint`; cross-fades over the mini-map then clears itself.
+    private var hintText: String?
+    /// HUD opacity: 0 hidden, 1 fully shown. Snappy in (no overshoot), held for
+    /// `hintHold` seconds, then eased out so the mini-map returns.
+    private var hintFade = Spring(0, response: 0.16, dampingFraction: 1.0)
+    /// Media-clock time the HUD should START fading out (after the hold).
+    private var hintHoldUntil: CFTimeInterval = 0
+    /// How long the HUD stays fully visible before fading back to the mini-map.
+    private let hintHold: CFTimeInterval = 0.85
+    /// Base mini-map content width from the last `apply`, used so the HUD can
+    /// grow the icon to fit the text and shrink back without re-deriving geometry.
+    private var lastStripContentWidth: CGFloat = 30
+    /// Font for the HUD text + its width measurement (kept in sync).
+    private static let hintFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+    /// Horizontal padding inside the icon around the HUD text (points, per side).
+    private let hudHInset: CGFloat = 5
+
+    /// Flash a key-hint over the icon: the chord just pressed + the action it
+    /// triggered (e.g. "⌘L" / "Focus →"). The icon grows to fit, holds, then
+    /// fades back to the mini-map. Rapid presses just retarget the same HUD.
+    func flashKeyHint(chord: String, action: String, now: CFTimeInterval = CACurrentMediaTime()) {
+        hintText = chord.isEmpty ? action : "\(chord)  \(action)"
+        hintFade.target = 1
+        hintHoldUntil = now + hintHold
+        // Recompute the icon's desired width right away so it starts growing
+        // toward the text, then report it on every animated frame.
+        reportDesiredWidthIfChanged()
+        ensureAnimating()
+        needsDisplay = true
+    }
+
+    /// The HUD text currently displayed (for headless tests + introspection).
+    var debugHintText: String? { hintText }
+
     // Diff bookkeeping.
     private var lastState: TeleportEngine.StripState?
     private var lastManaging = false
@@ -371,14 +408,32 @@ final class MenuBarStripView: NSView {
 
         // Report the icon's desired content width so the host can grow/shrink
         // the status item. Quantized + thresholded to avoid churn on tiny deltas.
-        let desired = desiredContentWidth(for: state, managing: managing)
+        lastStripContentWidth = desiredContentWidth(for: state, managing: managing)
+        reportDesiredWidthIfChanged()
+
+        ensureAnimating()
+        needsDisplay = true
+    }
+
+    /// Width (points) the icon needs to show the current HUD text, clamped to
+    /// the configured max. Falls back to the strip width when no HUD is active.
+    private func hudContentWidth() -> CGFloat {
+        guard let hintText else { return lastStripContentWidth }
+        let size = (hintText as NSString).size(withAttributes: [.font: Self.hintFont])
+        return min(ceil(size.width) + hudHInset * 2, maxContentWidth)
+    }
+
+    /// Report the icon's desired CONTENT width to the host (status-item length).
+    /// The HUD, when active, can grow the icon past the strip width to fit its
+    /// text; otherwise the strip's own desired width drives it. Thresholded so
+    /// we only resize the status item on a real change (relayout is not free).
+    private func reportDesiredWidthIfChanged() {
+        var desired = lastStripContentWidth
+        if hintText != nil { desired = max(desired, hudContentWidth()) }
         if abs(desired - lastReportedContentWidth) >= 1 {
             lastReportedContentWidth = desired
             onDesiredContentWidthChange?(desired)
         }
-
-        ensureAnimating()
-        needsDisplay = true
     }
 
     /// Slide the whole strip like turning a page. Call when switching
@@ -517,6 +572,18 @@ final class MenuBarStripView: NSView {
         pageSlide.step(dt); pageSlideY.step(dt); focusGlow.step(dt)
         for s in slots { s.step(dt, now: now) }
 
+        // Key-hint HUD: once the hold window elapses, ease it out. When fully
+        // faded we clear the text and let the icon shrink back to the mini-map.
+        if hintText != nil {
+            if hintFade.target > 0, now >= hintHoldUntil { hintFade.target = 0 }
+            hintFade.step(dt)
+            if hintFade.target == 0 && hintFade.value < 0.02 {
+                hintText = nil
+                hintFade.reset(to: 0)
+            }
+            reportDesiredWidthIfChanged()
+        }
+
         // Reap fully-exited columns.
         slots.removeAll { $0.exiting && $0.presence.value < 0.02 && $0.presence.isSettled }
 
@@ -526,7 +593,7 @@ final class MenuBarStripView: NSView {
     private func everythingSettled() -> Bool {
         modeFade.isSettled && viewportX.isSettled && viewportW.isSettled &&
         pageSlide.isSettled && pageSlideY.isSettled && focusGlow.isSettled &&
-        slots.allSatisfy { $0.settled }
+        hintText == nil && slots.allSatisfy { $0.settled }
     }
 
     // MARK: - Drawing
@@ -539,8 +606,33 @@ final class MenuBarStripView: NSView {
         let live = 1 - modeFade.value      // dormant weight
         let managingWeight = modeFade.value
 
-        if live > 0.01 { drawDormant(alpha: live) }
-        if managingWeight > 0.01 { drawStrip(alpha: managingWeight) }
+        // The mini-map dims under the HUD so the text reads cleanly, then
+        // returns as the HUD fades. hintFade is 0 when no HUD is active.
+        let hud = hintText != nil ? CGFloat(hintFade.value) : 0
+        let mapAlpha = 1 - hud
+
+        if live > 0.01 { drawDormant(alpha: live * mapAlpha) }
+        if managingWeight > 0.01 { drawStrip(alpha: managingWeight * mapAlpha) }
+        if hud > 0.01, let hintText { drawKeyHint(hintText, alpha: hud) }
+    }
+
+    /// Draw the key-hint HUD: the chord + action centered over the icon. The
+    /// mini-map underneath is dimmed (see `draw`) so the label reads cleanly.
+    private func drawKeyHint(_ text: String, alpha: CGFloat) {
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        para.lineBreakMode = .byClipping
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: Self.hintFont,
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(alpha),
+            .paragraphStyle: para,
+        ]
+        let str = text as NSString
+        let size = str.size(withAttributes: [.font: Self.hintFont])
+        let textRect = NSRect(
+            x: 0, y: (bounds.height - size.height) / 2,
+            width: bounds.width, height: size.height)
+        str.draw(in: textRect, withAttributes: attrs)
     }
 
     private func drawDormant(alpha: Double) {

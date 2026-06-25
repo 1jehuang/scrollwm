@@ -407,6 +407,17 @@ final class ScrollWMController: NSObject {
             + "\(k(.closeWindow)) close · \(k(.toggleArrange)) toggle"
     }
 
+    /// Flash the menu-bar key-hint for a fired binding: the pretty chord (e.g.
+    /// "⌘L") plus the action's short label ("Focus →"). `chordOverride` lets the
+    /// caller supply the exact chord that fired (e.g. the jump digit), otherwise
+    /// the action's first configured chord is shown. No-op unless enabled.
+    func flashKeybinding(_ action: KeyAction, chordOverride: String? = nil) {
+        guard config.menuBar.showKeyHints else { return }
+        let chord = chordOverride ?? (config.keybindings[action] ?? KeyAction.defaultChords[action] ?? [])
+            .first.map(TutorialWindowController.pretty) ?? ""
+        menuBar.flashKeyHint(chord: chord, action: action.displayName)
+    }
+
     // MARK: - Arrange / Release
 
     func arrange(pidFilter: Set<pid_t>? = nil) {
@@ -728,6 +739,8 @@ final class ScrollWMController: NSObject {
     func debugWidth(forFraction f: CGFloat) -> CGFloat { engine.width(forFraction: f) }
     var debugActiveWorkspace: Int { engine.stripState.activeWorkspace }
     var debugWorkspaceCount: Int { engine.stripState.workspaceCount }
+    /// The key-hint text the menu-bar icon is currently flashing (nil if idle).
+    var debugHintText: String? { menuBar.debugHintText }
 
     /// Headless test seam: deliver a key chord exactly as a real keypress would
     /// route through ScrollWM, with NO CGEvent injected (so nothing leaks to the
@@ -799,18 +812,29 @@ final class ScrollWMController: NSObject {
         hotkeys.install()
 
         for chord in config.chords(for: .focusNext) where chord.hasKey {
-            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in self?.focusNext() }
+            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in
+                self?.focusNext(); self?.flashKeybinding(.focusNext)
+            }
         }
         for chord in config.chords(for: .focusPrevious) where chord.hasKey {
-            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in self?.focusPrevious() }
+            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in
+                self?.focusPrevious(); self?.flashKeybinding(.focusPrevious)
+            }
         }
         for chord in config.chords(for: .toggleArrange) where chord.hasKey {
-            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in self?.toggle() }
+            hotkeys.registerRaw(keyCode: chord.keyCode, modifiers: chord.carbonModifiers) { [weak self] in
+                self?.toggle(); self?.flashKeybinding(.toggleArrange)
+            }
         }
         // Jump: the modifier-only `jumpModifier` chord + digit keys 1-9.
-        if let jump = config.chords(for: .jumpModifier).first {
+        if let jumpStr = (config.keybindings[.jumpModifier] ?? KeyAction.defaultChords[.jumpModifier] ?? []).first,
+           let jump = Chord(string: jumpStr) {
+            let jumpPretty = TutorialWindowController.pretty(jumpStr)
             for (i, key) in HotkeyManager.Key.digits.enumerated() {
-                hotkeys.registerRaw(keyCode: key.rawValue, modifiers: jump.carbonModifiers) { [weak self] in self?.focus(index: i) }
+                hotkeys.registerRaw(keyCode: key.rawValue, modifiers: jump.carbonModifiers) { [weak self] in
+                    self?.focus(index: i)
+                    self?.flashKeybinding(.jumpModifier, chordOverride: "\(jumpPretty)\(i + 1)")
+                }
             }
         }
 
@@ -854,9 +878,19 @@ final class ScrollWMController: NSObject {
         // with the Accessibility permission we already hold (verified via
         // `keytapprobe`); no extra permission. Dormant => no tap => the desktop
         // behaves normally (Cmd+Q quits, Cmd+H hides).
+        //
+        // Each binding also flashes the chord + action in the menu-bar icon
+        // (see `flashKeybinding`), so the user sees what they pressed. We bind
+        // per CONFIGURED chord string (not the parsed `Chord`) so the flash
+        // shows the exact trigger that fired (e.g. Opt+1 vs Cmd+1 for width).
         func bind(_ action: KeyAction, _ handler: @escaping () -> Void) {
-            for chord in config.chords(for: action) where chord.hasKey {
-                tap.addCombo(keyCode: Int64(chord.keyCode), flags: chord.cgFlags, handler: handler)
+            for str in config.keybindings[action] ?? KeyAction.defaultChords[action] ?? [] {
+                guard let chord = Chord(string: str), chord.hasKey else { continue }
+                let pretty = TutorialWindowController.pretty(str)
+                tap.addCombo(keyCode: Int64(chord.keyCode), flags: chord.cgFlags) { [weak self] in
+                    handler()
+                    self?.flashKeybinding(action, chordOverride: pretty)
+                }
             }
         }
 
@@ -1075,6 +1109,17 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         // rate, then idles its display link once everything settles.
         stripView.apply(state: engine.stripState, managing: controller.isManaging)
     }
+
+    /// Flash a key-hint over the menu-bar icon: the chord just pressed and the
+    /// action it triggered. No-op when the feature is disabled in config, so the
+    /// hot keypress path stays cheap. Called on the main thread (hotkey handlers).
+    func flashKeyHint(chord: String, action: String) {
+        guard controller.config.menuBar.showKeyHints else { return }
+        stripView.flashKeyHint(chord: chord, action: action)
+    }
+
+    /// The HUD text currently shown (headless-test introspection).
+    var debugHintText: String? { stripView.debugHintText }
 
     /// Re-read mini-map sizing from config (called on Reload Config) and apply
     /// it live: the next `refresh()` re-evaluates the desired width.

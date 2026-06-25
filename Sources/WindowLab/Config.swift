@@ -64,6 +64,11 @@ struct ScrollWMConfig: Equatable {
         var pointsPerScreen: CGFloat = 30
         var minWidth: CGFloat = 30
         var maxWidth: CGFloat = 220
+        /// Briefly flash the chord + action name in the menu-bar icon whenever a
+        /// ScrollWM keybinding fires (e.g. "⌘L  Focus →"). A live cheat sheet so
+        /// you learn the bindings as you use them. On by default; set false to
+        /// keep the icon as a pure mini-map.
+        var showKeyHints: Bool = true
     }
 
     /// In-app updater behavior. ScrollWM checks GitHub Releases for a newer
@@ -156,6 +161,7 @@ struct ScrollWMConfig: Equatable {
                 "pointsPerScreen": Double(menuBar.pointsPerScreen),
                 "minWidth": Double(menuBar.minWidth),
                 "maxWidth": Double(menuBar.maxWidth),
+                "showKeyHints": menuBar.showKeyHints,
             ],
             "update": [
                 "enabled": update.enabled,
@@ -221,6 +227,7 @@ struct ScrollWMConfig: Equatable {
             if let p = mb["pointsPerScreen"] as? NSNumber { config.menuBar.pointsPerScreen = CGFloat(p.doubleValue) }
             if let n = mb["minWidth"] as? NSNumber { config.menuBar.minWidth = CGFloat(n.doubleValue) }
             if let x = mb["maxWidth"] as? NSNumber { config.menuBar.maxWidth = CGFloat(x.doubleValue) }
+            if let h = mb["showKeyHints"] as? Bool { config.menuBar.showKeyHints = h }
             // Keep the clamps sane regardless of what's in the file.
             config.menuBar.pointsPerScreen = max(8, config.menuBar.pointsPerScreen)
             config.menuBar.minWidth = max(12, config.menuBar.minWidth)
@@ -368,7 +375,8 @@ struct ScrollWMConfig: Equatable {
       "menuBar": {
         "pointsPerScreen": 30,    // icon px that ONE full screen of strip maps to
         "minWidth": 30,           // px the icon never shrinks below (empty strip)
-        "maxWidth": 220           // px cap; past this the map compresses to fit
+        "maxWidth": 220,          // px cap; past this the map compresses to fit
+        "showKeyHints": true      // flash the chord + action (e.g. "⌘L Focus →") on each keypress
       },
 
       // In-app updates. ScrollWM checks GitHub Releases so you actually receive
@@ -457,6 +465,31 @@ enum KeyAction: String, CaseIterable {
     case width75
     case width100
     case closeWindow
+
+    /// Short, human label for the menu-bar key-hint flash (e.g. "Focus →").
+    /// Distinct from the longer tutorial descriptions; kept terse so it fits
+    /// the menu-bar HUD. Directional arrows make left/right pairs scannable.
+    var displayName: String {
+        switch self {
+        case .toggleArrange:      return "Arrange / Release"
+        case .focusPrevious:      return "Focus prev"
+        case .focusNext:          return "Focus next"
+        case .jumpModifier:       return "Jump to column"
+        case .focusLeft:          return "Focus ←"
+        case .focusRight:         return "Focus →"
+        case .moveColumnLeft:     return "Move ←"
+        case .moveColumnRight:    return "Move →"
+        case .workspaceDown:      return "Workspace ↓"
+        case .workspaceUp:        return "Workspace ↑"
+        case .moveToWorkspaceDown: return "Send ↓"
+        case .moveToWorkspaceUp:   return "Send ↑"
+        case .width25:            return "Width 25%"
+        case .width50:            return "Width 50%"
+        case .width75:            return "Width 75%"
+        case .width100:           return "Width 100%"
+        case .closeWindow:        return "Close window"
+        }
+    }
 
     static let defaultChords: [KeyAction: [String]] = [
         .toggleArrange:   ["ctrl+opt+escape"],
