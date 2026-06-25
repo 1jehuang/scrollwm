@@ -66,8 +66,31 @@ struct ScrollWMConfig: Equatable {
         var maxWidth: CGFloat = 220
     }
 
+    /// In-app updater behavior. ScrollWM checks GitHub Releases for a newer
+    /// build so users actually receive what you cut, instead of being frozen on
+    /// whatever they first installed. Nothing is downloaded or replaced without
+    /// either an explicit click (`automatic: false`, the default) or an opt-in
+    /// to silent install (`automatic: true`).
+    struct Update: Equatable {
+        /// Master switch for the background check. When false, ScrollWM never
+        /// contacts GitHub on its own (the menu's "Check for Updates…" and the
+        /// `scrollwm update` CLI still work on demand).
+        var enabled: Bool = true
+        /// When true, a found update is downloaded, verified, and installed
+        /// automatically (the app relaunches into it). When false (default),
+        /// the user is told and chooses; we never swap the app behind their back.
+        var automatic: Bool = false
+        /// Hours between background checks. Clamped to a sane floor so a typo
+        /// can't hammer the API. Also checked ~shortly after launch.
+        var checkIntervalHours: Double = 24
+        /// Offer pre-release (`-dev`/`-rc`) tags too. Off by default so stable
+        /// users only ever see stable releases.
+        var allowPrerelease: Bool = false
+    }
+
     var layout = Layout()
     var menuBar = MenuBar()
+    var update = Update()
     var focusMode: TeleportEngine.FocusMode = .fit
 
     /// Action -> one or more chords. Multiple chords let an action have
@@ -134,6 +157,12 @@ struct ScrollWMConfig: Equatable {
                 "minWidth": Double(menuBar.minWidth),
                 "maxWidth": Double(menuBar.maxWidth),
             ],
+            "update": [
+                "enabled": update.enabled,
+                "automatic": update.automatic,
+                "checkIntervalHours": update.checkIntervalHours,
+                "allowPrerelease": update.allowPrerelease,
+            ],
             "focusMode": focusMode.rawValue,
             "keybindings": Dictionary(uniqueKeysWithValues: keybindings.map { ($0.key.rawValue, $0.value) }),
             "spawn": spawn,
@@ -196,6 +225,15 @@ struct ScrollWMConfig: Equatable {
             config.menuBar.pointsPerScreen = max(8, config.menuBar.pointsPerScreen)
             config.menuBar.minWidth = max(12, config.menuBar.minWidth)
             config.menuBar.maxWidth = max(config.menuBar.minWidth, config.menuBar.maxWidth)
+        }
+        if let up = obj["update"] as? [String: Any] {
+            if let e = up["enabled"] as? Bool { config.update.enabled = e }
+            if let a = up["automatic"] as? Bool { config.update.automatic = a }
+            if let h = up["checkIntervalHours"] as? NSNumber {
+                // Floor at 1h so a typo can't hammer the GitHub API.
+                config.update.checkIntervalHours = max(1.0, h.doubleValue)
+            }
+            if let p = up["allowPrerelease"] as? Bool { config.update.allowPrerelease = p }
         }
         if let fm = obj["focusMode"] as? String, let mode = TeleportEngine.FocusMode(rawValue: fm) {
             config.focusMode = mode
@@ -331,6 +369,17 @@ struct ScrollWMConfig: Equatable {
         "pointsPerScreen": 30,    // icon px that ONE full screen of strip maps to
         "minWidth": 30,           // px the icon never shrinks below (empty strip)
         "maxWidth": 220           // px cap; past this the map compresses to fit
+      },
+
+      // In-app updates. ScrollWM checks GitHub Releases so you actually receive
+      // new versions instead of being stuck on whatever you first installed.
+      // Check manually anytime from the menu ("Check for Updates…") or the CLI
+      // (`scrollwm update` / `scrollwm update --install`).
+      "update": {
+        "enabled": true,          // check GitHub for newer releases in the background
+        "automatic": false,       // false: notify + let you click; true: download+install silently
+        "checkIntervalHours": 24, // hours between background checks (min 1)
+        "allowPrerelease": false  // also offer -dev / -rc tags
       },
 
       // How the viewport follows the focused column:

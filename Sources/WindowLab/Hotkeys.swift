@@ -9,6 +9,10 @@ final class HotkeyManager {
 
     private var handlers: [UInt32: Handler] = [:]
     private var refs: [UInt32: EventHotKeyRef] = [:]
+    /// (keyCode, carbonModifiers) -> handler, so the headless test harness can
+    /// deliver a synthetic Carbon hotkey without RegisterEventHotKey delivery
+    /// (which would require a real keypress reaching the focused app).
+    private var byChord: [UInt64: Handler] = [:]
     private var eventHandlerRef: EventHandlerRef?
     private var nextID: UInt32 = 1
 
@@ -70,6 +74,16 @@ final class HotkeyManager {
         let id = nextID
         nextID += 1
 
+        // Headless test mode: do NOT register a REAL global Carbon hotkey (it
+        // would grab the user's actual Ctrl+Opt+Arrow / jump chords system-wide
+        // while a test runs). Record the binding so `debugDeliver` can exercise
+        // it; skip the live registration entirely.
+        if AXSource.backend != nil {
+            handlers[id] = handler
+            byChord[Self.chordKey(keyCode: keyCode, modifiers: modifiers)] = handler
+            return id
+        }
+
         let hotKeyID = EventHotKeyID(signature: OSType(0x53574D31), id: id) // 'SWM1'
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
@@ -79,11 +93,27 @@ final class HotkeyManager {
         if status == noErr, let ref {
             handlers[id] = handler
             refs[id] = ref
+            byChord[Self.chordKey(keyCode: keyCode, modifiers: modifiers)] = handler
             return id
         } else {
             print("warning: hotkey registration failed for keyCode \(keyCode) mods \(modifiers) (status \(status))")
             return nil
         }
+    }
+
+    /// Pack a (keyCode, carbonModifiers) pair into one lookup key.
+    private static func chordKey(keyCode: UInt32, modifiers: UInt32) -> UInt64 {
+        (UInt64(keyCode) << 32) | UInt64(modifiers)
+    }
+
+    /// Headless test seam: invoke the handler registered for a Carbon chord
+    /// directly, modeling delivery without a real keypress (which would reach the
+    /// user's focused app). Returns true if a handler was registered.
+    @discardableResult
+    func debugDeliver(keyCode: UInt32, modifiers: UInt32) -> Bool {
+        guard let handler = byChord[Self.chordKey(keyCode: keyCode, modifiers: modifiers)] else { return false }
+        handler()
+        return true
     }
 
     /// Unregister a specific set of previously registered hotkeys.
@@ -98,5 +128,6 @@ final class HotkeyManager {
         for (_, ref) in refs { UnregisterEventHotKey(ref) }
         refs.removeAll()
         handlers.removeAll()
+        byChord.removeAll()
     }
 }

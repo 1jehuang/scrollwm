@@ -27,6 +27,10 @@ enum CGWindowSource {
     /// Enumerate windows from the WindowServer.
     /// `onscreenOnly` maps to kCGWindowListOptionOnScreenOnly.
     static func listWindows(onscreenOnly: Bool = true) -> [CGWindowInfo] {
+        // Headless test backend: answer from the in-memory sim world so the
+        // current-Space / identity-fusion logic runs with zero WindowServer access.
+        if let backend = AXSource.backend { return backend.cgWindows(onscreenOnly: onscreenOnly) }
+
         var options: CGWindowListOption = [.excludeDesktopElements]
         if onscreenOnly { options.insert(.optionOnScreenOnly) }
 

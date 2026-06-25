@@ -36,3 +36,12 @@ jobs:
           codesign --verify --deep --strict /tmp/ScrollWM.app
           /tmp/ScrollWM.app/Contents/MacOS/ScrollWM help >/dev/null
           echo "bundle OK"
+
+      - name: Updater check + staging (live, network)
+        # Exercises the in-app updater's network path end-to-end against the real
+        # GitHub Releases: a debug build reports as 0.0.0-dev, so it always sees
+        # an update; --stage-only downloads the published .zip, verifies its
+        # SHA-256 against SHA256SUMS.txt, and extracts ScrollWM.app (no install).
+        # Tolerant of GitHub API hiccups so a flaky network can't redden CI.
+        continue-on-error: true
+        run: .build/debug/WindowLab updatecheck --stage-only

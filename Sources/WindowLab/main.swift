@@ -142,7 +142,7 @@ let command = args.first ?? (launchedAsAppBundle ? "run" : "probe")
 let controlVerbs: Set<String> = [
     "status", "arrange", "release", "toggle", "focus", "move", "width",
     "workspace", "ws", "close", "display", "focus-mode", "focusmode", "reload", "reload-config",
-    "tutorial", "ping", "quit",
+    "tutorial", "update", "update-check", "ping", "quit",
 ]
 if controlVerbs.contains(command) {
     exit(runControlCLI(Array(args)))
@@ -197,15 +197,20 @@ case "cycle":
     runCycleTest()
 case "unittest":
     exit(StripOpsTests.run() ? 0 : 1)
+case "updatecheck":
+    // Dev helper: run the LIVE GitHub update check directly (no running app).
+    // `--install` additionally stages + applies it if this is an installed app.
+    exit(runUpdateCheckCLI(install: args.contains("--install"),
+                           allowPrerelease: args.contains("--prerelease")))
 case "animtest":
     exit(MenuBarAnimationTests.run() ? 0 : 1)
 case "animrender":
     let out = args.dropFirst().first ?? "menubar_anim.png"
     exit(MenuBarAnimationRender.run(outPath: out) ? 0 : 1)
 case "opstest":
-    runStripOpsIntegrationTest()
+    args.contains("--live") ? runStripOpsIntegrationTest() : runHeadlessOpsTest()
 case "spawnlatency":
-    runSpawnLatencyTest()
+    args.contains("--live") ? runSpawnLatencyTest() : runHeadlessSpawnLatencyTest()
 case "newwintest":
     runNewWindowAdoptTest()
 case "statusbench":
@@ -226,13 +231,17 @@ case "sandbox":
         .first ?? 4
     runSandbox(windowCount: n, displayIndex: sandboxDisplay)
 case "displaytest":
-    runDisplayTest()
+    args.contains("--live") ? runDisplayTest() : runHeadlessDisplayTest()
 case "displaybindcheck":
     runDisplayBindCheck()
 case "e2etest":
-    runE2EKeybindingTest()
+    args.contains("--live") ? runE2EKeybindingTest() : runHeadlessE2ETest()
 case "revealtest":
-    runWindowRevealTest()
+    args.contains("--live") ? runWindowRevealTest() : runHeadlessRevealTest()
+case "headlesstest":
+    // Run EVERY headless integration test in one child-process sweep, so a
+    // single command verifies the whole suite without touching the desktop.
+    runHeadlessSuite()
 case "hotkeyprobe":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 20
     runHotkeyProbe(seconds: seconds)
@@ -262,6 +271,7 @@ default:
       scrollwm focus-mode [fit|centered]
                                    get/set how the viewport follows focus
       scrollwm reload              re-read the config file live
+      scrollwm update [--install]  check GitHub for a newer release (and install it)
       scrollwm tutorial            open the in-app cheat sheet
       scrollwm quit                restore windows and quit the app
 
@@ -284,35 +294,53 @@ default:
                                Arrange/release via menu, ctrl+opt+esc, or the CLI.
                                Exact frame restore on release/quit/crash.
       WindowLab unittest       pure-logic tests for width/move/close ops (no AX needed)
+      WindowLab updatecheck [--install] [--prerelease] [--stage-only]
+                               check GitHub Releases for a newer ScrollWM (pure
+                               network; --stage-only downloads+verifies+extracts
+                               without self-replacing, for CI/dev validation).
       WindowLab animtest       pure-logic tests for the animated menu-bar
                                mini-map (Spring physics + action inference)
-      WindowLab opstest        integration test: spawn windows, exercise
-                               width/move/close via the engine, verify + restore.
-      WindowLab spawnlatency   measure how fast a NEW window in a managed app is
-                               adopted (AX observer fast path vs poll).
+      WindowLab headlesstest   run ALL integration suites (ops/e2e/reveal/
+                               spawnlatency/display) HEADLESS: the real engine +
+                               controller logic runs against an in-memory window
+                               world. No real window is spawned/moved/focused/
+                               closed and no global keystroke is injected, so it
+                               never touches your screen or focus. Safe to run
+                               anytime, even while you work.
+      WindowLab opstest        integration test for width/move/close/focus-sync.
+                               HEADLESS by default (in-memory windows). Pass
+                               --live to exercise REAL spawned windows instead.
+      WindowLab spawnlatency   new-window adoption latency (AX-observer fast path
+                               vs poll). HEADLESS by default; --live for real AX.
       WindowLab newwintest     multi-display adoption scope: spawn windows on the
                                strip AND on the external, then prove (live AX) the
                                external windows are LEFT ALONE (no yank) while a
                                new window on the strip display is adopted fast.
                                Skips cleanly on single-display hardware.
+      WindowLab displaybindcheck
+                               live check of the strip-move bind path: verify the
+                               primary-height Y-flip lands the strip on the right
+                               display (incl. a non-primary external). Spawns its
+                               own disposable windows; restores them after.
       WindowLab sandbox [n] [--display M]
                                run the REAL controller locked to n disposable
                                windows it spawns (default 4). Drive the real
                                hotkeys safely; your real windows are untouched.
                                --display M tiles them on monitor M (0-based,
                                left-to-right) so you can sandbox on an external.
-      WindowLab e2etest        end-to-end: run the real controller, synthesize
-                               Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q, verify effects.
-      WindowLab revealtest     integration: spawn windows, minimize some, then
-                               verify "Arrange All" reveals + adopts EVERY window
-                               (hidden/minimized included). Restores after.
-      WindowLab displaytest    multi-display integration: spawn disposable
-                               windows, run the REAL controller locked to them,
-                               and assert (vs live AX) that strip windows land on
+      WindowLab e2etest        end-to-end keybinding test (Alt+1-4 / Cmd+H/L/Q /
+                               workspaces). HEADLESS by default: chords are
+                               delivered to the real binding tables with NO
+                               CGEvent injected. Pass --live for real windows +
+                               synthesized keystrokes.
+      WindowLab revealtest     "Arrange All reveals + adopts hidden/minimized".
+                               HEADLESS by default; --live for real windows.
+      WindowLab displaytest    multi-display integration: strip windows land on
                                the strip display, the off-screen parking sliver
                                stays on the strip display (not a neighbor), and a
                                strip rebind moves windows onto the other display.
-                               Adapts to 1- or 2-display hardware; restores after.
+                               HEADLESS by default (synthetic 2-display world);
+                               --live runs against your real monitors.
       WindowLab hotkeyprobe [secs]
                                register Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q globally
                                and report which key combos Carbon actually delivers.

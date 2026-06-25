@@ -699,13 +699,12 @@ final class TeleportEngine {
     private func raiseAndFocus(_ window: ManagedWindowRef) {
         // Raise above its app's other windows, then mark it main/focused so a
         // multi-window app routes keyboard input to THIS window (just raising
-        // is not enough). Finally activate the owning app.
-        AXUIElementPerformAction(window.element, kAXRaiseAction as CFString)
+        // is not enough). Finally activate the owning app. All routed through
+        // AXSource so the headless backend can model focus with no real effect.
+        AXSource.raise(window.element)
         AXSource.setBool(window.element, kAXMainAttribute as String, true)
         AXSource.setBool(window.element, kAXFocusedAttribute as String, true)
-        if let app = NSRunningApplication(processIdentifier: window.pid) {
-            app.activate()
-        }
+        AXSource.activateApp(pid: window.pid)
     }
 
     // MARK: - Introspection for the menu bar

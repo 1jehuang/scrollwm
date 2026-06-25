@@ -21,6 +21,11 @@ final class ScrollWMController: NSObject {
     /// Keyboard tap for the move bindings (Cmd+H/L) that Carbon cannot grab.
     private var moveTap: KeyboardEventTap?
 
+    /// In-app updater: checks GitHub Releases so users actually receive new
+    /// versions. Created by the production `run` path (`startUpdates()`); nil in
+    /// sandbox/tests so they never phone home.
+    private var updateCoordinator: UpdateCoordinator?
+
     /// Pending coalesced re-evaluation of a display change. macOS fires
     /// `didChangeScreenParameters` SEVERAL times in quick succession for a
     /// single hotplug / resolution change (each intermediate arrangement is its
@@ -373,7 +378,67 @@ final class ScrollWMController: NSObject {
         }
         menuBar.applyConfig(config)
         menuBar.refresh()
+        updateCoordinator?.updateConfig(config.update)
         print("config reloaded from \(ScrollWMConfig.fileURL.path)")
+    }
+
+    // MARK: - Updates
+
+    /// Stand up the in-app updater (production `run` path only). Schedules the
+    /// background check per config; manual checks always work regardless.
+    func startUpdates() {
+        guard updateCoordinator == nil else { return }
+        let coord = UpdateCoordinator(controller: self, config: config.update)
+        updateCoordinator = coord
+        coord.start()
+    }
+
+    /// Whether the updater is live (used to gate the menu item).
+    var updatesEnabled: Bool { updateCoordinator != nil }
+
+    /// User-initiated "Check for Updates…" (menu). Always reports an outcome.
+    func checkForUpdates() {
+        guard let coord = updateCoordinator else {
+            // Updater not wired (e.g. AX still resolving): build a one-shot.
+            let coord = UpdateCoordinator(controller: self, config: config.update)
+            updateCoordinator = coord
+            coord.checkNow()
+            return
+        }
+        coord.checkNow()
+    }
+
+    /// CLI `scrollwm update [--install]`: synchronously check GitHub and return
+    /// a one-line reply. With `install`, an available update is downloaded +
+    /// verified + applied asynchronously AFTER this reply is sent (the app then
+    /// restores windows and relaunches). Runs on the main thread (control plane).
+    func controlUpdateCheck(install: Bool) -> String {
+        let updater = Updater(allowPrerelease: config.update.allowPrerelease)
+        switch updater.checkSync() {
+        case .failure(let err):
+            return "error: \(err.localizedDescription)"
+        case .success(.upToDate(let cur)):
+            return "ok: up to date (v\(cur))"
+        case .success(.noUsableAsset(let rel)):
+            return "ok: newer tag \(rel.tagName) found but no installable asset yet"
+        case .success(.updateAvailable(let rel, let cur)):
+            if !install {
+                return "ok: update available v\(rel.version) (you have v\(cur)). "
+                    + "Run `scrollwm update --install` or use the menu."
+            }
+            guard Bundle.main.bundleURL.pathExtension == "app" else {
+                return "error: update v\(rel.version) available, but this is a dev build (won't self-replace). "
+                    + "Download: \(rel.htmlURL)"
+            }
+            // Install after the reply is sent so the CLI sees confirmation.
+            let coord = updateCoordinator ?? {
+                let c = UpdateCoordinator(controller: self, config: config.update)
+                updateCoordinator = c
+                return c
+            }()
+            DispatchQueue.main.async { coord.beginInstall(rel, announce: false) }
+            return "ok: installing v\(rel.version)… ScrollWM will restore windows and relaunch"
+        }
     }
 
     // MARK: - Tutorial / config UX
@@ -427,8 +492,7 @@ final class ScrollWMController: NSObject {
         if let effectiveFilter {
             // Direct PID enumeration: works for accessory apps (test windows).
             axWindows = effectiveFilter.flatMap { pid -> [AXWindowInfo] in
-                guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return [] }
-                return AXSource.windows(for: app)
+                AXSource.windows(forPID: pid)
             }
         } else {
             axWindows = AXSource.allWindows()
@@ -580,12 +644,10 @@ final class ScrollWMController: NSObject {
     /// palettes, or just to peek at a window). Activates its app so keyboard
     /// focus follows, mirroring the strip's own raise behavior.
     func focusFloating(_ window: FloatingWindow) {
-        AXUIElementPerformAction(window.element, kAXRaiseAction as CFString)
+        AXSource.raise(window.element)
         AXSource.setBool(window.element, kAXMainAttribute as String, true)
         AXSource.setBool(window.element, kAXFocusedAttribute as String, true)
-        if let app = NSRunningApplication(processIdentifier: window.pid) {
-            app.activate()
-        }
+        AXSource.activateApp(pid: window.pid)
     }
 
     /// Pull a floating (tileable) window onto the strip: insert it just right of
@@ -734,6 +796,28 @@ final class ScrollWMController: NSObject {
     func debugWidth(forFraction f: CGFloat) -> CGFloat { engine.width(forFraction: f) }
     var debugActiveWorkspace: Int { engine.stripState.activeWorkspace }
     var debugWorkspaceCount: Int { engine.stripState.workspaceCount }
+
+    /// Headless test seam: deliver a key chord exactly as a real keypress would
+    /// route through ScrollWM, with NO CGEvent injected (so nothing leaks to the
+    /// user's focused app). Routing mirrors production precedence: the management
+    /// keyboard tap is head-insert and suppresses any chord it matches BEFORE the
+    /// focused app or Carbon see it; only if the tap does not consume the chord
+    /// do the always-on Carbon hotkeys (navigation/jump/toggle) get it. Returns
+    /// true if some binding handled it.
+    @discardableResult
+    func debugDeliverChord(keyCode: UInt32, cgFlags: CGEventFlags, carbonModifiers: UInt32) -> Bool {
+        if let tap = moveTap, tap.debugDeliver(keyCode: Int64(keyCode), flags: cgFlags) {
+            return true
+        }
+        return hotkeys.debugDeliver(keyCode: keyCode, modifiers: carbonModifiers)
+    }
+
+    /// Convenience: deliver a parsed `Chord` (uses both its CG flags for the tap
+    /// and its Carbon modifiers for the hotkey path).
+    @discardableResult
+    func debugDeliverChord(_ chord: Chord) -> Bool {
+        debugDeliverChord(keyCode: chord.keyCode, cgFlags: chord.cgFlags, carbonModifiers: chord.carbonModifiers)
+    }
 
     // --- Multi-display debug accessors (for the `displaytest` integration) ---
     // These read/relay the SAME engine the production controller drives, so the
@@ -973,6 +1057,12 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     }
 
     private func createStatusItem() {
+        // Headless test mode: do NOT create a real menu-bar status item. It would
+        // briefly add an icon to the user's menu bar during a test run, which is
+        // visible desktop noise (even if it never steals focus). The controller
+        // logic the headless tests exercise does not depend on it.
+        if AXSource.backend != nil { return }
+
         // Length tracks the live mini-map width (content + padding). Starts at
         // the configured floor; grows/shrinks as windows are added/removed.
         statusItem = NSStatusBar.system.statusItem(withLength: contentWidth + Self.hPadding)
@@ -1019,6 +1109,8 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
 
     private var healAttempt = 0
     private func ensureVisible() {
+        // No status item in headless test mode; nothing to place.
+        if statusItem == nil { return }
         guard !isVisibleInMenuBar else {
             if healAttempt > 0 {
                 print("menubar: item visible after \(healAttempt) placement attempt(s)")
@@ -1065,7 +1157,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     }
 
     var isVisibleInMenuBar: Bool {
-        guard statusItem.isVisible, let window = statusItem.button?.window else { return false }
+        guard let statusItem, statusItem.isVisible, let window = statusItem.button?.window else { return false }
         let frame = window.frame // AppKit coords, bottom-left origin
         guard frame.width > 0, frame.origin.x >= 0 else { return false }
         // On notched displays, real status items live RIGHT of the notch.
@@ -1242,6 +1334,10 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         reload.target = self
         menu.addItem(reload)
 
+        let checkUpdates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesAction), keyEquivalent: "")
+        checkUpdates.target = self
+        menu.addItem(checkUpdates)
+
         let axOK = AccessibilityPermission.shared.state.isGranted
         let perm = NSMenuItem(title: axOK ? "Accessibility: granted ✓" : "Accessibility: MISSING — click to open Settings",
                               action: axOK ? nil : #selector(openAXSettings), keyEquivalent: "")
@@ -1286,6 +1382,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     @objc private func showTutorial() { controller.showTutorial() }
     @objc private func openConfigFile() { controller.openConfigFile() }
     @objc private func reloadConfigAction() { controller.reloadConfig() }
+    @objc private func checkForUpdatesAction() { controller.checkForUpdates() }
 }
 
 // MARK: - Entry
@@ -1311,6 +1408,7 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         readyDone = true
         print("ScrollWM running (dormant). Use the menu bar item, the toggle key, or the `scrollwm` CLI to arrange.")
         controller.showTutorialOnFirstRunIfNeeded()
+        controller.startUpdates()
         if selftest { runScrollWMSelftest(controller: controller) }
         if crashPhase == .crash { runCrashPhase(controller: controller) }
     }

@@ -91,6 +91,23 @@ cd scrollwm
 
 ## Updating
 
+ScrollWM updates **itself**. Installed app bundles check GitHub Releases in the
+background (every 24h by default, plus shortly after launch) and, when a newer
+version is published, offer to download it, verify its SHA-256, replace the app
+in place, and relaunch (your windows are restored on quit first, so nothing is
+lost). Check on demand anytime from the menu bar (**Check for Updates…**) or the
+CLI:
+
+```bash
+scrollwm update              # report whether a newer release exists
+scrollwm update --install    # download + verify + apply it, then relaunch
+```
+
+Tune it in the config file's `update` block: `enabled` (background check on/off),
+`automatic` (silently install vs. prompt, prompt being the default), `checkIntervalHours`,
+and `allowPrerelease`. Set `"enabled": false` to opt out entirely; manual checks
+still work. Other ways to update:
+
 - Installed via curl: re-run the one-line command.
 - Installed via Homebrew: `brew upgrade --cask scrollwm`.
 - Built from source: `./scripts/update.sh` (rebuild, reinstall in place, relaunch).
@@ -182,6 +199,7 @@ scrollwm width 25|50|75|100      # resize focused column (also accepts 0.0-1.0)
 scrollwm close                   # close the focused window
 scrollwm focus-mode fit|centered # how the viewport follows focus
 scrollwm reload                  # re-read the config file live
+scrollwm update [--install]      # check GitHub for a newer release (and install it)
 scrollwm status                  # JSON snapshot of the strip
 scrollwm quit                    # restore windows and quit the app
 scrollwm --help                  # full list

@@ -133,8 +133,7 @@ final class LifecycleMonitor {
             let current: [AXWindowInfo]
             if let pids {
                 current = pids.flatMap { pid -> [AXWindowInfo] in
-                    guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return [] }
-                    return AXSource.windows(for: app)
+                    AXSource.windows(forPID: pid)
                 }
             } else {
                 current = AXSource.allWindows()
@@ -300,8 +299,7 @@ final class LifecycleMonitor {
 
         // Enumerate ONLY the firing apps' standard windows.
         let appWindows = targets.flatMap { pid -> [AXWindowInfo] in
-            guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return [] }
-            return AXSource.windows(for: app)
+            AXSource.windows(forPID: pid)
         }.filter {
             $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen
         }

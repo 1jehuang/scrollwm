@@ -11,6 +11,11 @@
 # build (step 2 skipped, cask keeps the quarantine workaround). Nothing here
 # touches your live windows.
 #
+# NOTE: the in-app updater (Sources/WindowLab/Updater.swift) consumes the
+# uploaded `ScrollWM-<ver>.zip` + `SHA256SUMS.txt` from each `v<ver>` Release to
+# self-update installed apps. Keep both assets in the publish step below, or
+# installed users stop receiving updates.
+#
 # Usage:
 #   ./scripts/release.sh [version] [--publish]
 #     version    defaults to the VERSION file

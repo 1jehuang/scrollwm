@@ -47,6 +47,12 @@ final class KeyboardEventTap {
 
     func start() -> Bool {
         guard tapPort == nil else { return true }
+        // Headless test mode: do NOT install a real session event tap. A live tap
+        // would intercept (and suppress) the user's REAL keystrokes — e.g. Cmd+H,
+        // Cmd+Q — while a test runs, which is exactly the disruption we are
+        // eliminating. The combos are already registered, so `debugDeliver`
+        // exercises the real binding table without touching the keyboard.
+        if AXSource.backend != nil { return true }
         var created = false
         let semaphore = DispatchSemaphore(value: 0)
 
@@ -117,5 +123,21 @@ final class KeyboardEventTap {
         runLoop = nil
         thread = nil
         combos.removeAll()
+    }
+
+    /// Headless test seam: deliver a synthetic chord to the registered combos
+    /// WITHOUT posting any real CGEvent (which would leak to the user's focused
+    /// app — the exact disruption we are eliminating). Mirrors `handle`'s exact
+    /// matching (keycode + masked modifiers) and dispatch (handler on main), so a
+    /// test exercises the real binding table. Returns true if a combo matched.
+    @discardableResult
+    func debugDeliver(keyCode: Int64, flags: CGEventFlags) -> Bool {
+        let masked = flags.intersection(Self.relevantFlags)
+        guard let combo = combos.first(where: { $0.keyCode == keyCode && $0.flags == masked }) else {
+            return false
+        }
+        captured += 1
+        DispatchQueue.main.async { combo.handler() }
+        return true
     }
 }
