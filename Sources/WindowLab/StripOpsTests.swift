@@ -2019,7 +2019,25 @@ enum StripOpsTests {
                                           bundlePath: "/opt/homebrew/Caskroom/scrollwm/0.1.1/ScrollWM.app",
                                           parentWritable: true, brewPrefixes: ["/opt/homebrew"]) == .homebrewManaged)
 
-        print("\n[unittest] \(passed) passed, \(failed) failed")
-        return failed == 0
+        print("\n[unittest] StripOps/config/policy: \(passed) passed, \(failed) failed")
+
+        // --- Onboarding polish swarm: per-lane pure-logic suites ------------
+        // Each lane extracted its decision logic into a PURE, headless-testable
+        // module (no AppKit/AX/TCC) and ships its own `*Tests.run()`. Aggregate
+        // them here so a single `unittest` covers the whole onboarding surface:
+        //   A: launch-location classify + relocation policy   (AppLocationTests)
+        //   B: Accessibility permission decisions             (PermissionPolicyTests)
+        //   C: onboarding window state -> presentation        (OnboardingCopyTests)
+        //   D: tutorial chord rendering + key table           (TutorialTests)
+        print("\n[unittest] onboarding lanes:")
+        var lanesOK = true
+        lanesOK = AppLocationTests.run() && lanesOK
+        lanesOK = PermissionPolicyTests.run() && lanesOK
+        lanesOK = OnboardingCopyTests.run() && lanesOK
+        lanesOK = TutorialTests.run() && lanesOK
+
+        let allOK = failed == 0 && lanesOK
+        print("\n[unittest] overall: \(allOK ? "PASS" : "FAIL")")
+        return allOK
     }
 }
