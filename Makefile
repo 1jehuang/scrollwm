@@ -7,7 +7,7 @@ VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
 help:
 	@echo "ScrollWM make targets (version $(VERSION)):"
 	@echo "  make build           swift build (debug)"
-	@echo "  make test            unit + animation + ALL headless integration tests + fuzz"
+	@echo "  make test            unit + animation + headless integration + 5 fuzzers"
 	@echo "                       (never spawns/moves real windows or steals focus)"
 	@echo "  make install         build + install ScrollWM.app to ~/Applications"
 	@echo "  make update          rebuild, reinstall in place, relaunch"
@@ -25,6 +25,10 @@ test: build
 	.build/debug/WindowLab animtest
 	.build/debug/WindowLab headlesstest
 	.build/debug/WindowLab fuzz 1 --seeds 60 --steps 300 --iters 1500
+	.build/debug/WindowLab fuzzmodel 1 --seeds 40 --steps 300
+	.build/debug/WindowLab fuzzctrl 1 --iters 1500
+	.build/debug/WindowLab fuzzdisp 1
+	.build/debug/WindowLab fuzzconc 1 --seeds 6 --steps 120
 
 install:
 	./scripts/install.sh

@@ -349,6 +349,25 @@ default:
                                windows, model==reality width). HEADLESS: never
                                touches your screen or focus. A failure prints the
                                seed + full op log; --replay <seed> re-runs it.
+      WindowLab fuzzmodel [seed] [--steps N] [--seeds K] [--replay SEED]
+                               DIFFERENTIAL fuzz: an independent reference model
+                               of the strip vs the real engine, checked after
+                               every random op (catches semantic order/focus/
+                               workspace/viewport bugs, not just crashes).
+      WindowLab fuzzctrl [seed] [--iters N] [--runs K --ops M] [--replay SEED]
+                               fuzz the untrusted-input surface: JSONC config
+                               parse, Chord/width parsing, and random chord +
+                               control-command sequences through a real headless
+                               controller. Asserts state stays coherent.
+      WindowLab fuzzdisp [seed] [--seeds K] [--iters M]
+                               fuzz multi-display hotplug (resolver + rebind),
+                               parking-corner policy, adoption-scope/geometry,
+                               and restore round-trips under unplugged monitors.
+      WindowLab fuzzconc [seed] [--seeds K] [--steps N]
+                               fuzz the async stack (LifecycleMonitor poll +
+                               fast-adopt + reconcile) with interleaved timed
+                               window events, pumping the run loop between steps.
+                               Slower (real timing); keep budgets modest.
       WindowLab opstest        integration test for width/move/close/focus-sync.
                                HEADLESS by default (in-memory windows). Pass
                                --live to exercise REAL spawned windows instead.
