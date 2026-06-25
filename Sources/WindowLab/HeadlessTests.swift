@@ -489,21 +489,47 @@ func runHeadlessSpawnLatencyTest() {
     // Open a SECOND window in the already-observed seed process (notify -> fires
     // the create event -> fast adopt).
     let startCount = engine.slots.count
+    // The window we expect the newcomer to land to the RIGHT of: the currently
+    // focused column's live frame. "Final destination = right of focus" is the
+    // core contract the user cares about, so we measure time until the new
+    // window's REAL frame reaches that position, not merely until it is adopted.
+    let focusedBefore = engine.slots[engine.focusIndex].window.element
+    let focusedXBefore = world.frame(of: focusedBefore)?.minX ?? 0
     let t0 = Clock.nowAbsNs()
-    _ = world.addWindow(pid: seedPID, title: "Seed-2",
+    let newEl = world.addWindow(pid: seedPID, title: "Seed-2",
                         frame: CGRect(x: 460, y: 80, width: 360, height: 420), notify: true)
 
-    var adoptedNs: UInt64?
+    // Time-to-final-position: poll until the new window is BOTH adopted AND its
+    // live frame sits to the right of the (previously) focused column. Because
+    // the fast-adopt path inserts + teleports in one synchronous pass, this is
+    // effectively the instant the user stops seeing it floating at its native
+    // spot and sees it in its strip slot.
+    var placedNs: UInt64?
     let deadline = Clock.nowAbsNs() + 3_000_000_000
     while Clock.nowAbsNs() < deadline {
-        Headless.pump(0.01)
-        if engine.slots.count > startCount { adoptedNs = Clock.nowAbsNs(); break }
+        Headless.pump(0.005)
+        if engine.slots.count > startCount,
+           let f = world.frame(of: newEl), f.minX > focusedXBefore + 1 {
+            placedNs = Clock.nowAbsNs(); break
+        }
     }
-    if let adoptedNs {
-        let ms = Double(adoptedNs &- t0) / 1e6
-        print(String(format: "[headless-spawnlatency] adopted in %.0f ms", ms))
+    if let placedNs {
+        let ms = Double(placedNs &- t0) / 1e6
+        print(String(format: "[headless-spawnlatency] reached final position (right of focus) in %.0f ms", ms))
         t.check("new window adopted", true)
+        t.check("new window landed to the RIGHT of the focused column",
+                (world.frame(of: newEl)?.minX ?? 0) > focusedXBefore + 1)
+        // The new window is inserted at focusIndex (just after the old focus) and
+        // becomes the new focus, exactly the PaperWM "open to the right" rule.
+        t.check("new window is the column immediately right of the old focus",
+                engine.slots.indices.contains(1)
+                    && CFEqual(engine.slots[1].window.element, newEl))
         t.check("adoption latency < 1000ms (fast path, not poll)", ms < 1000)
+        // Regression guard for this optimization: the always-paid coalesce +
+        // first fast-adopt probe must keep the no-publish-race case well under a
+        // few frames. (Headless has no real WindowServer lag, so this isolates
+        // our own fixed delays.)
+        t.check(String(format: "no-race placement is snappy (< 40ms, got %.0fms)", ms), ms < 40)
     } else {
         t.check("new window adopted", false)
     }

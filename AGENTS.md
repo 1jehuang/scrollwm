@@ -81,7 +81,10 @@ Add a test for any behavior you change; prefer extracting pure functions (e.g.
 - `TeleportEngine.swift`     strip model, viewport, teleport commits (focus/move/width)
 - `StripOps.swift`           width/move/close ops on the focused column
 - `LifecycleMonitor.swift`   keeps strip in sync: AX observer + NSWorkspace + 2s poll
-- `WindowEventObserver.swift` AXObserver on kAXWindowCreated -> fast adoption (~85ms)
+- `WindowEventObserver.swift` AXObserver on kAXWindowCreated -> fast adoption
+                             (fixed delay ~8ms coalesce + progressive fast-adopt
+                             retry; lands right-of-focus the instant WindowServer
+                             publishes the window)
 - `ResyncPlanner.swift`      PURE Space-aware adopt/drop policy (unit-tested)
 - `AXSource.swift`           timeout-protected AXUIElement wrapper +
                              `WindowBackend` seam (nil in prod; sim in tests)

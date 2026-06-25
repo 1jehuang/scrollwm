@@ -208,7 +208,7 @@ final class ConcurrencyFuzzer {
     }
 
     /// Pump the run loop long enough that the fast-adopt retry budget
-    /// (`maxFastAdoptRetries * fastAdoptRetryDelay` ≈ 0.32s) AND at least two
+    /// (the sum of `fastAdoptRetryDelays` ≈ 0.36s) AND at least two
     /// poll cycles complete, so a settled assertion is meaningful.
     private func settle() {
         Headless.pump(0.4 + pollInterval * 3)

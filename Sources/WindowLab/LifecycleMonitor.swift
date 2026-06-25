@@ -33,11 +33,20 @@ final class LifecycleMonitor {
     /// gate) can lag it by a few frames. A single attempt that lost that race
     /// used to bail and leave the window unadopted until the 2s safety-net poll,
     /// which is the visible "new window snaps in late" latency. So `fastAdopt`
-    /// re-tries a bounded number of times at a short interval before giving up to
-    /// the poll: worst-case adoption is ~`maxFastAdoptRetries * fastAdoptRetryDelay`
-    /// (a few hundred ms) instead of the full poll interval.
-    private let maxFastAdoptRetries = 8
-    private let fastAdoptRetryDelay: TimeInterval = 0.04
+    /// re-tries a bounded number of times before giving up to the poll.
+    ///
+    /// The retry cadence is PROGRESSIVE rather than a flat interval: the common
+    /// case is that the WindowServer publishes the window within ~1-2 frames, so
+    /// we probe aggressively at first (next runloop turn, then a few ms apart)
+    /// to adopt as soon as it lands - shaving the visible "floating then snaps"
+    /// gap - and only back off toward a coarse interval for the rare app that
+    /// takes longer. The total budget (`fastAdoptRetryDelays.reduce(+)` ~0.36s)
+    /// still comfortably exceeds any real publish lag while staying well under
+    /// the 2s safety-net poll, so a genuinely foreign-Space window still falls
+    /// through to the poll harmlessly.
+    private let fastAdoptRetryDelays: [TimeInterval] =
+        [0.004, 0.008, 0.012, 0.02, 0.03, 0.04, 0.06, 0.08, 0.1]
+    private var maxFastAdoptRetries: Int { fastAdoptRetryDelays.count }
 
     /// Restrict adoption to these PIDs (test mode). Nil = all regular apps.
     var pidFilter: Set<pid_t>? {
@@ -395,7 +404,12 @@ final class LifecycleMonitor {
     /// harmlessly and is left to the poll, preserving the Space-freeze contract.
     private func scheduleFastAdoptRetry(pids: Set<pid_t>, attempt: Int) {
         guard attempt < maxFastAdoptRetries else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + fastAdoptRetryDelay) { [weak self] in
+        // Progressive back-off: tight probes first (adopt the instant the window
+        // is published, ~1-2 frames in the common case), widening toward a coarse
+        // interval for slow apps. `attempt` is the count of retries already done,
+        // so it indexes the delay to wait before the NEXT attempt.
+        let delay = fastAdoptRetryDelays[min(attempt, fastAdoptRetryDelays.count - 1)]
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.fastAdopt(pids: pids, attempt: attempt + 1)
         }
     }

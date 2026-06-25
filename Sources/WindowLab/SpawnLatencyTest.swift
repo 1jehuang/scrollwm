@@ -72,29 +72,63 @@ func runSpawnLatencyTest() {
         print("[spawnlatency] opening a NEW window in the already-managed app...")
         let startCount = DispatchQueue.main.sync { engine.slots.count }
         let commitsBefore = DispatchQueue.main.sync { engine.totalCommits }
+        // The frame the new window must land to the RIGHT of: the focused
+        // column's current live position. "Final destination = right of focus"
+        // is the contract we care about, so we time until the new window's REAL
+        // AX frame actually reaches a slot to the right of that, not merely until
+        // the engine adopts it.
+        let focusedXBefore: CGFloat = DispatchQueue.main.sync {
+            guard engine.slots.indices.contains(engine.focusIndex) else { return 0 }
+            let el = engine.slots[engine.focusIndex].window.element
+            return AXSource.copyPoint(el, kAXPositionAttribute as String)?.x ?? 0
+        }
+        let seedElsBefore = Set(seedPids.flatMap { AXSource.windows(forPID: $0).map { $0.element } })
         let t0 = Clock.nowAbsNs()
         for p in seed { kill(p.processIdentifier, SIGUSR1) }
 
+        // Find the newly created AX element (the one absent before the spawn),
+        // then read its live frame to detect when it reaches its strip slot.
+        func newElement() -> AXUIElement? {
+            seedPids.flatMap { AXSource.windows(forPID: $0) }
+                .first { info in !seedElsBefore.contains(where: { CFEqual($0, info.element) }) }?
+                .element
+        }
+
         var adoptedNs: UInt64?
+        var placedNs: UInt64?
         let deadline = Clock.nowAbsNs() + 6_000_000_000 // 6s hard cap
         while Clock.nowAbsNs() < deadline {
             let count = DispatchQueue.main.sync { engine.slots.count }
-            if count > startCount { adoptedNs = Clock.nowAbsNs(); break }
-            usleep(5_000) // 5ms
+            if adoptedNs == nil && count > startCount { adoptedNs = Clock.nowAbsNs() }
+            // Time-to-final-position: the new window's live AX frame sits to the
+            // right of where the focused column was. This is the instant it stops
+            // looking like it is "floating" at its native spawn spot.
+            if adoptedNs != nil,
+               let el = newElement(),
+               let x = AXSource.copyPoint(el, kAXPositionAttribute as String)?.x,
+               x > focusedXBefore + 1 {
+                placedNs = Clock.nowAbsNs(); break
+            }
+            usleep(2_000) // 2ms
         }
 
         if let adoptedNs {
-            let ms = Double(adoptedNs &- t0) / 1e6
+            let adoptMs = Double(adoptedNs &- t0) / 1e6
             // Let the focus/teleport pass for the new window settle.
             Thread.sleep(forTimeInterval: 0.15)
             let commitsAfter = DispatchQueue.main.sync { engine.totalCommits }
             let delta = commitsAfter - commitsBefore
-            print(String(format: "[spawnlatency] adopted in %.0f ms, %d AX commit(s) for the new window", ms, delta))
+            if let placedNs {
+                let placeMs = Double(placedNs &- t0) / 1e6
+                print(String(format: "[spawnlatency] adopted in %.0f ms, reached final position (right of focus) in %.0f ms, %d AX commit(s)",
+                             adoptMs, placeMs, delta))
+                check("new window reached its final position right of focus", true)
+                check("final-position latency < 1000ms (AX observer fast path, not poll)", placeMs < 1000)
+            } else {
+                print(String(format: "[spawnlatency] adopted in %.0f ms but never confirmed right-of-focus placement", adoptMs))
+                check("new window reached its final position right of focus", false)
+            }
             check("new window adopted", true)
-            // Old poll-only path: up to ~2000ms (default interval). Here the
-            // poll is 5000ms, so anything under ~1000ms proves the AX observer
-            // fast path drove the adoption, not the poll.
-            check("adoption latency < 1000ms (AX observer fast path, not poll)", ms < 1000)
             // Efficiency: the new window has room to the right, so ONLY it
             // should move. The existing seed column must not be re-committed.
             check("adoption committed only the new window (<= 1 move, got \(delta))", delta <= 1)

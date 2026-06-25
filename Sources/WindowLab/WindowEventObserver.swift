@@ -38,10 +38,16 @@ final class WindowEventObserver {
     private var destroyScheduled = false
     private var pendingPIDs = Set<pid_t>()
 
-    /// Small delay before reacting, so the WindowServer has a beat to register
-    /// the new window as on-screen (the current-Space check reads the on-screen
-    /// list). Also coalesces the burst of notifications a single new window
-    /// emits into one resync.
+    /// Small delay before reacting. Its ONLY remaining job is to coalesce the
+    /// burst of notifications a single new window (or a multi-window restore)
+    /// emits within the same runloop turn into one adoption pass.
+    ///
+    /// It deliberately does NOT wait for the WindowServer to publish the window
+    /// on-screen: that race is now owned end-to-end by `LifecycleMonitor`'s
+    /// bounded fast-adopt retry, which re-checks every few ms until the window
+    /// is listed. So this delay is kept tiny (a fraction of a frame) to shave
+    /// the always-paid latency off the visible "spawn floating, then snap into
+    /// the strip" gap, instead of the old 35ms (~2 frames) flat wait.
     private let coalesceDelay: TimeInterval
 
     /// Restrict to these PIDs (test mode). Nil = all regular apps. Setting this
@@ -57,7 +63,7 @@ final class WindowEventObserver {
 
     private var started = false
 
-    init(coalesceDelay: TimeInterval = 0.035,
+    init(coalesceDelay: TimeInterval = 0.008,
          onWindowCreated: @escaping (Set<pid_t>) -> Void,
          onWindowDestroyed: @escaping () -> Void) {
         self.coalesceDelay = coalesceDelay
