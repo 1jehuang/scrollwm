@@ -247,6 +247,22 @@ case "fuzz":
     // logic against the in-memory sim world. Fully headless: never touches a
     // real window or the keyboard. A failure prints the seed + replayable op log.
     runFuzz(args: Array(args))
+case "fuzzconc":
+    // Concurrency/lifecycle fuzzer (async stack: monitor poll + fast-adopt +
+    // reconcile + run-loop hops). Headless. See FuzzConcurrency.swift.
+    runFuzzConcurrency(args: Array(args))
+case "fuzzmodel":
+    // Differential model-oracle fuzzer: an independent reference model vs the
+    // real engine, after every random op. Headless. See FuzzModel.swift.
+    runFuzzModel(args: Array(args))
+case "fuzzctrl":
+    // Controller/config/control-socket fuzzer (untrusted-input surface).
+    // Headless. See FuzzController.swift.
+    runFuzzController(args: Array(args))
+case "fuzzdisp":
+    // Multi-display/geometry/restore fuzzer (hotplug + parking + restore).
+    // Headless. See FuzzDisplay.swift.
+    runFuzzDisplay(args: Array(args))
 case "hotkeyprobe":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 20
     runHotkeyProbe(seconds: seconds)
