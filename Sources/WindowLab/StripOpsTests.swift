@@ -1369,6 +1369,12 @@ enum StripOpsTests {
         check("reveal: didReveal true when a window was unminimized",
               WindowReveal.Result(unhiddenApps: 0, unminimizedWindows: 2).didReveal)
 
+        // --- Negative-origin external hardening (own file, merges clean) ------
+        // Parking/restore/round-trip correctness pinned to the LIVE 1920x1080
+        // external at AX (-225,-1080) — both axes negative, stacked above the
+        // built-in. See GeometryHardeningTests for the rationale per check.
+        GeometryHardeningTests.run(check)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }
