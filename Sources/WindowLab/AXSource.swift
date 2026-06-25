@@ -49,8 +49,50 @@ func axErrorName(_ e: AXError) -> String {
     }
 }
 
+/// A pluggable window backend. The DEFAULT is the real Accessibility/WindowServer
+/// stack (every call below maps to a C API). Tests install an in-memory
+/// `SimWindowWorld` so the EXACT production engine/controller logic can run fully
+/// headless: no real windows are spawned, moved, focused, or closed, and no
+/// global keystrokes are ever injected.
+///
+/// The seam is intentionally narrow: only the operations the engine actually
+/// performs on windows. When `AXSource.backend == nil` (production), none of
+/// these are consulted and behavior is byte-for-byte the legacy C-API path.
+protocol WindowBackend: AnyObject {
+    /// All windows belonging to `pid` (any state), mirroring `windows(for:)`.
+    func windows(forPID pid: pid_t) -> [AXWindowInfo]
+    /// Every window the backend knows about (mirrors `allWindows()`).
+    func allWindows() -> [AXWindowInfo]
+    /// The WindowServer on-screen list (current Space), mirrors `CGWindowSource`.
+    func cgWindows(onscreenOnly: Bool) -> [CGWindowInfo]
+    /// PIDs of "regular" apps (drives the unfiltered reveal/observe sweeps).
+    func regularAppPIDs() -> [pid_t]
+
+    func position(of element: AXUIElement) -> CGPoint?
+    func size(of element: AXUIElement) -> CGSize?
+    func setPosition(_ element: AXUIElement, _ point: CGPoint) -> AXError
+    func setSize(_ element: AXUIElement, _ size: CGSize) -> AXError
+    func setBool(_ element: AXUIElement, _ attribute: String, _ value: Bool) -> AXError
+
+    /// Raise a window above its app's others (records focus in the sim).
+    func raise(_ element: AXUIElement) -> AXError
+    /// Press a window's close button; true if it had one (sim destroys it).
+    func pressCloseButton(_ element: AXUIElement) -> Bool
+    /// The window that currently holds keyboard focus, system-wide.
+    func systemFocusedWindow() -> AXUIElement?
+    /// Bring an app forward (sim records focus only; never steals real focus).
+    func activateApp(pid: pid_t)
+    func appIsHidden(pid: pid_t) -> Bool
+    func unhideApp(pid: pid_t) -> Bool
+}
+
 /// Thin, timeout-protected wrapper over the AXUIElement C API.
 enum AXSource {
+    /// When set, every window read/write below is routed to this in-memory
+    /// backend instead of the live C API. Set ONLY by the headless test harness;
+    /// always nil in production, so the live path is unchanged.
+    static var backend: WindowBackend?
+
     static var isTrusted: Bool { AXIsProcessTrusted() }
 
     static func promptForTrustIfNeeded() -> Bool {
@@ -71,6 +113,7 @@ enum AXSource {
     }
 
     static func copyPoint(_ element: AXUIElement, _ attribute: String) -> CGPoint? {
+        if let backend, attribute == kAXPositionAttribute as String { return backend.position(of: element) }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let axValue = value, CFGetTypeID(axValue) == AXValueGetTypeID() else { return nil }
@@ -80,6 +123,7 @@ enum AXSource {
     }
 
     static func copySize(_ element: AXUIElement, _ attribute: String) -> CGSize? {
+        if let backend, attribute == kAXSizeAttribute as String { return backend.size(of: element) }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let axValue = value, CFGetTypeID(axValue) == AXValueGetTypeID() else { return nil }
@@ -89,12 +133,14 @@ enum AXSource {
     }
 
     static func setPoint(_ element: AXUIElement, _ attribute: String, _ point: CGPoint) -> AXError {
+        if let backend, attribute == kAXPositionAttribute as String { return backend.setPosition(element, point) }
         var p = point
         guard let value = AXValueCreate(.cgPoint, &p) else { return .failure }
         return AXUIElementSetAttributeValue(element, attribute as CFString, value)
     }
 
     static func setSize(_ element: AXUIElement, _ attribute: String, _ size: CGSize) -> AXError {
+        if let backend, attribute == kAXSizeAttribute as String { return backend.setSize(element, size) }
         var s = size
         guard let value = AXValueCreate(.cgSize, &s) else { return .failure }
         return AXUIElementSetAttributeValue(element, attribute as CFString, value)
@@ -103,13 +149,26 @@ enum AXSource {
     /// Set a boolean AX attribute (e.g. kAXMainAttribute / kAXFocusedAttribute).
     @discardableResult
     static func setBool(_ element: AXUIElement, _ attribute: String, _ value: Bool) -> AXError {
-        AXUIElementSetAttributeValue(element, attribute as CFString, value as CFBoolean)
+        if let backend { return backend.setBool(element, attribute, value) }
+        return AXUIElementSetAttributeValue(element, attribute as CFString, value as CFBoolean)
     }
 
     /// Enumerate AX windows for one application.
     static func windows(for app: NSRunningApplication, timeoutSeconds: Float = 0.15) -> [AXWindowInfo] {
-        let pid = app.processIdentifier
+        windows(forPID: app.processIdentifier, timeoutSeconds: timeoutSeconds)
+    }
+
+    /// Enumerate AX windows for one PID. Production resolves a live
+    /// `NSRunningApplication`; the headless backend answers from its sim world,
+    /// so an accessory/non-existent pid still yields its simulated windows.
+    static func windows(forPID pid: pid_t, timeoutSeconds: Float = 0.15) -> [AXWindowInfo] {
+        if let backend { return backend.windows(forPID: pid) }
         let appElement = AXUIElementCreateApplication(pid)
+        let appName = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "pid \(pid)"
+        return windowsFromAppElement(appElement, pid: pid, appName: appName, timeoutSeconds: timeoutSeconds)
+    }
+
+    private static func windowsFromAppElement(_ appElement: AXUIElement, pid: pid_t, appName: String, timeoutSeconds: Float) -> [AXWindowInfo] {
         setTimeout(appElement, seconds: timeoutSeconds)
 
         var windowsRef: CFTypeRef?
@@ -128,7 +187,7 @@ enum AXSource {
 
             return AXWindowInfo(
                 pid: pid,
-                appName: app.localizedName ?? "pid \(pid)",
+                appName: appName,
                 element: window,
                 title: copyAttribute(window, kAXTitleAttribute as String) as String?,
                 role: copyAttribute(window, kAXRoleAttribute as String) as String?,
@@ -142,6 +201,7 @@ enum AXSource {
 
     /// All regular-app AX windows on the system, with per-app latency recording.
     static func allWindows(recorder: LatencyRecorder? = nil) -> [AXWindowInfo] {
+        if let backend { return backend.allWindows() }
         let apps = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && !$0.isTerminated
         }
@@ -158,5 +218,58 @@ enum AXSource {
             result.append(contentsOf: wins)
         }
         return result
+    }
+
+    // MARK: - High-level window actions (backend-routable)
+    //
+    // The engine/controller perform a few window ACTIONS beyond raw geometry:
+    // raise, press-close-button, read system focus, and activate an app. These
+    // wrappers route through the headless backend when installed (so the sim can
+    // model focus + window destruction with zero real side effects) and fall
+    // back to the exact prior C-API calls in production.
+
+    /// Raise a window above its app's other windows.
+    @discardableResult
+    static func raise(_ element: AXUIElement) -> AXError {
+        if let backend { return backend.raise(element) }
+        return AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+    }
+
+    /// Press a window's AX close button. Returns true when a close button
+    /// existed and the press succeeded.
+    static func pressCloseButton(_ element: AXUIElement) -> Bool {
+        if let backend { return backend.pressCloseButton(element) }
+        var buttonRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &buttonRef) == .success,
+              let buttonRef, CFGetTypeID(buttonRef) == AXUIElementGetTypeID() else { return false }
+        let button = buttonRef as! AXUIElement
+        return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+    }
+
+    /// The AX window element that currently holds keyboard focus, system-wide,
+    /// or nil if it cannot be resolved.
+    static func systemFocusedWindow() -> AXUIElement? {
+        if let backend { return backend.systemFocusedWindow() }
+        let systemWide = AXUIElementCreateSystemWide()
+        setTimeout(systemWide, seconds: 0.1)
+
+        var appRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &appRef) == .success,
+              let appRef, CFGetTypeID(appRef) == AXUIElementGetTypeID() else { return nil }
+        let appElement = appRef as! AXUIElement
+        setTimeout(appElement, seconds: 0.1)
+
+        var winRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+              let winRef, CFGetTypeID(winRef) == AXUIElementGetTypeID() else { return nil }
+        return (winRef as! AXUIElement)
+    }
+
+    /// Bring an app forward so keyboard focus follows a raised window. In
+    /// production this is a real `NSRunningApplication.activate()`; the headless
+    /// backend records focus only and never steals the user's real focus.
+    static func activateApp(pid: pid_t) {
+        if let backend { backend.activateApp(pid: pid); return }
+        NSRunningApplication(processIdentifier: pid)?.activate()
     }
 }

@@ -67,6 +67,28 @@ final class WindowEventObserver {
 
     func start() {
         started = true
+
+        // Headless backend: there are no real AXObservers/NSWorkspace apps to
+        // watch. Subscribe to the sim world's create/destroy events instead, so
+        // the fast-adopt / fast-remove paths still run end-to-end. We route a
+        // created event through the SAME coalescing + pid-filter logic as the
+        // real path.
+        if let sim = AXSource.backend as? SimWindowWorld {
+            sim.subscribeEvents(
+                created: { [weak self] pids in
+                    guard let self else { return }
+                    DispatchQueue.main.async {
+                        let allowed = self.pidFilter.map { pids.intersection($0) } ?? pids
+                        for pid in allowed { self.windowCreated(pid: pid) }
+                    }
+                },
+                destroyed: { [weak self] in
+                    DispatchQueue.main.async { self?.windowMaybeDestroyed() }
+                }
+            )
+            return
+        }
+
         registerTargets()
 
         // Apps that launch later need their own observer; apps that quit should
@@ -96,6 +118,7 @@ final class WindowEventObserver {
 
     func stop() {
         started = false
+        (AXSource.backend as? SimWindowWorld)?.unsubscribeEvents()
         for (_, obs) in observers {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
         }

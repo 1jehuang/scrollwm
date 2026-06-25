@@ -218,30 +218,17 @@ extension TeleportEngine {
     /// Returns true when the live focused window was found among our slots.
     @discardableResult
     func syncFocusToSystemFocusedWindow() -> Bool {
-        guard !slots.isEmpty, let focused = TeleportEngine.systemFocusedWindowElement() else { return false }
+        guard !slots.isEmpty, let focused = AXSource.systemFocusedWindow() else { return false }
         guard let idx = slots.firstIndex(where: { CFEqual($0.window.element, focused) }) else { return false }
         focusIndex = idx
         return true
     }
 
     /// The AX window element that currently holds keyboard focus, system-wide,
-    /// or nil if it cannot be resolved. Uses the system-wide element so it works
-    /// for accessory apps too (`NSWorkspace.frontmostApplication` does not
-    /// reflect them).
+    /// or nil if it cannot be resolved. Routed through `AXSource` so the headless
+    /// backend can answer from the sim world.
     static func systemFocusedWindowElement() -> AXUIElement? {
-        let systemWide = AXUIElementCreateSystemWide()
-        AXSource.setTimeout(systemWide, seconds: 0.1)
-
-        var appRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &appRef) == .success,
-              let appRef, CFGetTypeID(appRef) == AXUIElementGetTypeID() else { return nil }
-        let appElement = appRef as! AXUIElement
-        AXSource.setTimeout(appElement, seconds: 0.1)
-
-        var winRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
-              let winRef, CFGetTypeID(winRef) == AXUIElementGetTypeID() else { return nil }
-        return (winRef as! AXUIElement)
+        AXSource.systemFocusedWindow()
     }
 
     /// Close the focused window via its Accessibility close button, then drop
@@ -260,13 +247,7 @@ extension TeleportEngine {
         let slot = slots[focusIndex]
         let element = slot.window.element
 
-        var closed = false
-        var buttonRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &buttonRef) == .success,
-           let buttonRef, CFGetTypeID(buttonRef) == AXUIElementGetTypeID() {
-            let button = buttonRef as! AXUIElement
-            closed = AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
-        }
+        let closed = AXSource.pressCloseButton(element)
 
         // Drop from the strip regardless: if the press succeeded the window is
         // gone; if it failed, the lifecycle monitor would otherwise keep trying

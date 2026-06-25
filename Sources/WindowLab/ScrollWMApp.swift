@@ -424,8 +424,7 @@ final class ScrollWMController: NSObject {
         if let effectiveFilter {
             // Direct PID enumeration: works for accessory apps (test windows).
             axWindows = effectiveFilter.flatMap { pid -> [AXWindowInfo] in
-                guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return [] }
-                return AXSource.windows(for: app)
+                AXSource.windows(forPID: pid)
             }
         } else {
             axWindows = AXSource.allWindows()
@@ -577,12 +576,10 @@ final class ScrollWMController: NSObject {
     /// palettes, or just to peek at a window). Activates its app so keyboard
     /// focus follows, mirroring the strip's own raise behavior.
     func focusFloating(_ window: FloatingWindow) {
-        AXUIElementPerformAction(window.element, kAXRaiseAction as CFString)
+        AXSource.raise(window.element)
         AXSource.setBool(window.element, kAXMainAttribute as String, true)
         AXSource.setBool(window.element, kAXFocusedAttribute as String, true)
-        if let app = NSRunningApplication(processIdentifier: window.pid) {
-            app.activate()
-        }
+        AXSource.activateApp(pid: window.pid)
     }
 
     /// Pull a floating (tileable) window onto the strip: insert it just right of
@@ -731,6 +728,28 @@ final class ScrollWMController: NSObject {
     func debugWidth(forFraction f: CGFloat) -> CGFloat { engine.width(forFraction: f) }
     var debugActiveWorkspace: Int { engine.stripState.activeWorkspace }
     var debugWorkspaceCount: Int { engine.stripState.workspaceCount }
+
+    /// Headless test seam: deliver a key chord exactly as a real keypress would
+    /// route through ScrollWM, with NO CGEvent injected (so nothing leaks to the
+    /// user's focused app). Routing mirrors production precedence: the management
+    /// keyboard tap is head-insert and suppresses any chord it matches BEFORE the
+    /// focused app or Carbon see it; only if the tap does not consume the chord
+    /// do the always-on Carbon hotkeys (navigation/jump/toggle) get it. Returns
+    /// true if some binding handled it.
+    @discardableResult
+    func debugDeliverChord(keyCode: UInt32, cgFlags: CGEventFlags, carbonModifiers: UInt32) -> Bool {
+        if let tap = moveTap, tap.debugDeliver(keyCode: Int64(keyCode), flags: cgFlags) {
+            return true
+        }
+        return hotkeys.debugDeliver(keyCode: keyCode, modifiers: carbonModifiers)
+    }
+
+    /// Convenience: deliver a parsed `Chord` (uses both its CG flags for the tap
+    /// and its Carbon modifiers for the hotkey path).
+    @discardableResult
+    func debugDeliverChord(_ chord: Chord) -> Bool {
+        debugDeliverChord(keyCode: chord.keyCode, cgFlags: chord.cgFlags, carbonModifiers: chord.carbonModifiers)
+    }
 
     // --- Multi-display debug accessors (for the `displaytest` integration) ---
     // These read/relay the SAME engine the production controller drives, so the
@@ -970,6 +989,12 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     }
 
     private func createStatusItem() {
+        // Headless test mode: do NOT create a real menu-bar status item. It would
+        // briefly add an icon to the user's menu bar during a test run, which is
+        // visible desktop noise (even if it never steals focus). The controller
+        // logic the headless tests exercise does not depend on it.
+        if AXSource.backend != nil { return }
+
         // Length tracks the live mini-map width (content + padding). Starts at
         // the configured floor; grows/shrinks as windows are added/removed.
         statusItem = NSStatusBar.system.statusItem(withLength: contentWidth + Self.hPadding)
@@ -1016,6 +1041,8 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
 
     private var healAttempt = 0
     private func ensureVisible() {
+        // No status item in headless test mode; nothing to place.
+        if statusItem == nil { return }
         guard !isVisibleInMenuBar else {
             if healAttempt > 0 {
                 print("menubar: item visible after \(healAttempt) placement attempt(s)")
@@ -1062,7 +1089,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     }
 
     var isVisibleInMenuBar: Bool {
-        guard statusItem.isVisible, let window = statusItem.button?.window else { return false }
+        guard let statusItem, statusItem.isVisible, let window = statusItem.button?.window else { return false }
         let frame = window.frame // AppKit coords, bottom-left origin
         guard frame.width > 0, frame.origin.x >= 0 else { return false }
         // On notched displays, real status items live RIGHT of the notch.

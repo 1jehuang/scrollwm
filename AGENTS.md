@@ -35,23 +35,45 @@ windows. Avoid those while developing; prefer `sandbox`.
 
 ## Testing / verification
 
-All of these are headless-ish and safe (spawn disposable windows or pure logic):
+The integration tests are **HEADLESS BY DEFAULT**: they run the REAL engine +
+controller logic against an in-memory window world (`SimWindowWorld`, installed
+as `AXSource.backend`). Nothing is spawned, moved, focused, or closed on your
+real desktop, and no global keystroke is ever injected, so they are safe to run
+anytime, even while you work. Pass `--live` to exercise the old real-window path.
 
 ```bash
 .build/debug/WindowLab unittest       # pure logic: strip ops, ResyncPlanner, config (no AX)
-.build/debug/WindowLab opstest        # integration: width/move/close vs live AX readback
-.build/debug/WindowLab e2etest        # real controller + synthesized hotkeys
-.build/debug/WindowLab revealtest     # "Arrange All" reveals + adopts hidden/minimized
-.build/debug/WindowLab spawnlatency   # new-window adoption latency (AX observer fast path)
-.build/debug/WindowLab displaytest    # multi-display: real controller locked to spawned
-                                      #   windows; asserts on-display/parking/rebind vs AX
+.build/debug/WindowLab headlesstest   # ALL integration suites, headless (see below)
+.build/debug/WindowLab opstest        # width/move/close/focus-sync (headless; --live = real AX)
+.build/debug/WindowLab e2etest        # real controller + synthetic chords (headless; --live = real keys)
+.build/debug/WindowLab revealtest     # "Arrange All" reveals + adopts hidden/minimized (headless; --live)
+.build/debug/WindowLab spawnlatency   # new-window adoption latency (headless; --live = real AX)
+.build/debug/WindowLab displaytest    # multi-display placement/parking/rebind (headless 2-display; --live)
 .build/debug/WindowLab sandbox [n] [--display M]
                                       # live, interactive, isolated to spawned windows
                                       #   (--display M tiles them on monitor M, 0-based L->R)
 ```
 
-Always run `unittest` + `e2etest` before claiming a change is done. Add a test
-for any behavior you change; prefer extracting pure functions (e.g.
+`make test` runs `unittest` + `animtest` + `headlesstest`. Always run it before
+claiming a change is done; it never touches your real windows or focus.
+
+### How headless works (the seam)
+
+`AXSource` and `CGWindowSource` route every window read/write/action through an
+optional `WindowBackend` (`AXSource.backend`). In production it is `nil` and the
+exact prior C-API path runs. A test installs a `SimWindowWorld` that models the
+parts the engine actually depends on: per-window CFEqual-stable element tokens,
+app size MINIMUMS (`setSize` below the floor clamps yet returns `.success`), the
+current-Space on-screen list (minimized/app-hidden windows drop out), the macOS
+off-screen clamp (parked-window sliver lands on the nearest display), system
+keyboard focus, and `kAXWindowCreated`/`Destroyed` events for the fast-adopt
+path. `HotkeyManager`/`KeyboardEventTap` skip real registration under a backend
+and expose `debugDeliver`, and `ScrollWMController.debugDeliverChord` routes a
+synthetic chord through the same tap->Carbon precedence as a real keypress, with
+NO CGEvent posted. The menu-bar status item is suppressed too. When you change
+behavior, prefer extending the sim + a headless assertion over a `--live` test.
+
+Add a test for any behavior you change; prefer extracting pure functions (e.g.
 `ResyncPlanner`, `viewportTarget`) so logic is unit-testable without AX.
 
 ## Architecture (Sources/WindowLab/)
@@ -61,7 +83,8 @@ for any behavior you change; prefer extracting pure functions (e.g.
 - `LifecycleMonitor.swift`   keeps strip in sync: AX observer + NSWorkspace + 2s poll
 - `WindowEventObserver.swift` AXObserver on kAXWindowCreated -> fast adoption (~85ms)
 - `ResyncPlanner.swift`      PURE Space-aware adopt/drop policy (unit-tested)
-- `AXSource.swift`           timeout-protected AXUIElement wrapper
+- `AXSource.swift`           timeout-protected AXUIElement wrapper +
+                             `WindowBackend` seam (nil in prod; sim in tests)
 - `CGWindowSource.swift`     WindowServer enumeration (current-Space = on-screen list)
 - `IdentityMatcher.swift`    AX<->CG fusion (PID+frame+title scoring)
 - `RestoreStore.swift`       crash-recovery frame persistence
@@ -74,6 +97,10 @@ for any behavior you change; prefer extracting pure functions (e.g.
 - `UpdateCoordinator.swift`  schedules background checks, prompts/installs, state
 - `SemVer.swift`             PURE semantic-version parse + ordering (unit-tested)
 - `Sandbox.swift`            sandbox mode (safe live testing)
+- `SimWindowWorld.swift`     in-memory `WindowBackend`: headless stand-in for AX/
+                             WindowServer (min-size clamp, focus, parking, events)
+- `HeadlessHarness.swift`    headless test scaffolding + `headlesstest` suite runner
+- `HeadlessTests.swift`      headless ops/e2e/reveal/spawnlatency/display suites
 - `Config.swift`             JSONC config file (single source of truth for keybinds)
 
 ## Key invariants / gotchas

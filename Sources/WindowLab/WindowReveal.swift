@@ -57,6 +57,25 @@ enum WindowReveal {
     /// no filter we sweep every regular app, matching `AXSource.allWindows`.
     @discardableResult
     static func reveal(pidFilter: Set<pid_t>? = nil) -> Result {
+        // Headless backend: the sim world owns hidden/minimized state, so resolve
+        // pids + reveal through it (a fake/accessory pid has no NSRunningApplication).
+        if let backend = AXSource.backend {
+            let pids: [pid_t] = pidFilter.map { Array($0) } ?? backend.regularAppPIDs()
+            var result = Result()
+            for pid in pids {
+                if backend.appIsHidden(pid: pid), backend.unhideApp(pid: pid) {
+                    result.unhiddenApps += 1
+                }
+                for w in backend.windows(forPID: pid)
+                where shouldUnminimize(role: w.role, isMinimized: w.isMinimized) {
+                    if AXSource.setBool(w.element, kAXMinimizedAttribute as String, false) == .success {
+                        result.unminimizedWindows += 1
+                    }
+                }
+            }
+            return result
+        }
+
         let apps: [NSRunningApplication]
         if let pidFilter {
             apps = pidFilter.compactMap { NSRunningApplication(processIdentifier: $0) }
