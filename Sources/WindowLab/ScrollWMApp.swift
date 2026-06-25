@@ -31,6 +31,13 @@ final class ScrollWMController: NSObject {
     /// hotplug burst, short enough to feel instant.
     private let displayChangeDebounceInterval: TimeInterval = 0.25
 
+    /// Stable `CGDirectDisplayID` of the display the strip is currently bound to.
+    /// Tracked alongside the strip's geometry so `applySettledDisplayChange` can
+    /// follow the strip's PHYSICAL display by identity across an arrangement swap
+    /// or a large resolution change - cases pure geometry overlap gets wrong.
+    /// Updated on every bind (`refreshDisplayGeometry`, `bindStripToDisplay`).
+    private var stripDisplayID: CGDirectDisplayID?
+
     /// Lazily-created tutorial window controller (config-driven cheat sheet).
     private lazy var tutorial = TutorialWindowController(configProvider: { [weak self] in
         self?.config ?? .default
@@ -127,6 +134,9 @@ final class ScrollWMController: NSObject {
         engine.otherDisplayFrames = NSScreen.screens
             .filter { $0 !== stripDisplay }
             .map(axFull)
+        // Remember which PHYSICAL display the strip is bound to, so a later
+        // hotplug can follow it by stable id across arrangement/resolution change.
+        stripDisplayID = stripDisplay.displayID
 
         // Re-bind the strip's own usable area to the live visible frame so a
         // resolution/scale change (or the strip moving displays) relays the
@@ -171,11 +181,21 @@ final class ScrollWMController: NSObject {
         let visibleFrames = screens.map {
             DisplayGeometry.axFrame(appKitFrame: $0.visibleFrame, primaryHeight: primaryHeight)
         }
+        // Parallel stable display ids (same order as `screens`/`visibleFrames`).
+        // Only pass them through when EVERY screen vended one, so the resolver's
+        // well-formed-arrays guard either uses identity for all or none of them
+        // (a partial id list would silently disable identity tracking anyway).
+        let ids = screens.map { $0.displayID }
+        let displayIDs: [CGDirectDisplayID]? = ids.allSatisfy { $0 != nil }
+            ? ids.compactMap { $0 } : nil
 
-        // Pure policy: same display (resized) -> follow it; strip display gone
-        // -> migrate to the best survivor; no displays -> keep put.
+        // Pure policy: same display (by stable id, else resized/overlap) -> follow
+        // it; strip display gone -> migrate to the best survivor; none -> keep put.
         let decision = StripDisplayResolver.resolve(
-            stripFrame: engine.screenFrame, displays: visibleFrames)
+            stripFrame: engine.screenFrame,
+            displays: visibleFrames,
+            stripDisplayID: stripDisplayID,
+            displayIDs: displayIDs)
         guard let idx = decision.displayIndex else { return }
 
         if decision.migrated {
@@ -281,6 +301,7 @@ final class ScrollWMController: NSObject {
         }
         engine.stripDisplayFrame = axFull(stripDisplay)
         engine.otherDisplayFrames = NSScreen.screens.filter { $0 !== stripDisplay }.map(axFull)
+        stripDisplayID = stripDisplay.displayID
         // rebindStripDisplay sets `screenFrame` and relays; on an empty strip the
         // relay is a no-op, so this safely repositions the strip pre-arrange.
         engine.rebindStripDisplay(
