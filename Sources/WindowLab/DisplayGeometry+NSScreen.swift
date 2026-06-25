@@ -28,3 +28,19 @@ extension DisplayGeometry {
         }
     }
 }
+
+extension NSScreen {
+    /// The stable `CGDirectDisplayID` macOS assigns this physical display, read
+    /// from `deviceDescription["NSScreenNumber"]`. Unlike a screen's frame, the
+    /// id survives an arrangement/origin change, a resolution/scale change, and a
+    /// re-plug of the same monitor, so the hotplug resolver can track "the strip's
+    /// OWN display" by identity instead of by ambiguous geometry overlap.
+    ///
+    /// Returns `nil` only if AppKit fails to vend the number (never observed in
+    /// practice); callers fall back to the geometry path, which is still correct
+    /// for the common cases.
+    var displayID: CGDirectDisplayID? {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        return (deviceDescription[key] as? NSNumber)?.uint32Value
+    }
+}

@@ -994,6 +994,19 @@ enum StripOpsTests {
         reb2.rebindStripDisplay(to: before)
         check("rebind: same-frame rebind is stable", reb2.screenFrame == before)
 
+        // DORMANT rebind ([md-hotplug]): a strip with NO adopted windows (the
+        // dormant state) must still update `screenFrame` when its display's
+        // geometry changes, so the NEXT arrange lands on the display's CURRENT
+        // frame instead of a stale (unplugged/resized) one. This is the engine
+        // guarantee `refreshDisplayGeometry` relies on now that it rebinds even
+        // while dormant. The relay issues zero AX writes (no windows).
+        let dormant = TeleportEngine(screenFrame: CGRect(x: -225, y: -1440, width: 2560, height: 1440))
+        let migratedFrame = CGRect(x: 0, y: 0, width: 1470, height: 923)
+        let writes = dormant.rebindStripDisplay(to: migratedFrame)
+        check("rebind: dormant (empty) strip still adopts the new screenFrame",
+              dormant.screenFrame == migratedFrame)
+        check("rebind: dormant rebind issues no AX writes (no windows)", writes == 0)
+
         // --- StripDisplayResolver: hotplug strip-migration policy ------------
         // Pure decision for "which display does the strip bind to after a
         // monitor plug/unplug?". AX top-left plane; mirrors the user's real rig:
@@ -1083,6 +1096,131 @@ enum StripOpsTests {
             let chunk = CGRect(x: 700, y: 0, width: 1000, height: 1000)
             let dHere = StripDisplayResolver.resolve(stripFrame: strip, displays: [chunk])
             check("resolver: 30% overlap is above threshold -> follow", !dHere.migrated)
+        }
+
+        // --- StripDisplayResolver: STABLE DISPLAY IDENTITY ([md-hotplug]) -----
+        // Geometry overlap alone is ambiguous on two real macOS hotplug events:
+        //   (e) ARRANGEMENT SWAP: two displays exchange origins. The strip's
+        //       OLD frame is now occupied by the OTHER physical monitor, so a
+        //       pure-overlap resolver binds the strip to the WRONG screen.
+        //   (d) BIG RESOLUTION/SCALE CHANGE: the strip's own display shrinks so
+        //       much (or its visible frame shifts under a scale change) that the
+        //       overlap with its NEW frame drops below threshold, and a pure
+        //       overlap resolver spuriously MIGRATES off a display that is in
+        //       fact still present.
+        // When the caller supplies stable CGDirectDisplayIDs, the resolver must
+        // track the strip's OWN display by identity and follow it, regardless of
+        // how its geometry moved.
+        let idBuiltin: CGDirectDisplayID = 1   // built-in panel
+        let idExternal: CGDirectDisplayID = 2  // external monitor
+
+        // (e) Arrangement swap: strip lives on the EXTERNAL (id 2) at its old
+        // frame; the user swaps the two displays' origins so the BUILT-IN now
+        // occupies the external's old region. Geometry says "bind to whatever is
+        // at the old frame" (the built-in). Identity says "follow display 2 to
+        // its NEW frame". Identity must win and it is NOT a migration (same
+        // physical screen, just rearranged).
+        do {
+            let extOldFrame = rExternal                                  // (-225,-1440,2560,1440)
+            let builtinNowHere = CGRect(x: -225, y: -1440, width: 1470, height: 956) // built-in moved into ext's spot
+            let extNowThere    = CGRect(x: 0, y: 0, width: 2560, height: 1440)        // ext moved to the origin region
+            let d = StripDisplayResolver.resolve(
+                stripFrame: extOldFrame,
+                displays:   [builtinNowHere, extNowThere],
+                stripDisplayID: idExternal,
+                displayIDs: [idBuiltin, idExternal])
+            check("resolver: arrangement swap follows the strip's display by ID",
+                  d.frame == extNowThere && d.displayIndex == 1 && !d.migrated)
+        }
+
+        // (d) Big resolution drop with NO overlap: the strip's display (id 2) is
+        // still attached but its new visible frame no longer overlaps the old
+        // one at all, AND a DIFFERENT display is the largest survivor. Pure
+        // geometry would MIGRATE to that other display; identity recognizes id 2
+        // as the SAME screen and follows it (no spurious migration).
+        do {
+            let extOld = rExternal                                         // (-225,-1440,2560,1440)
+            let extResizedFar = CGRect(x: 4000, y: 0, width: 1280, height: 720) // moved far, zero overlap
+            let d = StripDisplayResolver.resolve(
+                stripFrame: extOld,
+                displays:   [rBuiltin, extResizedFar],
+                stripDisplayID: idExternal,
+                displayIDs: [idBuiltin, idExternal])
+            check("resolver: same display by ID is followed even with zero overlap",
+                  d.frame == extResizedFar && d.displayIndex == 1 && !d.migrated)
+        }
+
+        // Strip's display id is GONE from the live id set (truly unplugged):
+        // identity cannot find it, so we MIGRATE to the largest survivor exactly
+        // as the geometry path would. Proves identity does not mask a real unplug.
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rExternal,
+                displays:   [rBuiltin],
+                stripDisplayID: idExternal,
+                displayIDs: [idBuiltin])
+            check("resolver: strip display id absent -> migrate to survivor",
+                  d.frame == rBuiltin && d.displayIndex == 0 && d.migrated)
+        }
+
+        // Defensive: malformed identity input (id count != display count) must
+        // not crash or pick out of range; the resolver falls back to geometry.
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin,
+                displays:   [rBuiltin, rExternal],
+                stripDisplayID: idBuiltin,
+                displayIDs: [idBuiltin])   // wrong length on purpose
+            check("resolver: mismatched id array falls back to geometry safely",
+                  d.frame == rBuiltin && d.displayIndex == 0 && !d.migrated)
+        }
+
+        // Identity supplied but the strip's own id is unknown (nil): behave like
+        // the pure-geometry path (no identity to anchor on).
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin,
+                displays:   [rBuiltin, rExternal],
+                stripDisplayID: nil,
+                displayIDs: [idBuiltin, idExternal])
+            check("resolver: nil strip id falls back to geometry",
+                  d.frame == rBuiltin && d.displayIndex == 0 && !d.migrated)
+        }
+
+        // (b) RE-PLUG: the strip lives on the built-in (id 1); the OTHER display
+        // (the external) is unplugged and then re-plugged. After re-plug both
+        // displays are present again; identity keeps the strip on id 1 (no
+        // surprise jump onto the freshly-returned monitor).
+        do {
+            // External gone: only the built-in survives, strip stays on id 1.
+            let gone = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin],
+                stripDisplayID: idBuiltin, displayIDs: [idBuiltin])
+            check("resolver: re-plug step 1, other display gone leaves strip on id",
+                  gone.frame == rBuiltin && gone.displayIndex == 0 && !gone.migrated)
+            // External back: both present, strip still on id 1, no migration.
+            let back = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin, rExternal],
+                stripDisplayID: idBuiltin, displayIDs: [idBuiltin, idExternal])
+            check("resolver: re-plug step 2, returned display does not yank strip",
+                  back.frame == rBuiltin && back.displayIndex == 0 && !back.migrated)
+        }
+
+        // (f) ALL DISPLAYS ASLEEP then WAKE: the strip is on the external (id 2).
+        // During sleep macOS reports NO screens, so the resolver keeps the last
+        // frame and signals "no choice" (caller leaves the strip put). On wake
+        // both displays return; identity rebinds to id 2's frame, not migrated.
+        do {
+            let asleep = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [],
+                stripDisplayID: idExternal, displayIDs: [])
+            check("resolver: all displays asleep -> keep last frame, no choice",
+                  asleep.frame == rExternal && asleep.displayIndex == nil && !asleep.migrated)
+            let awake = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [rBuiltin, rExternal],
+                stripDisplayID: idExternal, displayIDs: [idBuiltin, idExternal])
+            check("resolver: wake rebinds the strip to its own display by id",
+                  awake.frame == rExternal && awake.displayIndex == 1 && !awake.migrated)
         }
 
         // --- Display-safe RESTORE: monitor unplugged before Release ----------

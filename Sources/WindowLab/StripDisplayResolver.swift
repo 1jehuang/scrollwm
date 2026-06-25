@@ -48,11 +48,42 @@ enum StripDisplayResolver {
     /// strip stranded entirely off-screen).
     static func resolve(stripFrame: CGRect,
                         displays: [CGRect],
+                        stripDisplayID: CGDirectDisplayID? = nil,
+                        displayIDs: [CGDirectDisplayID]? = nil,
                         minOverlapFraction: CGFloat = 0.2) -> Decision {
         // Case 3: nothing to bind to - keep the last frame, signal "no choice".
         guard !displays.isEmpty else {
             return Decision(frame: stripFrame, displayIndex: nil, migrated: false)
         }
+
+        // Case 0 (preferred when available): STABLE DISPLAY IDENTITY. macOS gives
+        // every attached display a persistent `CGDirectDisplayID`. When the caller
+        // hands us the strip's own id and the parallel id of each live display, we
+        // track the strip's PHYSICAL screen by id and follow it wherever it moved
+        // - even if its geometry no longer overlaps the strip's old frame, and
+        // even if a *different* display now sits where the strip used to be.
+        //
+        // This disambiguates two cases pure overlap gets wrong:
+        //   - arrangement swap (another display reuses the strip's old origin),
+        //   - a large resolution/scale change that drops overlap below threshold.
+        // We only trust identity when the arrays are well-formed (same length as
+        // `displays`); otherwise we fall through to the geometry path so bad input
+        // can never index out of range or pick the wrong screen.
+        if let stripID = stripDisplayID,
+           let ids = displayIDs,
+           ids.count == displays.count,
+           let idIdx = ids.firstIndex(of: stripID) {
+            // Same physical display still attached: follow it onto its current
+            // frame. Not a migration - it is the same screen, just moved/resized.
+            return Decision(frame: displays[idIdx], displayIndex: idIdx, migrated: false)
+        }
+        // If identity was supplied AND well-formed but the strip's id is simply
+        // ABSENT, the strip's display was truly unplugged: skip the geometry
+        // "present?" check (which could false-positive on whatever display now
+        // occupies the old frame) and migrate straight to the best survivor.
+        let idResolvedAbsent = stripDisplayID != nil
+            && (displayIDs?.count == displays.count)
+            && !(displayIDs?.contains(stripDisplayID!) ?? false)
 
         // Best-overlapping display with the strip's current frame.
         var bestIdx = 0
@@ -65,7 +96,8 @@ enum StripDisplayResolver {
         // Is the strip's display still present? Judge by the fraction of the
         // STRIP that still falls on its best-overlapping display.
         let stripArea = stripFrame.width * stripFrame.height
-        let presentEnough = stripArea > 0 && (bestArea / stripArea) >= minOverlapFraction
+        let presentEnough = !idResolvedAbsent
+            && stripArea > 0 && (bestArea / stripArea) >= minOverlapFraction
 
         if presentEnough {
             // Case 1: same screen (possibly resized) - follow it.
