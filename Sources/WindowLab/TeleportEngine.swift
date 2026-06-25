@@ -679,29 +679,61 @@ final class TeleportEngine {
         LatencyStats(label: "teleport.full", samples: teleportLatencies)
     }
 
+    /// PURE restore-target policy: where a window with pre-adoption frame
+    /// `original` should be put back, clamped onto a currently-available display.
+    ///
+    /// A window's `originalFrame` was captured before adoption and can point at a
+    /// monitor that has since been UNPLUGGED — restoring it verbatim would strand
+    /// the window fully off-screen. `DisplayGeometry.ensureVisible` returns the
+    /// frame UNCHANGED when it is still mostly visible (the common case — no
+    /// perturbation), and only when it is not does it pull/shrink the window onto
+    /// the best available display. No side effects; unit-tested directly.
+    static func restoreFrame(original: CGRect, displays: [CGRect]) -> CGRect {
+        DisplayGeometry.ensureVisible(original, displays: displays)
+    }
+
+    /// PURE restore plan consumed by `releaseAll`: every managed window paired
+    /// with the display-safe frame to restore it to, given the displays that are
+    /// available RIGHT NOW. Exposed so the "monitor unplugged" behavior is
+    /// unit-testable without AX (the same plan `releaseAll` actually applies).
+    func restorePlan(displays: [CGRect]) -> [(window: ManagedWindowRef, target: CGRect)] {
+        allManagedSlots.map { slot in
+            (slot.window, Self.restoreFrame(original: slot.window.originalFrame, displays: displays))
+        }
+    }
+
     /// Restore every managed window to its pre-adoption frame (position AND
     /// size) and stop managing it. Returns the number of failures.
+    ///
+    /// Display-safe: each restore target is run through `restorePlan`, which
+    /// clamps a frame onto a currently-available display when its original
+    /// monitor is gone, so unplugging a monitor before Release can never leave a
+    /// window stranded off-screen. The clamp is a no-op for windows whose saved
+    /// frame is still mostly visible (the overwhelmingly common case).
     ///
     /// Failures are determined by READBACK, not AX error codes: some windows
     /// (e.g. fixed-size ones) return errors for no-op resizes while ending up
     /// exactly where they belong.
+    ///
+    /// `displays` defaults to the live `NSScreen` layout; tests inject a fixed
+    /// set (e.g. simulating an unplugged monitor) to exercise the clamp.
     @discardableResult
-    func releaseAll() -> Int {
+    func releaseAll(displays: [CGRect]? = nil) -> Int {
+        let displays = displays ?? DisplayGeometry.currentVisibleAXDisplays()
         var failures = 0
         // Restore EVERY workspace's windows, not just the active strip, so a
         // window parked in an inactive vertical workspace is also put back.
-        for slot in allManagedSlots {
-            let w = slot.window
-            _ = AXSource.setPoint(w.element, kAXPositionAttribute as String, w.originalFrame.origin)
-            _ = AXSource.setSize(w.element, kAXSizeAttribute as String, w.originalFrame.size)
+        for (w, target) in restorePlan(displays: displays) {
+            _ = AXSource.setPoint(w.element, kAXPositionAttribute as String, target.origin)
+            _ = AXSource.setSize(w.element, kAXSizeAttribute as String, target.size)
 
             // Verify by reading back the actual frame.
             if let pos = AXSource.copyPoint(w.element, kAXPositionAttribute as String),
                let size = AXSource.copySize(w.element, kAXSizeAttribute as String) {
-                let ok = abs(pos.x - w.originalFrame.origin.x) <= 2
-                    && abs(pos.y - w.originalFrame.origin.y) <= 2
-                    && abs(size.width - w.originalFrame.width) <= 2
-                    && abs(size.height - w.originalFrame.height) <= 2
+                let ok = abs(pos.x - target.origin.x) <= 2
+                    && abs(pos.y - target.origin.y) <= 2
+                    && abs(size.width - target.width) <= 2
+                    && abs(size.height - target.height) <= 2
                 if !ok { failures += 1 }
             } else {
                 failures += 1

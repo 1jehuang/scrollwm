@@ -907,6 +907,73 @@ enum StripOpsTests {
         reb2.rebindStripDisplay(to: before)
         check("rebind: same-frame rebind is stable", reb2.screenFrame == before)
 
+        // --- Display-safe RESTORE: monitor unplugged before Release ----------
+        // A window's originalFrame / crash-recovery frame can point at a display
+        // that has since been unplugged. Restore must pull it onto a surviving
+        // display instead of stranding it fully off-screen — but must NOT perturb
+        // a window whose saved frame is still mostly visible.
+        let builtin = builtinAX                                   // (0,0,1470,956)
+        let external = extAX                                      // (-225,-1440,2560,1440)
+        let bothDisplays = [builtin, external]
+        let builtinOnly = [builtin]                              // external unplugged
+
+        // restoreFrame: a frame on the surviving display is untouched.
+        let onBuiltin = CGRect(x: 100, y: 100, width: 600, height: 400)
+        check("restore: keeps a frame on a surviving display",
+              TeleportEngine.restoreFrame(original: onBuiltin, displays: builtinOnly) == onBuiltin)
+        // restoreFrame: a frame on the now-gone external is rescued onto the
+        // built-in (mostly visible there) and never larger than it.
+        let onExternal = CGRect(x: -100, y: -1200, width: 800, height: 600)
+        let rescuedFrame = TeleportEngine.restoreFrame(original: onExternal, displays: builtinOnly)
+        check("restore: rescues an orphaned frame onto a surviving display",
+              DisplayGeometry.isMostlyVisible(rescuedFrame, on: builtinOnly))
+        check("restore: rescued frame fits the surviving display",
+              builtin.contains(rescuedFrame))
+        // With BOTH displays present the same external frame is left alone (no
+        // perturbation of the common case).
+        check("restore: leaves an external frame alone when its display is present",
+              TeleportEngine.restoreFrame(original: onExternal, displays: bothDisplays) == onExternal)
+        // Degenerate: no displays -> leave the frame as-is (caller has no screen).
+        check("restore: no displays leaves the frame unchanged",
+              TeleportEngine.restoreFrame(original: onExternal, displays: []) == onExternal)
+
+        // restorePlan: releaseAll's actual plan. Build an engine whose windows
+        // were originally on the external, then "unplug" it and confirm EVERY
+        // restore target lands on the surviving built-in display.
+        let rel = makeEngine(count: 3)
+        for i in rel.slots.indices {
+            // Re-home each window's originalFrame onto the external monitor.
+            let f = CGRect(x: -100 - CGFloat(i) * 50, y: -1200, width: 700, height: 500)
+            let old = rel.slots[i].window
+            rel.slots[i].window = TeleportEngine.ManagedWindowRef(
+                element: old.element, pid: old.pid, appName: old.appName,
+                title: old.title, originalFrame: f)
+        }
+        let plan = rel.restorePlan(displays: builtinOnly)
+        check("restore: plan covers every managed window", plan.count == 3)
+        check("restore: every planned target is visible after unplug",
+              plan.allSatisfy { DisplayGeometry.isMostlyVisible($0.target, on: builtinOnly) })
+        check("restore: every planned target fits the surviving display",
+              plan.allSatisfy { builtin.contains($0.target) })
+        // releaseAll consumes the plan (AX no-ops on synthetic elements) and
+        // still tears the strip down to a clean single workspace.
+        rel.releaseAll(displays: builtinOnly)
+        check("restore: releaseAll(displays:) resets to a single workspace",
+              rel.workspaceCount == 1 && rel.slots.isEmpty)
+
+        // RestoreStore.safeTarget: crash-recovery entry on a gone monitor is
+        // clamped onto a surviving display; an on-screen entry is untouched.
+        let goneEntry = RestoreStore.Entry(
+            pid: 1, appName: "App", title: "Win", x: -100, y: -1200, w: 800, h: 600)
+        let safeGone = RestoreStore.safeTarget(for: goneEntry, displays: builtinOnly)
+        check("restore: crash entry on a gone monitor is pulled on-screen",
+              DisplayGeometry.isMostlyVisible(safeGone, on: builtinOnly) && builtin.contains(safeGone))
+        let liveEntry = RestoreStore.Entry(
+            pid: 1, appName: "App", title: "Win", x: 100, y: 100, w: 600, h: 400)
+        check("restore: crash entry already on-screen is left untouched",
+              RestoreStore.safeTarget(for: liveEntry, displays: builtinOnly)
+                == CGRect(x: 100, y: 100, width: 600, height: 400))
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }
