@@ -274,6 +274,11 @@ case "fuzzdisp":
     // Multi-display/geometry/restore fuzzer (hotplug + parking + restore).
     // Headless. See FuzzDisplay.swift.
     runFuzzDisplay(args: Array(args))
+case "statespace":
+    // Bounded exhaustive / explicit-state model checking: BFS over the engine
+    // state machine (shortest counterexample) + exhaustive pure decision tables.
+    // Deterministic, headless. See StateSpace.swift.
+    runStateSpace(args: Array(args))
 case "hotkeyprobe":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 20
     runHotkeyProbe(seconds: seconds)
@@ -368,6 +373,16 @@ default:
                                fast-adopt + reconcile) with interleaved timed
                                window events, pumping the run loop between steps.
                                Slower (real timing); keep budgets modest.
+      WindowLab statespace [--max-visited N] [--max-depth D] [--max-windows W]
+                               [--engine-only | --pure-only]
+                               BOUNDED EXHAUSTIVE state-space checking: a BFS
+                               over the engine state machine that visits every
+                               reachable logical state (deduped) up to a bound
+                               and reports the SHORTEST op sequence to any
+                               invariant violation, plus exhaustive decision-
+                               table proofs of ResyncPlanner / parking corner /
+                               DisplaySelector / SemVer ordering. Deterministic
+                               and headless.
       WindowLab opstest        integration test for width/move/close/focus-sync.
                                HEADLESS by default (in-memory windows). Pass
                                --live to exercise REAL spawned windows instead.

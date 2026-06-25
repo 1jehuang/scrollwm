@@ -129,22 +129,33 @@ private struct StripModel {
 
     // MARK: workspace switching (replicates activateWorkspace + prune)
 
-    private mutating func pruneTrailingEmpty() {
-        while workspaces.count > 1,
-              let last = workspaces.indices.last,
-              last != active,
-              workspaces[last].cols.isEmpty {
-            workspaces.removeLast()
+    /// Mirror `TeleportEngine.pruneEmptyWorkspaces`: drop EVERY empty workspace
+    /// except the active one (not just trailing ones), shifting `active` left by
+    /// the count of removed workspaces that preceded it. The engine generalized
+    /// this after the state-space explorer found a phantom empty workspace left
+    /// above/between content by the old trailing-only prune.
+    private mutating func pruneEmptyWorkspaces() {
+        guard workspaces.count > 1 else { return }
+        var kept: [WS] = []
+        var newActive = active
+        for (i, w) in workspaces.enumerated() {
+            if w.cols.isEmpty && i != active {
+                if i < active { newActive -= 1 }
+                continue
+            }
+            kept.append(w)
         }
+        workspaces = kept
+        active = max(0, min(newActive, workspaces.count - 1))
     }
 
-    /// Replicate `activateWorkspace(index)`: load the destination, drop a
-    /// now-vacated trailing-empty workspace, then focus (or, on an empty
-    /// destination, reset viewport/focus with NO OS-focus change).
+    /// Replicate `activateWorkspace(index)`: load the destination, collapse any
+    /// now-empty non-active workspace, then focus (or, on an empty destination,
+    /// reset viewport/focus with NO OS-focus change).
     private mutating func activate(_ index: Int) {
         guard workspaces.indices.contains(index), index != active else { return }
         active = index
-        pruneTrailingEmpty()
+        pruneEmptyWorkspaces()
         if !activeCols.isEmpty {
             focus(index: activeFocus)
         } else {

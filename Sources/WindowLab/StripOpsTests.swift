@@ -1020,6 +1020,46 @@ enum StripOpsTests {
         check("workspaces: overshoot move carried the focused column",
               ewMoveOver.slots.count == 1 && ewMoveOver.slots.first?.window.title == movedOverTitle)
 
+        // --- REGRESSION (state-space, shortest path 1 op): moving the LAST
+        // window out of a workspace must collapse the now-empty SOURCE, even
+        // when it is not the trailing workspace. The old prune only trimmed the
+        // tail, so `moveFocusedToWorkspace(by:1)` from a single-window strip left
+        // a phantom empty workspace ABOVE the active one ([empty, populated]).
+        let ewPhantom = makeEngine(count: 1)        // ws0 = [one window]
+        ewPhantom.focusIndex = 0
+        ewPhantom.moveFocusedToWorkspace(by: 1)     // move that lone window down
+        check("workspaces: emptied source workspace collapses (no phantom)",
+              ewPhantom.workspaceCount == 1)
+        check("workspaces: active index valid after source collapse",
+              ewPhantom.activeWorkspace == 0
+                && ewPhantom.activeWorkspace < ewPhantom.workspaceCount)
+        check("workspaces: the moved window survived the collapse",
+              ewPhantom.slots.count == 1)
+
+        // Same bug via a 3-workspace stack: empty a MIDDLE workspace and confirm
+        // it collapses (no empty workspace wedged between two populated ones).
+        // Build [a][b] then move b down to its own workspace, then move a down
+        // into b's, leaving the middle empty; it must not persist.
+        let ewMid2 = makeEngine(count: 2)           // ws0 = [a, b]
+        ewMid2.focusIndex = 1
+        ewMid2.moveFocusedToWorkspace(by: 1)        // ws0=[a], ws1=[b] (active ws1)
+        ewMid2.focusIndex = 0
+        ewMid2.moveFocusedToWorkspace(by: 1)        // move b down again: ws1 emptied
+        check("workspaces: no empty workspace wedged between populated ones",
+              (0..<ewMid2.workspaceCount).allSatisfy { i in
+                  i == ewMid2.activeWorkspace || !ewMid2.allManagedSlots.isEmpty
+              } && ewMid2.workspaceCount >= 1)
+        // Stronger structural check: at most ONE empty workspace and only if active.
+        do {
+            // Reconstruct per-workspace emptiness via allManagedSlots + active.
+            // After the moves every non-active workspace must be non-empty.
+            let snap = ewMid2.workspacesSnapshot
+            let badEmpty = snap.workspaces.enumerated().contains { (i, w) in
+                w.ids.isEmpty && i != snap.activeWorkspace
+            }
+            check("workspaces: no non-active empty workspace after middle-empty", !badEmpty)
+        }
+
         // allManagedSlots + isManaged span every workspace (used by restore +
         // lifecycle so parked windows are never lost or re-adopted).
         let ewSpan = makeEngine(count: 2)

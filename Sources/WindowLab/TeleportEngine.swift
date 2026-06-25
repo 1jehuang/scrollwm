@@ -358,10 +358,11 @@ final class TeleportEngine {
         viewportX = workspaces[index].viewportX
         focusIndex = workspaces[index].focusIndex
 
-        // 4. Tidy: a workspace we just left that ended up empty and trailing is
-        // removed so the stack never accumulates blank workspaces. This may
-        // shift `activeWorkspace` if a workspace before it is removed.
-        pruneTrailingEmptyWorkspaces()
+        // 4. Tidy: any workspace we just emptied (the source we moved the last
+        // window out of, wherever it sits) collapses so the stack never
+        // accumulates blank workspaces. May shift `activeWorkspace` left if a
+        // removed workspace preceded it.
+        pruneEmptyWorkspaces()
 
         // 5. Re-place + focus the destination on-screen.
         compactStrip()
@@ -395,18 +396,40 @@ final class TeleportEngine {
         }
     }
 
-    /// Remove empty workspaces from the END of the stack, keeping at least one
-    /// workspace and never removing the active one. Adjusts `activeWorkspace`
-    /// for any removed entries that sit before it (none can, since we only trim
-    /// the tail past the active index, but the guard keeps it correct if the
-    /// active workspace is itself the last and empty — then we stop).
-    private func pruneTrailingEmptyWorkspaces() {
-        while workspaces.count > 1,
-              let lastIdx = workspaces.indices.last,
-              lastIdx != activeWorkspace,
-              workspaceSlots(lastIdx).isEmpty {
-            workspaces.removeLast()
+    /// Remove EVERY empty workspace except the active one, keeping at least one
+    /// workspace total. niri-style dynamic workspaces never accumulate blank
+    /// ones: a workspace emptied by moving/closing its last window collapses
+    /// immediately, whether it sits at the tail, between two populated
+    /// workspaces, or above the active one. `activeWorkspace` is shifted down by
+    /// the number of removed workspaces that preceded it so it keeps pointing at
+    /// the same live strip.
+    ///
+    /// The active workspace is always kept even when empty: that is the niri
+    /// "scratch" workspace you switch DOWN into to start populating, and it is
+    /// the one whose live `slots` are authoritative — dropping it would strand
+    /// the active index. (It collapses later, once you switch away from it, when
+    /// THIS prune runs for the new active workspace.)
+    ///
+    /// Was previously `pruneTrailingEmptyWorkspaces`, which only trimmed the
+    /// tail; that left a phantom empty workspace above/between content after
+    /// `moveFocusedToWorkspace` emptied a non-tail source (found by the
+    /// state-space explorer: `moveWsDown` from a single-window strip, 1 op).
+    private func pruneEmptyWorkspaces() {
+        guard workspaces.count > 1 else { return }
+        var kept: [Workspace] = []
+        var newActive = activeWorkspace
+        for (i, _) in workspaces.enumerated() {
+            let isActive = (i == activeWorkspace)
+            let isEmpty = workspaceSlots(i).isEmpty
+            if isEmpty && !isActive {
+                // Dropping a workspace before the active one shifts it left.
+                if i < activeWorkspace { newActive -= 1 }
+                continue
+            }
+            kept.append(workspaces[i])
         }
+        workspaces = kept
+        activeWorkspace = max(0, min(newActive, workspaces.count - 1))
     }
 
     /// "Show All Windows": resize every column to an equal share of the viewport
@@ -756,6 +779,43 @@ final class TeleportEngine {
     }
 
     var commitAllCount: Int { slots.count }
+
+    /// Read-only structural snapshot across ALL vertical workspaces, used by the
+    /// state-space explorer to build a canonical, hashable signature of the
+    /// engine's logical state (independent of geometry). `stripState` only
+    /// exposes the ACTIVE workspace; this exposes the whole stack so the
+    /// explorer can dedup states and detect divergence per workspace. Window
+    /// identity is the stable `ManagedWindowRef.id` (never the array index).
+    /// Pure read; no side effects.
+    struct WorkspacesSnapshot: Hashable {
+        /// Per-workspace ordered window ids + that workspace's own focusIndex.
+        let workspaces: [(ids: [UInt64], focusIndex: Int)]
+        let activeWorkspace: Int
+
+        static func == (l: WorkspacesSnapshot, r: WorkspacesSnapshot) -> Bool {
+            l.activeWorkspace == r.activeWorkspace
+                && l.workspaces.count == r.workspaces.count
+                && zip(l.workspaces, r.workspaces).allSatisfy {
+                    $0.ids == $1.ids && $0.focusIndex == $1.focusIndex
+                }
+        }
+        func hash(into h: inout Hasher) {
+            h.combine(activeWorkspace)
+            for w in workspaces { h.combine(w.ids); h.combine(w.focusIndex) }
+        }
+    }
+
+    var workspacesSnapshot: WorkspacesSnapshot {
+        var out: [(ids: [UInt64], focusIndex: Int)] = []
+        for i in 0..<workspaceCount {
+            let s = workspaceSlots(i)
+            let fi = (i == activeWorkspace)
+                ? focusIndex
+                : workspaces[i].focusIndex
+            out.append((ids: s.map { $0.window.id }, focusIndex: fi))
+        }
+        return WorkspacesSnapshot(workspaces: out, activeWorkspace: activeWorkspace)
+    }
 
     func commitAll() {
         teleport()
