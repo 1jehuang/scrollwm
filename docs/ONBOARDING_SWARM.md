@@ -159,3 +159,34 @@ shellcheck regressions.
 - Add a headless `onboardingtest` suite that drives the real launch decision
   logic end-to-end against the pure policies the lanes extract.
 - Merge all branches, run `make test`, resolve conflicts, final polish pass.
+
+---
+
+## Status: COMPLETE (delivered on branch `onboarding-integration`)
+
+All five lanes finished, merged, and verified by the coordinator.
+
+| Lane | Branch | New pure module | Tests added |
+|------|--------|-----------------|-------------|
+| A — launch location & relocation | `feature/onboard-a-location` | hardened `AppLocation` (iCloud Drive, firmlink, case-insensitive, total classify) | `AppLocationTests` (75) |
+| B — permission engine | `feature/onboard-b-permission` | `PermissionPolicy` (pure launch/grace/prompt decisions) | `PermissionPolicyTests` (35) |
+| C — onboarding window UI/a11y | `feature/onboard-c-window` | `OnboardingCopy` (state→presentation + VoiceOver labels) | `OnboardingCopyTests` (44) |
+| D — first-run tutorial | `feature/onboard-d-tutorial` | total `pretty()` chord rendering, data-driven key table | `TutorialTests` (123) |
+| E — install & distribution | `feature/onboard-e-install` | robust `web-install.sh`, accurate cask/README | (script lint) |
+
+Coordinator integration commits:
+- Wired the four lane suites into `WindowLab unittest` (715 assertions, all green).
+- Rewired the live launch flow in `ScrollWMApp.swift` to delegate to the PURE
+  `PermissionPolicy.launchAction` (the tested logic is now the logic that runs),
+  fixing a latent invisible dead-end on genuine post-grant revocation.
+
+Verification: `make test` green end-to-end (unit + animation + 5 headless
+integration suites + 5 fuzzers, 0 violations). Zero new compiler warnings in
+lane-owned files.
+
+### Landing
+`onboarding-integration` is a clean superset of the current `feature/multi-display`
+tip. To land once the main worktree is free:
+```bash
+git checkout feature/multi-display && git merge --ff-only onboarding-integration
+```
