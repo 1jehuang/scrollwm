@@ -379,7 +379,9 @@ struct ScrollWMConfig: Equatable {
       //
       // ,
       // "spawn": {
-      //   "ctrl+opt+j": "open -na Ghostty --args --working-directory=$HOME/scrollwm -e $HOME/.local/bin/jcode",
+      //   // Use Ghostty's --command= (NOT -e): the -e flag triggers Ghostty's
+      //   // unskippable "Allow Ghostty to execute ..." security prompt every time.
+      //   "ctrl+opt+j": "open -na Ghostty --args --working-directory=$HOME/scrollwm --command=$HOME/.local/bin/jcode",
       //   "ctrl+opt+return": "open -na Ghostty"
       // }
     }
