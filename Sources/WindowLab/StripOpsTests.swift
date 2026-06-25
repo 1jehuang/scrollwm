@@ -994,6 +994,19 @@ enum StripOpsTests {
         reb2.rebindStripDisplay(to: before)
         check("rebind: same-frame rebind is stable", reb2.screenFrame == before)
 
+        // DORMANT rebind ([md-hotplug]): a strip with NO adopted windows (the
+        // dormant state) must still update `screenFrame` when its display's
+        // geometry changes, so the NEXT arrange lands on the display's CURRENT
+        // frame instead of a stale (unplugged/resized) one. This is the engine
+        // guarantee `refreshDisplayGeometry` relies on now that it rebinds even
+        // while dormant. The relay issues zero AX writes (no windows).
+        let dormant = TeleportEngine(screenFrame: CGRect(x: -225, y: -1440, width: 2560, height: 1440))
+        let migratedFrame = CGRect(x: 0, y: 0, width: 1470, height: 923)
+        let writes = dormant.rebindStripDisplay(to: migratedFrame)
+        check("rebind: dormant (empty) strip still adopts the new screenFrame",
+              dormant.screenFrame == migratedFrame)
+        check("rebind: dormant rebind issues no AX writes (no windows)", writes == 0)
+
         // --- StripDisplayResolver: hotplug strip-migration policy ------------
         // Pure decision for "which display does the strip bind to after a
         // monitor plug/unplug?". AX top-left plane; mirrors the user's real rig:
@@ -1172,6 +1185,42 @@ enum StripOpsTests {
                 displayIDs: [idBuiltin, idExternal])
             check("resolver: nil strip id falls back to geometry",
                   d.frame == rBuiltin && d.displayIndex == 0 && !d.migrated)
+        }
+
+        // (b) RE-PLUG: the strip lives on the built-in (id 1); the OTHER display
+        // (the external) is unplugged and then re-plugged. After re-plug both
+        // displays are present again; identity keeps the strip on id 1 (no
+        // surprise jump onto the freshly-returned monitor).
+        do {
+            // External gone: only the built-in survives, strip stays on id 1.
+            let gone = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin],
+                stripDisplayID: idBuiltin, displayIDs: [idBuiltin])
+            check("resolver: re-plug step 1, other display gone leaves strip on id",
+                  gone.frame == rBuiltin && gone.displayIndex == 0 && !gone.migrated)
+            // External back: both present, strip still on id 1, no migration.
+            let back = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin, rExternal],
+                stripDisplayID: idBuiltin, displayIDs: [idBuiltin, idExternal])
+            check("resolver: re-plug step 2, returned display does not yank strip",
+                  back.frame == rBuiltin && back.displayIndex == 0 && !back.migrated)
+        }
+
+        // (f) ALL DISPLAYS ASLEEP then WAKE: the strip is on the external (id 2).
+        // During sleep macOS reports NO screens, so the resolver keeps the last
+        // frame and signals "no choice" (caller leaves the strip put). On wake
+        // both displays return; identity rebinds to id 2's frame, not migrated.
+        do {
+            let asleep = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [],
+                stripDisplayID: idExternal, displayIDs: [])
+            check("resolver: all displays asleep -> keep last frame, no choice",
+                  asleep.frame == rExternal && asleep.displayIndex == nil && !asleep.migrated)
+            let awake = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [rBuiltin, rExternal],
+                stripDisplayID: idExternal, displayIDs: [idBuiltin, idExternal])
+            check("resolver: wake rebinds the strip to its own display by id",
+                  awake.frame == rExternal && awake.displayIndex == 1 && !awake.migrated)
         }
 
         // --- Display-safe RESTORE: monitor unplugged before Release ----------

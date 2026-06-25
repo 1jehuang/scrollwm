@@ -141,11 +141,18 @@ final class ScrollWMController: NSObject {
         // Re-bind the strip's own usable area to the live visible frame so a
         // resolution/scale change (or the strip moving displays) relays the
         // whole strip onto the new geometry instead of leaving stale coords.
+        // The rebind runs even while DORMANT: on an empty strip it is a pure
+        // no-op except updating `screenFrame`, which is exactly what we need so
+        // the NEXT arrange lands on the display's CURRENT geometry rather than a
+        // stale (possibly unplugged/resized) frame. Persistence + menu refresh
+        // only matter while actively managing.
         let visible = axVisible(stripDisplay)
-        if relayout && isManaging {
+        if relayout {
             engine.rebindStripDisplay(to: visible)
-            RestoreStore.save(engine: engine)
-            menuBar.refresh()
+            if isManaging {
+                RestoreStore.save(engine: engine)
+                menuBar.refresh()
+            }
         }
     }
 
@@ -235,6 +242,14 @@ final class ScrollWMController: NSObject {
     /// on, by maximum overlap with the engine's live AX frame. nil if it cannot
     /// be identified. Drives the `"next"` cycle so it advances from where we are.
     private func currentStripDisplayIndex() -> Int? {
+        // Prefer stable identity: if we know the strip's display id and it is
+        // still attached, that index is authoritative even after an arrangement
+        // swap moved the strip's frame onto another screen's old origin.
+        if let id = stripDisplayID,
+           let idx = NSScreen.screens.firstIndex(where: { $0.displayID == id }) {
+            return idx
+        }
+        // Fallback (no id, or the id is gone): best geometry overlap.
         let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
                              ?? NSScreen.main)?.frame.height ?? engine.screenFrame.height
         let target = engine.screenFrame
