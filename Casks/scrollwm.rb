@@ -1,6 +1,6 @@
 cask "scrollwm" do
-  version "0.1.1"
-  sha256 "ccdc60de6c82bbd67567d3214c183c81141eede1bc72be34c2eb713beb167b1f"
+  version "0.1.2"
+  sha256 "215943c534ba22042b078f88d18343c920615955a96148d94cb316f1e034ce41"
 
   url "https://github.com/1jehuang/scrollwm/releases/download/v#{version}/ScrollWM-#{version}.zip"
   name "ScrollWM"
@@ -11,12 +11,12 @@ cask "scrollwm" do
 
   app "ScrollWM.app"
 
-  # Expose the  CLI on PATH. The bundle wrapper routes any subcommand
-  # to the binary, so this is the same entry point the app uses.
+  # Expose the `scrollwm` CLI on PATH. The bundle's main executable dispatches
+  # any subcommand, so this is the same entry point the app uses.
   binary "#{appdir}/ScrollWM.app/Contents/MacOS/ScrollWM", target: "scrollwm"
 
-  # The app is ad-hoc signed (not notarized); strip quarantine so it opens
-  # without the Gatekeeper block. Homebrew also does this for casks by default.
+  # The app is ad-hoc/self-signed (not notarized); strip quarantine so it
+  # opens without the Gatekeeper block. Homebrew also does this for casks.
   postflight do
     system_command "/usr/bin/xattr",
                    args: ["-dr", "com.apple.quarantine", "#{appdir}/ScrollWM.app"],
