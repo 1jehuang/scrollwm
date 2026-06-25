@@ -105,23 +105,30 @@ func runHeadlessOpsTest() {
         t.check("spawn-width: adopted the wide window", false)
     }
 
-    // A window whose hard minimum exceeds the spawn target keeps its minimum.
+    // A window whose hard minimum exceeds the spawn target keeps its minimum,
+    // and the spawn path then rounds it UP to the smallest preset that fits so
+    // a clamp-resistant window still tiles on the column grid.
     let spawnClampEngine = TeleportEngine(screenFrame: Headless.defaultVisibleFrame)
     spawnClampEngine.spawnWidthFraction = 0.25
+    spawnClampEngine.widthPresets = [0.25, 0.5, 0.75, 1.0]
     let scTarget = spawnClampEngine.width(forFraction: 0.25)
     let scMin = 880.0
+    let expectedSnap = spawnClampEngine.nextPresetWidth(atLeast: scMin) ?? scMin
     let scPID: pid_t = 5300
     _ = world.addWindow(pid: scPID, title: "SpawnClamp",
                         frame: CGRect(x: 40, y: 80, width: 1000, height: 500),
                         minSize: CGSize(width: scMin, height: 200))
     if let scInfo = AXSource.windows(forPID: scPID).first {
         t.check("spawn-width clamp: target is below the window minimum", scTarget < scMin)
+        t.check("spawn-width clamp: a larger preset exists to snap up to", expectedSnap > scMin - 1)
         spawnClampEngine.insert(window: scInfo, at: 0)
         spawnClampEngine.applySpawnWidth(toSlotAt: 0)
         let liveSC = AXSource.windows(forPID: scPID).first?.frame.size.width ?? 0
-        t.check("spawn-width clamp: app kept its minimum (did not shrink to target)", liveSC >= scMin - 1)
-        t.check("spawn-width clamp: model stores the real clamped width, not the target",
-                abs(spawnClampEngine.slots[0].width - liveSC) <= 1 && spawnClampEngine.slots[0].width > scTarget + 1)
+        t.check("spawn-width clamp: app kept at least its minimum (did not shrink to target)", liveSC >= scMin - 1)
+        t.check("spawn-width snap-up: real window rounded UP to the preset grid (\(Int(expectedSnap)))",
+                abs(liveSC - expectedSnap) <= 1)
+        t.check("spawn-width snap-up: model matches the real (snapped) width",
+                abs(spawnClampEngine.slots[0].width - liveSC) <= 1)
     } else {
         t.check("spawn-width clamp: adopted the min-width window", false)
     }

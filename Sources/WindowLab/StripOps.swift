@@ -150,6 +150,13 @@ extension TeleportEngine {
     /// reconcile the width keys use, so the strip model always matches reality
     /// even when the app wins. No-op when no spawn width is configured, the
     /// window is unhealthy, or it is already within a point of the target.
+    ///
+    /// Grid snap-up (spawn ONLY): if the app refuses to shrink to the target and
+    /// clamps WIDER, we round the column UP to the smallest preset width that
+    /// fits the clamped window, so it still tiles on the same grid as its
+    /// neighbors instead of sitting at an arbitrary in-between width. This is
+    /// deliberately NOT done for the manual width keys (`setFocusedWidth`), which
+    /// stay best-effort-exact: the user asked for a specific size there.
     func applySpawnWidth(toSlotAt idx: Int) {
         guard let fraction = spawnWidthFraction else { return }
         guard slots.indices.contains(idx) else { return }
@@ -161,20 +168,54 @@ extension TeleportEngine {
         // width): skip the cross-process round-trip entirely.
         if abs(slot.width - target) <= 1 { return }
 
-        // Optimistically reflect the request, then pull back to the real frame.
+        // Attempt 1: request the configured spawn width. Optimistically reflect
+        // it, then pull the model back to the real frame.
         slots[idx].width = target
         _ = AXSource.setSize(
             slot.window.element,
             kAXSizeAttribute as String,
             CGSize(width: target, height: slot.height)
         )
-        if let actual = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
-            slots[idx].width = actual.width
-            slots[idx].height = actual.height
+        let live = AXSource.copySize(slot.window.element, kAXSizeAttribute as String)
+        if let live {
+            slots[idx].width = live.width
+            slots[idx].height = live.height
+        }
+
+        // Attempt 2 (snap-up): the app clamped WIDER than we asked, so it has a
+        // minimum bigger than the target. Round up to the smallest preset that
+        // accommodates the clamped width so the column lands on the grid. We only
+        // re-issue when a strictly larger preset exists (else the window already
+        // overflows even the 100% preset - leave it; `viewportTarget` handles
+        // an over-wide column).
+        let snapTolerance: CGFloat = 2
+        if let clamped = live?.width, clamped > target + snapTolerance,
+           let snap = nextPresetWidth(atLeast: clamped), snap > clamped + snapTolerance {
+            slots[idx].width = snap
+            _ = AXSource.setSize(
+                slot.window.element,
+                kAXSizeAttribute as String,
+                CGSize(width: snap, height: slot.height)
+            )
+            if let after = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
+                slots[idx].width = after.width
+                slots[idx].height = after.height
+            }
         }
         // Slow/animated apps settle after the immediate read-back; the async
         // reconcile refreshes the model + re-packs once the real size lands.
         scheduleWidthReconcile(for: slot.window)
+    }
+
+    /// Smallest preset COLUMN width (from `widthPresets`) that is at least
+    /// `minimum` points wide, or nil when even the widest preset is narrower
+    /// than `minimum` (the window is wider than the 100% column). Used by the
+    /// spawn path to round a clamp-resistant window up onto the width grid.
+    func nextPresetWidth(atLeast minimum: CGFloat) -> CGFloat? {
+        widthPresets
+            .map { width(forFraction: $0) }
+            .sorted()
+            .first { $0 >= minimum - 0.5 }
     }
 
     /// Move the focused column one position toward `delta` (negative = left,

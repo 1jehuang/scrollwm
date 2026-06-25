@@ -161,11 +161,16 @@ func runStripOpsIntegrationTest() {
         wideProc.terminate()
 
         // A window whose hard minimum exceeds the spawn target must NOT shrink
-        // below its minimum, and the model must store that real (clamped) width.
+        // below its minimum. With grid snap-up, the spawn path then rounds it UP
+        // to the smallest preset that fits, so a clamp-resistant window still
+        // lands on the column grid instead of an arbitrary in-between width.
         let spawnClampEngine = TeleportEngine(screenFrame: axFrame)
         spawnClampEngine.spawnWidthFraction = 0.25
+        spawnClampEngine.widthPresets = [0.25, 0.5, 0.75, 1.0]
         let scTarget = spawnClampEngine.width(forFraction: 0.25)
         let scMin = 880.0
+        // Expected grid width: smallest preset >= the app's minimum.
+        let expectedSnap = spawnClampEngine.nextPresetWidth(atLeast: scMin) ?? scMin
         let scProc = spawnTestWindowWithMin(width: 1000, height: 500, minWidth: scMin, title: "SpawnClamp")
         Thread.sleep(forTimeInterval: 1.5)
         let scPid = scProc.processIdentifier
@@ -178,17 +183,20 @@ func runStripOpsIntegrationTest() {
             cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
         ).first(where: { $0.ax.pid == scPid })?.ax {
             check("spawn-width clamp: target is below the window minimum", scTarget < scMin)
+            check("spawn-width clamp: a larger preset exists to snap up to", expectedSnap > scMin - 1)
             DispatchQueue.main.sync {
                 spawnClampEngine.insert(window: scInfo, at: 0)
                 spawnClampEngine.applySpawnWidth(toSlotAt: 0)
+                spawnClampEngine.compactStrip()
             }
             Thread.sleep(forTimeInterval: 0.3)
             let liveSC = scWindows().first?.frame.size.width ?? 0
-            check("spawn-width clamp: app kept its minimum (did not shrink to target)",
+            check("spawn-width clamp: app kept at least its minimum (did not shrink to target)",
                   liveSC >= scMin - 8)
-            check("spawn-width clamp: model stores the real clamped width, not the target",
-                  abs(spawnClampEngine.slots[0].width - liveSC) <= 8
-                      && spawnClampEngine.slots[0].width > scTarget + 8)
+            check("spawn-width snap-up: real window rounded UP to the preset grid (\(Int(expectedSnap)))",
+                  abs(liveSC - expectedSnap) <= 8)
+            check("spawn-width snap-up: model matches the real (snapped) width",
+                  abs(spawnClampEngine.slots[0].width - liveSC) <= 8)
             DispatchQueue.main.sync { _ = spawnClampEngine.releaseAll() }
         } else {
             check("spawn-width clamp: adopted the min-width window", false)

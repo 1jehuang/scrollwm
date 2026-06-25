@@ -390,6 +390,31 @@ enum StripOpsTests {
         eNoSpawn.applySpawnWidth(toSlotAt: 99)
         check("spawn width on a bad index is a no-op", eNoSpawn.slots.count == 1)
 
+        // --- SPAWN GRID SNAP-UP: nextPresetWidth rounds a clamp-resistant
+        // window UP to the smallest preset that fits, so a window the app refuses
+        // to shrink still tiles on the grid (spawn path only). ---
+        let eSnap = TeleportEngine(screenFrame: CGRect(x: 0, y: 0, width: 1600, height: 1000))
+        eSnap.widthPresets = [0.25, 0.5, 0.75, 1.0]
+        let w25 = eSnap.width(forFraction: 0.25)
+        let w50 = eSnap.width(forFraction: 0.50)
+        let w75 = eSnap.width(forFraction: 0.75)
+        let w100 = eSnap.width(forFraction: 1.0)
+        // A window clamped just above the 25% column rounds up to the 50% preset.
+        check("snap-up: width just over 25% rounds up to 50%",
+              eSnap.nextPresetWidth(atLeast: w25 + 10) == w50)
+        // A width exactly at a preset stays at that preset (>= comparison).
+        check("snap-up: width exactly at 50% stays 50%",
+              eSnap.nextPresetWidth(atLeast: w50) == w50)
+        // Just over 50% rounds up to 75%.
+        check("snap-up: width just over 50% rounds up to 75%",
+              eSnap.nextPresetWidth(atLeast: w50 + 10) == w75)
+        // A width below the smallest preset rounds up to that smallest preset.
+        check("snap-up: tiny width rounds up to the smallest preset",
+              eSnap.nextPresetWidth(atLeast: 10) == w25)
+        // Wider than the 100% column: no preset fits, returns nil (leave as-is).
+        check("snap-up: wider than 100% column returns nil",
+              eSnap.nextPresetWidth(atLeast: w100 + 50) == nil)
+
         // --- Config: chord parsing ---
         if let c = Chord(string: "cmd+shift+h") {
             check("chord cmd+shift+h keyCode is H (4)", c.keyCode == 4)
