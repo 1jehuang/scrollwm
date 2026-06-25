@@ -104,9 +104,21 @@ cd scrollwm
 ScrollWM updates **itself, automatically**. Installed app bundles check GitHub
 Releases in the background (every 24h by default, plus shortly after launch) and,
 when a newer version is published, download it, verify its SHA-256, restore your
-windows, replace the app in place, and relaunch into the new version. Your
-windows are restored on quit first, so nothing is lost. Check on demand anytime
-from the menu bar (**Check for Updates…**) or the CLI:
+windows, replace the app **atomically** in place, and relaunch into the new
+version. It is careful by design:
+
+- It never disrupts an active session: if you're managing windows, the verified
+  update is staged and applied the next time you quit, so your arranged strip is
+  never yanked away mid-session.
+- It never silently breaks itself: before swapping, it checks whether macOS will
+  keep ScrollWM's Accessibility grant (that depends on the build's code
+  signature). If the grant would reset, it asks first and guides the one-time
+  re-enable instead of leaving a window manager that can't move windows.
+- It won't fight Homebrew (`brew upgrade --cask scrollwm` instead) or loop on a
+  failed install (a broken release is retried a bounded number of times, then it
+  falls back to a prompt).
+
+Check on demand anytime from the menu bar (**Check for Updates…**) or the CLI:
 
 ```bash
 scrollwm update              # report whether a newer release exists

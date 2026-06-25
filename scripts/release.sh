@@ -16,6 +16,14 @@
 # self-update installed apps. Keep both assets in the publish step below, or
 # installed users stop receiving updates.
 #
+# IMPORTANT for seamless auto-update: sign releases with a STABLE identity
+# (Developer ID, or at minimum a reused self-signed cert). macOS ties the
+# Accessibility grant to the app's code signature, so an ad-hoc release (new
+# cdhash every build) makes the updater unable to install silently: it detects
+# that the grant would reset and asks the user to re-enable Accessibility once
+# instead (it never silently breaks the window manager). A Developer ID build
+# updates with zero user interaction. See docs/SIGNING.md.
+#
 # Usage:
 #   ./scripts/release.sh [version] [--publish]
 #     version    defaults to the VERSION file

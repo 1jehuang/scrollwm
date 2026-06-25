@@ -243,10 +243,21 @@ final class Updater {
 
     // MARK: - Network: download + verify + install
 
-    /// Download the release zip, verify its SHA-256 (when a sums file exists),
-    /// extract it, and hand back the path to the unpacked `ScrollWM.app`.
-    /// All on a background queue; `completion` fires on the main thread.
+    /// Download the release zip, verify its SHA-256, and extract it, returning
+    /// the path to the unpacked `ScrollWM.app`.
+    ///
+    /// - `requireChecksum`: when true (the automatic path), a missing or
+    ///   unmatched SHA256SUMS entry is a HARD failure rather than a skip, so a
+    ///   silent install never trusts an unverifiable asset.
+    /// - `stageNear`: if provided, the bundle is extracted into a temporary
+    ///   directory on the SAME volume as this URL (the installed app), so the
+    ///   later `replaceItemAt` swap is an atomic metadata operation rather than
+    ///   a cross-volume copy. Falls back to the system temp dir otherwise.
+    ///
+    /// All work is on a background queue; `completion` fires on the main thread.
     func downloadAndStage(_ release: ReleaseInfo,
+                          requireChecksum: Bool = false,
+                          stageNear: URL? = nil,
                           progress: ((Double) -> Void)? = nil,
                           completion: @escaping (Result<URL, UpdateError>) -> Void) {
         let finish = { (r: Result<URL, UpdateError>) in
@@ -257,12 +268,11 @@ final class Updater {
         }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("ScrollWM-update-\(release.tagName)-\(UUID().uuidString.prefix(8))")
+            let tmp: URL
             do {
-                try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+                tmp = try Self.makeStagingDir(near: stageNear)
             } catch {
-                return finish(.failure(.downloadFailed(error.localizedDescription)))
+                return finish(.failure(.downloadFailed("could not create staging dir: \(error.localizedDescription)")))
             }
             let zipDest = tmp.appendingPathComponent(release.zipName)
 
@@ -273,15 +283,21 @@ final class Updater {
             do { try zipData.write(to: zipDest) }
             catch { return finish(.failure(.downloadFailed(error.localizedDescription))) }
 
-            // 2. Verify SHA-256 against SHA256SUMS.txt when present.
-            if let sumsURLStr = release.sha256SumsURL, let sumsURL = URL(string: sumsURLStr),
-               let sumsData = self.syncDownload(sumsURL),
-               let sumsText = String(data: sumsData, encoding: .utf8),
-               let expected = Self.expectedSHA256(fromSums: sumsText, fileName: release.zipName) {
+            // 2. Verify SHA-256 against SHA256SUMS.txt. Present + matching is
+            //    required for the automatic path; otherwise verify-if-available.
+            let sumsText: String? = {
+                guard let s = release.sha256SumsURL, let u = URL(string: s),
+                      let d = self.syncDownload(u) else { return nil }
+                return String(data: d, encoding: .utf8)
+            }()
+            let expected = sumsText.flatMap { Self.expectedSHA256(fromSums: $0, fileName: release.zipName) }
+            if let expected = expected {
                 let got = SHA256.hash(data: zipData).map { String(format: "%02x", $0) }.joined()
                 if got.lowercased() != expected.lowercased() {
                     return finish(.failure(.checksumMismatch(expected: expected, got: got)))
                 }
+            } else if requireChecksum {
+                return finish(.failure(.downloadFailed("no SHA256SUMS entry for \(release.zipName); refusing to auto-install an unverified asset")))
             }
 
             // 3. Extract with ditto (handles macOS-style zips + xattrs).
@@ -298,29 +314,79 @@ final class Updater {
         DispatchQueue.global(qos: .userInitiated).async(execute: work)
     }
 
-    /// Swap the running bundle for `stagedApp` and relaunch. This DOES NOT
-    /// restore windows itself — call `controller.quit()` (or otherwise exit
-    /// cleanly) right after, so the detached swapper can take over once we're
-    /// gone. Returns immediately after spawning the swapper.
+    /// Create a staging directory on the same volume as `near` when possible
+    /// (via `.itemReplacementDirectory`), so the eventual swap is atomic. Falls
+    /// back to the system temp dir.
+    private static func makeStagingDir(near: URL?) throws -> URL {
+        let fm = FileManager.default
+        if let near = near {
+            if let dir = try? fm.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                     appropriateFor: near, create: true) {
+                return dir
+            }
+        }
+        let dir = fm.temporaryDirectory
+            .appendingPathComponent("ScrollWM-update-\(UUID().uuidString.prefix(8))")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Validate a staged bundle before it is allowed to replace the live app.
+    /// Returns nil when OK, or a human-readable reason it must be rejected.
+    /// Checks: intact signature, matching bundle id, a slice for the running
+    /// CPU, and a version strictly newer than what's running.
+    func validateStaged(_ stagedApp: URL, expectedMinVersion: SemVer) -> String? {
+        let check = CodeSigning.inspect(stagedBundle: stagedApp)
+        if !check.signatureValid {
+            return "staged build has a broken or unreadable code signature"
+        }
+        let runningID = Bundle.main.bundleIdentifier ?? "dev.scrollwm.app"
+        if let id = check.bundleIdentifier, id != runningID {
+            return "staged build bundle id \(id) != \(runningID)"
+        }
+        if !check.hasMatchingArchitecture {
+            return "staged build has no slice for this Mac's architecture"
+        }
+        if let vs = CodeSigning.shortVersion(ofBundleAt: stagedApp), let v = SemVer(vs) {
+            if !(v >= expectedMinVersion) {
+                return "staged build v\(v) is not newer than expected v\(expectedMinVersion)"
+            }
+        }
+        return nil
+    }
+
+    /// Swap the running bundle for `stagedApp` and relaunch, by re-exec'ing a
+    /// throwaway copy of our OWN binary with the hidden `__update-swap`
+    /// subcommand (see `InstallSwap`). This DOES NOT restore windows itself:
+    /// call `controller.quit()` right after so windows are restored and the app
+    /// exits, then the detached swapper performs an ATOMIC replace + relaunch.
     ///
     /// Only valid for an installed `.app` bundle; throws for the dev binary.
     func installAndRelaunch(stagedApp: URL) throws {
         let bundleURL = Bundle.main.bundleURL
         guard bundleURL.pathExtension == "app" else { throw UpdateError.notInstalledBundle }
-
-        let pid = ProcessInfo.processInfo.processIdentifier
-        let script = Self.swapScript
-        let scriptURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("scrollwm-swap-\(UUID().uuidString.prefix(8)).sh")
-        do {
-            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-        } catch {
-            throw UpdateError.installFailed("could not write swapper: \(error.localizedDescription)")
+        guard let exe = Bundle.main.executableURL else {
+            throw UpdateError.installFailed("cannot locate running executable")
         }
 
+        // Copy our Mach-O to a temp path so the swapper isn't executing from the
+        // bundle it is about to replace. The binary links only system
+        // frameworks, so a standalone copy runs fine (ad-hoc or Developer ID).
+        let helperDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scrollwm-swapper-\(UUID().uuidString.prefix(8))")
+        let helper = helperDir.appendingPathComponent("scrollwm-swapper")
+        do {
+            try FileManager.default.createDirectory(at: helperDir, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: exe, to: helper)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        } catch {
+            throw UpdateError.installFailed("could not stage swapper: \(error.localizedDescription)")
+        }
+
+        let pid = ProcessInfo.processInfo.processIdentifier
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = [scriptURL.path, stagedApp.path, bundleURL.path, String(pid)]
+        proc.executableURL = helper
+        proc.arguments = ["__update-swap", stagedApp.path, bundleURL.path, String(pid)]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         proc.standardInput = FileHandle.nullDevice
@@ -328,34 +394,6 @@ final class Updater {
         catch { throw UpdateError.installFailed("could not launch swapper: \(error.localizedDescription)") }
         // Detach: the child outlives us. We do not wait.
     }
-
-    /// The detached bundle-swapper. Waits for the old PID to exit (so the app
-    /// has restored its managed windows on quit), then atomically replaces the
-    /// bundle and relaunches. Keeps a `.bak` until the new copy is in place.
-    private static let swapScript = """
-    #!/bin/bash
-    # args: <staged-app> <dest-bundle> <old-pid>
-    SRC="$1"; DST="$2"; PID="$3"
-    # Wait up to ~25s for the old ScrollWM to exit (it restores windows on quit).
-    for _ in $(seq 1 250); do
-        kill -0 "$PID" 2>/dev/null || break
-        sleep 0.1
-    done
-    sleep 0.3
-    BAK="$DST.bak.$$"
-    rm -rf "$BAK"
-    /bin/mv "$DST" "$BAK" 2>/dev/null || true
-    if /usr/bin/ditto "$SRC" "$DST"; then
-        /usr/bin/xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
-        rm -rf "$BAK"
-    else
-        # Roll back to the old bundle if the copy failed.
-        rm -rf "$DST"
-        /bin/mv "$BAK" "$DST" 2>/dev/null || true
-    fi
-    rm -rf "$SRC"
-    /usr/bin/open "$DST"
-    """
 
     // MARK: - Small blocking helpers (run on a background queue)
 

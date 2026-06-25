@@ -93,8 +93,18 @@ Add a test for any behavior you change; prefer extracting pure functions (e.g.
 - `ControlCommands.swift`    maps `scrollwm <verb>` requests to controller actions
 - `ControlCLI.swift`         `scrollwm` CLI: connect to the running app, print reply
 - `Updater.swift`            in-app updater: GitHub Releases check (pure parse/
-                             evaluate) + download/verify(SHA-256)/swap/relaunch
-- `UpdateCoordinator.swift`  schedules background checks, prompts/installs, state
+                             evaluate) + download/verify(SHA-256)/stage/validate
+- `UpdateCoordinator.swift`  schedules checks; enforces safety policy (no
+                             relaunch loop, apply-on-quit while managing, brew/
+                             writable pre-flight, TCC-aware silent refusal);
+                             prompts/installs; post-relaunch reconcile + re-grant
+- `UpdatePolicy.swift`       PURE update policy: attempt guard, apply timing,
+                             install-target classification (unit-tested)
+- `CodeSigning.swift`        SecCode introspection: will an update PRESERVE the
+                             Accessibility grant? (designated-requirement match)
+                             + staged-bundle signature/arch/id checks
+- `InstallSwap.swift`        atomic bundle swap via the detached `__update-swap`
+                             re-exec (FileManager.replaceItem, rollback, logging)
 - `SemVer.swift`             PURE semantic-version parse + ordering (unit-tested)
 - `Sandbox.swift`            sandbox mode (safe live testing)
 - `SimWindowWorld.swift`     in-memory `WindowBackend`: headless stand-in for AX/

@@ -137,6 +137,17 @@ let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-psn_") }
 let launchedAsAppBundle = Bundle.main.bundleURL.pathExtension == "app"
 let command = args.first ?? (launchedAsAppBundle ? "run" : "probe")
 
+// Internal: the detached bundle-swapper for in-app updates. Runs from a
+// throwaway COPY of our binary (so it isn't executing inside the bundle it is
+// replacing), waits for the old app to exit, atomically swaps + relaunches.
+// Handled before anything else so it never touches AppKit / the control plane.
+if command == "__update-swap" {
+    exit(InstallSwap.runSwapper(Array(args.dropFirst())))
+}
+if command == "__update-selftest" {
+    exit(runUpdateSelfTest(Array(args.dropFirst())))
+}
+
 // CLI control verbs: talk to a RUNNING ScrollWM app over its control socket.
 // These are the user-facing `scrollwm <verb>` commands (see runControlCLI).
 let controlVerbs: Set<String> = [

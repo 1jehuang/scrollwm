@@ -1966,6 +1966,59 @@ enum StripOpsTests {
               Updater.evaluate(releases: [], current: SemVer("0.1.1")!, allowPrerelease: false)
                 == .upToDate(current: SemVer("0.1.1")!))
 
+        // --- UpdatePolicy: attempt guard (no relaunch loop) -----------------
+        check("policy: first auto-install attempt is allowed",
+              UpdatePolicy.shouldAutoInstall(available: "0.2.0", lastAttempt: nil, skipped: nil))
+        let attempt1 = UpdatePolicy.recordingAttempt(nil, version: "0.2.0")
+        check("policy: recording first attempt -> count 1",
+              attempt1 == UpdatePolicy.AttemptRecord(version: "0.2.0", count: 1))
+        check("policy: still allowed after 1 attempt",
+              UpdatePolicy.shouldAutoInstall(available: "0.2.0", lastAttempt: attempt1, skipped: nil))
+        let attempt2 = UpdatePolicy.recordingAttempt(attempt1, version: "0.2.0")
+        check("policy: recording second attempt -> count 2",
+              attempt2.count == 2)
+        check("policy: BLOCKED after maxAutoAttempts for same version",
+              !UpdatePolicy.shouldAutoInstall(available: "0.2.0", lastAttempt: attempt2, skipped: nil))
+        check("policy: a NEW version resets the attempt budget",
+              UpdatePolicy.shouldAutoInstall(available: "0.3.0", lastAttempt: attempt2, skipped: nil))
+        check("policy: recording a new version resets count to 1",
+              UpdatePolicy.recordingAttempt(attempt2, version: "0.3.0").count == 1)
+        check("policy: a skipped version is never auto-installed",
+              !UpdatePolicy.shouldAutoInstall(available: "0.2.0", lastAttempt: nil, skipped: "0.2.0"))
+
+        // --- UpdatePolicy: apply timing (don't disrupt an active session) ---
+        check("policy: dormant + automatic -> apply now",
+              UpdatePolicy.applyTiming(isManaging: false, automatic: true) == .now)
+        check("policy: managing + automatic -> defer to quit",
+              UpdatePolicy.applyTiming(isManaging: true, automatic: true) == .onQuit)
+        check("policy: managing + manual click -> apply now (explicit request)",
+              UpdatePolicy.applyTiming(isManaging: true, automatic: false) == .now)
+        check("policy: dormant + manual click -> apply now",
+              UpdatePolicy.applyTiming(isManaging: false, automatic: false) == .now)
+
+        // --- UpdatePolicy: post-relaunch success detection ------------------
+        check("policy: install succeeded when running version advanced",
+              UpdatePolicy.installSucceeded(attempted: "0.2.0", runningNow: "0.2.0"))
+        check("policy: install succeeded when running is even newer",
+              UpdatePolicy.installSucceeded(attempted: "0.2.0", runningNow: "0.2.1"))
+        check("policy: install FAILED when still on old version",
+              !UpdatePolicy.installSucceeded(attempted: "0.2.0", runningNow: "0.1.1"))
+
+        // --- UpdatePolicy: install-target classification --------------------
+        check("policy: dev binary is never self-replaced",
+              UpdatePolicy.classifyTarget(isAppBundle: false, bundlePath: "/x/WindowLab",
+                                          parentWritable: true, brewPrefixes: ["/opt/homebrew"]) == .notAppBundle)
+        check("policy: writable ~/Applications install is self-updatable",
+              UpdatePolicy.classifyTarget(isAppBundle: true, bundlePath: "/Users/me/Applications/ScrollWM.app",
+                                          parentWritable: true, brewPrefixes: ["/opt/homebrew"]) == .selfUpdatable)
+        check("policy: non-writable /Applications install is notWritable",
+              UpdatePolicy.classifyTarget(isAppBundle: true, bundlePath: "/Applications/ScrollWM.app",
+                                          parentWritable: false, brewPrefixes: ["/opt/homebrew"]) == .notWritable)
+        check("policy: bundle under a brew Caskroom is homebrewManaged",
+              UpdatePolicy.classifyTarget(isAppBundle: true,
+                                          bundlePath: "/opt/homebrew/Caskroom/scrollwm/0.1.1/ScrollWM.app",
+                                          parentWritable: true, brewPrefixes: ["/opt/homebrew"]) == .homebrewManaged)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

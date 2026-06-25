@@ -384,17 +384,23 @@ final class ScrollWMController: NSObject {
 
     // MARK: - Updates
 
-    /// Stand up the in-app updater (production `run` path only). Schedules the
-    /// background check per config; manual checks always work regardless.
+    /// Stand up the in-app updater (production `run` path only). Reconciles a
+    /// just-completed update (version advanced? grant reset?), then schedules
+    /// the background check per config; manual checks always work regardless.
     func startUpdates() {
         guard updateCoordinator == nil else { return }
         let coord = UpdateCoordinator(controller: self, config: config.update)
         updateCoordinator = coord
+        coord.reconcileAfterRelaunch()
         coord.start()
     }
 
     /// Whether the updater is live (used to gate the menu item).
     var updatesEnabled: Bool { updateCoordinator != nil }
+
+    /// Live Accessibility-trust reading, for the updater's post-relaunch
+    /// re-grant detection.
+    var accessibilityIsTrusted: Bool { AccessibilityPermission.shared.isTrustedNow }
 
     /// User-initiated "Check for Updates…" (menu). Always reports an outcome.
     func checkForUpdates() {
@@ -436,7 +442,7 @@ final class ScrollWMController: NSObject {
                 updateCoordinator = c
                 return c
             }()
-            DispatchQueue.main.async { coord.beginInstall(rel, announce: false) }
+            DispatchQueue.main.async { coord.beginInstall(rel, mode: .userClicked) }
             return "ok: installing v\(rel.version)… ScrollWM will restore windows and relaunch"
         }
     }
@@ -649,6 +655,11 @@ final class ScrollWMController: NSObject {
     func quit() {
         stopControlServer()
         release()
+        // If a verified update is staged for on-quit application, launch the
+        // detached swapper now: windows have just been restored by release(),
+        // and the swapper waits for THIS process to exit before replacing the
+        // bundle and relaunching the new version.
+        updateCoordinator?.applyPendingUpdateOnQuit()
         NSApplication.shared.terminate(nil)
     }
 

@@ -9,6 +9,10 @@ cask "scrollwm" do
 
   depends_on macos: ">= :sonoma"
 
+  # ScrollWM updates itself in place (in-app updater, see Updater.swift), so
+  # tell Homebrew not to flag it outdated or clobber a self-updated bundle.
+  auto_updates true
+
   app "ScrollWM.app"
 
   # Expose the `scrollwm` CLI on PATH. The bundle's main executable dispatches

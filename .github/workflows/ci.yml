@@ -45,3 +45,13 @@ jobs:
         # Tolerant of GitHub API hiccups so a flaky network can't redden CI.
         continue-on-error: true
         run: .build/debug/WindowLab updatecheck --stage-only
+
+      - name: Updater swap + TCC gate self-test (offline)
+        # Builds two real bundles (an ad-hoc "current" 0.1.1 and "new" 0.2.0) and
+        # asserts the atomic swap + rollback work and the code-signing /
+        # Accessibility-preservation gate behaves. Pure-offline; no network.
+        run: |
+          BIN="$(swift build --show-bin-path)/WindowLab"
+          ./scripts/make-bundle.sh /tmp/cur.app  "$BIN" "-" "0.1.1"
+          ./scripts/make-bundle.sh /tmp/new.app  "$BIN" "-" "0.2.0"
+          .build/debug/WindowLab __update-selftest /tmp/cur.app /tmp/new.app
