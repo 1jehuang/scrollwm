@@ -630,7 +630,16 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     /// view as the strip grows/shrinks; the status item length tracks it.
     private var contentWidth: CGFloat = 30
 
+    /// Periodic visibility re-check so the item re-heals if another app pushes
+    /// it out of the menu bar after launch (see `ensureVisible`).
+    private var visibilityWatchdog: Timer?
+
     static let autosaveName = "ScrollWMMain"
+
+    /// Preferred status-item position (points from the right of the status
+    /// area). Small = high priority: it sits next to the system cluster so it
+    /// is the LAST third-party item macOS hides when the bar runs out of room.
+    static let priorityPosition: Double = 8.0
 
     init(controller: ScrollWMController, engine: TeleportEngine) {
         self.controller = controller
@@ -644,10 +653,17 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         stripView.maxContentWidth = mb.maxWidth
         contentWidth = mb.minWidth
 
-        // Notch workaround (see MenuBarController).
+        // Priority placement + notch workaround (see MenuBarController).
+        // The "Preferred Position" is measured from the RIGHT of the status
+        // area: SMALL values land near the system cluster (clock / Control
+        // Center), which is the highest-priority slot because macOS hides the
+        // LEFTMOST third-party items first when the bar gets crowded (e.g. an
+        // app with a wide menu activates). Seeding a small value makes ScrollWM
+        // the last item to be hidden, so it stays "always showing." We only
+        // seed when unset, so a user's manual drag still wins.
         let positionKey = "NSStatusItem Preferred Position \(Self.autosaveName)"
         if UserDefaults.standard.object(forKey: positionKey) == nil {
-            UserDefaults.standard.set(400.0, forKey: positionKey)
+            UserDefaults.standard.set(Self.priorityPosition, forKey: positionKey)
         }
 
         // Grow/shrink the status item as the strip changes size.
@@ -663,6 +679,17 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         // preferred position is only read at creation time.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.ensureVisible()
+        }
+
+        // Watchdog: another app can push us out of view later (e.g. it
+        // activates with a wide menu bar). Re-check periodically and re-heal so
+        // ScrollWM stays "always showing" rather than only at launch.
+        visibilityWatchdog = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if !self.isVisibleInMenuBar {
+                self.healAttempt = 0
+                self.ensureVisible()
+            }
         }
 
         engine.onLayoutChange = { [weak self] in
@@ -721,11 +748,13 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             if healAttempt > 0 {
                 print("menubar: item visible after \(healAttempt) placement attempt(s)")
             }
+            healAttempt = 0
             return
         }
-        // Candidate preferred positions (points from the right edge area);
-        // small values sit near the system cluster which is always visible.
-        let candidates: [Double] = [150, 200, 250, 100, 300, 350, 50, 450]
+        // Candidate preferred positions (points from the right edge area).
+        // SMALL values sit nearest the system cluster, the highest-priority
+        // slots that stay visible longest; we walk outward from there.
+        let candidates: [Double] = [Self.priorityPosition, 24, 48, 80, 120, 180, 260, 360]
         guard healAttempt < candidates.count else {
             print("menubar: could not find visible slot (menu bar full). Use ⌃⌥esc to toggle; the app still works.")
             return
