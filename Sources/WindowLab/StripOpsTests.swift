@@ -497,8 +497,10 @@ enum StripOpsTests {
 
         // --- Off-screen parking: fully-offscreen columns collapse to a corner ---
         // macOS clamps positions to keep ~40px on screen, so columns scrolled
-        // fully past the viewport must be parked at one shared corner instead of
-        // leaving stacked slivers along the edge.
+        // fully past the viewport must be parked at a shared corner instead of
+        // leaving stacked slivers along the edge. The corner now mirrors the
+        // SIDE the column scrolled off (off-left -> left edge, off-right ->
+        // right edge) so the nub appears where the content went.
         let ep = makeEngine(count: 3, width: 400, screenWidth: 1000)
         // Slot fully within the viewport -> natural strip position.
         ep.setViewportXForTest(0)
@@ -506,25 +508,30 @@ enum StripOpsTests {
         let inTarget = ep.onScreenTarget(for: inView)
         check("in-view column placed at natural position",
               abs(inTarget.x - (ep.screenFrame.origin.x + inView.canvasX - ep.viewportX)) < 0.5)
-        // A column scrolled fully off the right parks at the shared corner.
+        // A column scrolled fully off the RIGHT parks at the right corner.
         var off = ep.slots[1]
         off.canvasX = 5000 // far right of any viewport
         let offTarget = ep.onScreenTarget(for: off)
-        check("fully-offscreen column parks at corner", offTarget == ep.parkingPoint)
-        // A column scrolled fully off the LEFT also parks.
+        check("fully-offscreen-right column parks at right corner",
+              offTarget == ep.parkingPoint(prefer: .right))
+        // A column scrolled fully off the LEFT parks at the LEFT corner (the new
+        // directional behavior: it is on the opposite side from the right park).
         var offL = ep.slots[1]
         offL.canvasX = 0
         offL.width = 100
         ep.setViewportXForTest(5000) // viewport far right -> column at [0,100) is off-left
-        check("fully-offscreen-left column parks at corner",
-              ep.onScreenTarget(for: offL) == ep.parkingPoint)
+        check("fully-offscreen-left column parks at left corner",
+              ep.onScreenTarget(for: offL) == ep.parkingPoint(prefer: .left))
+        check("left and right park corners differ (single display)",
+              ep.parkingPoint(prefer: .left) != ep.parkingPoint(prefer: .right))
         // A partially-visible column (last column overflowing right) is NOT parked.
         ep.setViewportXForTest(0)
         var partial = ep.slots[1]
         partial.canvasX = 900 // [900,1300), viewport [0,1000): partly visible
         partial.width = 400
         check("partially-visible column is not parked",
-              ep.onScreenTarget(for: partial) != ep.parkingPoint)
+              ep.onScreenTarget(for: partial) != ep.parkingPoint(prefer: .left)
+                  && ep.onScreenTarget(for: partial) != ep.parkingPoint(prefer: .right))
 
         // --- Display-aware parking corner (multi-monitor "peeking" fix) -------
         // macOS clamps a window to keep ~40px on screen, so a parked column
@@ -585,6 +592,43 @@ enum StripOpsTests {
             let r = CGRect(x: 1470, y: 0, width: 1920, height: 1080)
             let p = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [l, r], margin: 4000)
             check("park hemmed both sides: legacy right fallback", p.x == mainDisp.maxX + 4000)
+        }
+
+        // --- Directional parking: honor the side a column scrolled off --------
+        // Single display: off-left parks to the LEFT edge, off-right to the
+        // RIGHT edge, so the nub appears on the side the content disappeared.
+        do {
+            let pl = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [], prefer: .left, margin: 4000)
+            let pr = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [], prefer: .right, margin: 4000)
+            check("directional park: left side goes to left edge", pl.x == mainDisp.minX - 4000)
+            check("directional park: right side goes to right edge", pr.x == mainDisp.maxX + 4000)
+            check("directional park: sides differ", pl.x != pr.x)
+        }
+
+        // A neighbor on the requested side forces a flip to the free edge so the
+        // sliver never peeks onto that neighbor: with a display to the RIGHT, a
+        // column scrolled off the right must park LEFT (the only free edge).
+        do {
+            let ext = CGRect(x: 1470, y: 0, width: 1920, height: 1080)
+            let p = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [ext], prefer: .right, margin: 4000)
+            check("directional park: right blocked flips to free left edge",
+                  p.x == mainDisp.minX - 4000)
+        }
+        // Symmetric: a display to the LEFT forces an off-left park to flip RIGHT.
+        do {
+            let leftExt = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+            let p = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [leftExt], prefer: .left, margin: 4000)
+            check("directional park: left blocked flips to free right edge",
+                  p.x == mainDisp.maxX + 4000)
+        }
+        // Both sides blocked: respect the caller's preferred side (unavoidable).
+        do {
+            let l = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+            let r = CGRect(x: 1470, y: 0, width: 1920, height: 1080)
+            let pl = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [l, r], prefer: .left, margin: 4000)
+            let pr = TeleportEngine.computeParkingPoint(stripDisplay: mainDisp, others: [l, r], prefer: .right, margin: 4000)
+            check("directional park: both blocked keeps preferred left", pl.x == mainDisp.minX - 4000)
+            check("directional park: both blocked keeps preferred right", pr.x == mainDisp.maxX + 4000)
         }
 
         // --- ResyncPlanner: Space-aware adoption/removal policy ---

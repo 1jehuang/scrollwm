@@ -512,14 +512,19 @@ final class TeleportEngine {
 
     /// Where a slot's window should actually be placed. If the column is at
     /// least partly within the viewport, that is its natural strip position.
-    /// If it is fully off-screen, return the shared parking corner so all
-    /// off-screen columns collapse into one sliver (see `teleport`).
+    /// If it is fully off-screen, park it on the SIDE it scrolled off: columns
+    /// past the left edge collapse to a left-edge sliver, columns past the right
+    /// edge to a right-edge sliver (see `teleport` and `parkingPoint(prefer:)`).
+    /// Keeping the sliver on the matching side means the nub appears where the
+    /// content went, instead of always piling up in one corner.
     func onScreenTarget(for slot: Slot) -> CGPoint {
         let left = slot.canvasX - viewportX           // viewport-relative left
         let right = left + slot.width
-        let fullyOffscreen = right <= 0 || left >= screenFrame.width
-        if fullyOffscreen {
-            return parkingPoint
+        if right <= 0 {
+            return parkingPoint(prefer: .left)        // scrolled fully off the LEFT
+        }
+        if left >= screenFrame.width {
+            return parkingPoint(prefer: .right)       // scrolled fully off the RIGHT
         }
         return CGPoint(x: screenFrame.origin.x + slot.canvasX - viewportX, y: slot.y)
     }
@@ -539,17 +544,28 @@ final class TeleportEngine {
     /// direction with no adjacent screen.
     var otherDisplayFrames: [CGRect] = []
 
-    /// Shared off-screen parking point: far enough past a free corner that macOS
-    /// clamps every parked window to the SAME spot, stacking them into a single
-    /// minimal sliver rather than a row of peeking edges. Display-aware: the
-    /// corner is chosen so the sliver stays on the strip's display and away from
-    /// any neighbor monitor (see `computeParkingPoint`).
-    var parkingPoint: CGPoint {
+    /// Which horizontal edge a parked window should slide toward. Mirrors the
+    /// side a column scrolled off, so the nub lands where the content went.
+    enum ParkSide { case left, right }
+
+    /// Shared off-screen parking point for windows scrolled off `side`. Far
+    /// enough past that edge that macOS clamps every window pushed the same way
+    /// to the SAME spot, stacking them into a single minimal sliver rather than
+    /// a row of peeking edges. Display-aware: if the requested side abuts a
+    /// neighbor monitor, we flip to the opposite (free) edge so the sliver stays
+    /// on the strip's display and never peeks onto the neighbor (see
+    /// `computeParkingPoint`).
+    func parkingPoint(prefer side: ParkSide) -> CGPoint {
         TeleportEngine.computeParkingPoint(
             stripDisplay: stripDisplayFrame ?? screenFrame,
-            others: otherDisplayFrames
+            others: otherDisplayFrames,
+            prefer: side
         )
     }
+
+    /// Back-compat shorthand: the legacy single shared corner (right side).
+    /// Retained for call sites and tests that do not care about the side.
+    var parkingPoint: CGPoint { parkingPoint(prefer: .right) }
 
     /// Pure parking-corner policy (no side effects, unit-tested).
     ///
@@ -559,11 +575,16 @@ final class TeleportEngine {
     /// the window back to the strip display's own outer edge (40px visible there)
     /// instead of onto a neighbor monitor.
     ///
-    /// Direction preference per axis: a free edge if one exists, else the legacy
-    /// direction (right / bottom) as a graceful fallback when the strip display
-    /// is hemmed in on both sides of that axis.
+    /// Horizontal direction: honor the caller's `prefer`red side (the side the
+    /// column scrolled off) UNLESS that edge abuts a neighbor monitor, in which
+    /// case flip to the opposite edge if THAT one is free; if both horizontal
+    /// sides are blocked, fall back to the preferred side (a sliver on a busy
+    /// edge is unavoidable then). Vertical axis: a free edge if one exists, else
+    /// the legacy bottom direction. Windows pushed off the SAME side still share
+    /// one corner, so each side collapses to a single sliver.
     static func computeParkingPoint(stripDisplay s: CGRect,
                                     others: [CGRect],
+                                    prefer side: ParkSide = .right,
                                     margin: CGFloat = 4000) -> CGPoint {
         // A neighbor only "blocks" an edge if it actually abuts that side AND
         // overlaps along the perpendicular axis (a display diagonally offset does
@@ -575,8 +596,15 @@ final class TeleportEngine {
         let topBlocked   = others.contains { $0.maxY <= s.minY + 1 && hOverlap($0) }
         let botBlocked   = others.contains { $0.minY >= s.maxY - 1 && hOverlap($0) }
 
-        // Prefer a free edge; keep legacy right/bottom when both sides are taken.
-        let goRight: Bool = !rightBlocked ? true : (!leftBlocked ? false : true)
+        // Honor the preferred horizontal side when it is free; otherwise flip to
+        // the opposite edge if that one is free; otherwise keep the preferred
+        // side (both blocked -> unavoidable, so respect the caller's intent).
+        let goRight: Bool
+        switch side {
+        case .right: goRight = !rightBlocked ? true  : (!leftBlocked ? false : true)
+        case .left:  goRight = !leftBlocked  ? false : (!rightBlocked ? true : false)
+        }
+        // Vertical: prefer a free edge; keep legacy bottom when both are taken.
         let goBottom: Bool = !botBlocked ? true : (!topBlocked ? false : true)
 
         let x = goRight ? s.maxX + margin : s.minX - margin
