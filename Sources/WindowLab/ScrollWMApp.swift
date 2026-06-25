@@ -21,6 +21,16 @@ final class ScrollWMController: NSObject {
     /// Keyboard tap for the move bindings (Cmd+H/L) that Carbon cannot grab.
     private var moveTap: KeyboardEventTap?
 
+    /// Pending coalesced re-evaluation of a display change. macOS fires
+    /// `didChangeScreenParameters` SEVERAL times in quick succession for a
+    /// single hotplug / resolution change (each intermediate arrangement is its
+    /// own event). We debounce the burst into one re-bind from the SETTLED
+    /// geometry, so the strip never thrashes through every transient layout.
+    private var displayChangeDebounce: DispatchWorkItem?
+    /// Debounce window for `screenParametersChanged`: long enough to swallow a
+    /// hotplug burst, short enough to feel instant.
+    private let displayChangeDebounceInterval: TimeInterval = 0.25
+
     /// Lazily-created tutorial window controller (config-driven cheat sheet).
     private lazy var tutorial = TutorialWindowController(configProvider: { [weak self] in
         self?.config ?? .default
@@ -124,21 +134,49 @@ final class ScrollWMController: NSObject {
     }
 
     /// Re-evaluate the display layout when monitors are plugged/unplugged or
-    /// rearranged. The strip's display is the one that best overlaps the
-    /// engine's current `screenFrame`; fall back to the main screen if it can't
-    /// be identified (e.g. the strip's display was just unplugged).
+    /// rearranged. macOS fires this several times for one physical change, so we
+    /// DEBOUNCE the burst and act once on the settled geometry.
     @objc private func screenParametersChanged() {
-        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
-                             ?? NSScreen.main)?.frame.height ?? engine.screenFrame.height
-        let target = engine.screenFrame
-        // Choose by maximum overlap with the strip's current AX frame: robust to
-        // a display that resized (origin/width shifted) but is "the same screen".
-        let strip = NSScreen.screens.max { a, b in
-            let fa = DisplayGeometry.axFrame(appKitFrame: a.visibleFrame, primaryHeight: primaryHeight)
-            let fb = DisplayGeometry.axFrame(appKitFrame: b.visibleFrame, primaryHeight: primaryHeight)
-            return DisplayGeometry.overlapArea(target, fa) < DisplayGeometry.overlapArea(target, fb)
-        } ?? NSScreen.main
-        if let strip { refreshDisplayGeometry(stripDisplay: strip, relayout: true) }
+        displayChangeDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.applySettledDisplayChange()
+        }
+        displayChangeDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + displayChangeDebounceInterval,
+                                      execute: work)
+    }
+
+    /// Decide where the strip should live after a (debounced) display change and
+    /// re-bind to it. Handles the catastrophic case where the strip's OWN
+    /// display was unplugged: `StripDisplayResolver` detects that no surviving
+    /// display still overlaps the strip and MIGRATES the strip to the best
+    /// survivor, rescuing windows that would otherwise be orphaned off-screen.
+    /// A display being ADDED back is the same code path: it simply becomes a
+    /// candidate the resolver may pick (or, more often, leaves the strip put).
+    private func applySettledDisplayChange() {
+        let screens = NSScreen.screens
+        // No screens at all (all monitors asleep/disconnected): keep the last
+        // geometry untouched until one reappears (resolver case 3).
+        guard !screens.isEmpty else { return }
+
+        let primaryHeight = (screens.first { $0.frame.origin == .zero }
+                             ?? NSScreen.main ?? screens[0]).frame.height
+        // Visible AX frames of every available display, parallel to `screens`.
+        let visibleFrames = screens.map {
+            DisplayGeometry.axFrame(appKitFrame: $0.visibleFrame, primaryHeight: primaryHeight)
+        }
+
+        // Pure policy: same display (resized) -> follow it; strip display gone
+        // -> migrate to the best survivor; no displays -> keep put.
+        let decision = StripDisplayResolver.resolve(
+            stripFrame: engine.screenFrame, displays: visibleFrames)
+        guard let idx = decision.displayIndex else { return }
+
+        if decision.migrated {
+            print("display change: strip's display gone; migrating strip to "
+                  + "\(screens[idx].localizedName)")
+        }
+        refreshDisplayGeometry(stripDisplay: screens[idx], relayout: true)
     }
 
     /// Re-read the config file and apply it live. Keybindings are reinstalled
