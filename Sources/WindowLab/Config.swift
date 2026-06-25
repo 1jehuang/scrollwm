@@ -47,6 +47,11 @@ struct ScrollWMConfig: Equatable {
         /// `allDisplays` is the legacy "one strip swallows every monitor"
         /// behavior. See `AdoptionScope`.
         var adoptScope: AdoptionScope.Scope = .stripDisplay
+        // [md-select] Which monitor the strip binds to at launch. One of
+        // "main" (default; the active display), "primary" (laptop panel),
+        // "largest" (the external on a laptop+monitor setup), or a 1-based
+        // display index ("1", "2", …). Resolved by DisplaySelector.pick.
+        var stripDisplay: String = "main"
     }
 
     /// Menu-bar mini-map sizing. The icon grows with the strip instead of being
@@ -122,6 +127,7 @@ struct ScrollWMConfig: Equatable {
                 // A configured fraction, or JSON null to preserve native size.
                 "spawnWidth": layout.spawnWidth.map { Double($0) } ?? NSNull(),
                 "adoptScope": layout.adoptScope.rawValue,
+                "stripDisplay": layout.stripDisplay,  // [md-select]
             ],
             "menuBar": [
                 "pointsPerScreen": Double(menuBar.pointsPerScreen),
@@ -178,6 +184,9 @@ struct ScrollWMConfig: Equatable {
                     print("config: unknown layout.adoptScope '\(s)' (expected 'stripDisplay' or 'allDisplays'); using default")
                 }
             }
+            // [md-select] Initial strip display: "main"/"primary"/"largest"/index.
+            if let sd = layout["stripDisplay"] as? String { config.layout.stripDisplay = sd }
+            else if let sd = layout["stripDisplay"] as? NSNumber { config.layout.stripDisplay = "\(sd.intValue)" }
         }
         if let mb = obj["menuBar"] as? [String: Any] {
             if let p = mb["pointsPerScreen"] as? NSNumber { config.menuBar.pointsPerScreen = CGFloat(p.doubleValue) }
@@ -302,7 +311,15 @@ struct ScrollWMConfig: Equatable {
         //                    (PaperWM/niri-style; the default).
         //   "allDisplays"  = legacy: one strip swallows every current-Space
         //                    window across ALL monitors.
-        "adoptScope": "stripDisplay"
+        "adoptScope": "stripDisplay",
+
+        // Which monitor the scrolling strip binds to at launch:
+        //   "main"    = the active display (default)
+        //   "primary" = the macOS primary display (usually the laptop panel)
+        //   "largest" = the biggest display (the external on a laptop+monitor)
+        //   "1"/"2"/… = a 1-based display index
+        // Move it at runtime too: `scrollwm display <next|main|primary|largest|N>`.
+        "stripDisplay": "main"
       },
 
       // Menu-bar mini-map sizing. The icon GROWS with the strip instead of
