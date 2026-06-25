@@ -202,6 +202,35 @@ enum GeometryHardeningTests {
               DisplayGeometry.display(
                 bestOverlapping: CGRect(x: 0, y: -700, width: 800, height: 500),
                 displays: bothDisplays) == extAX)
+
+        // ===================== (d) L-shaped dead zone the layout creates =======
+        // The built-in (x>=0, y in [0,956]) and the external (y<=0, x in
+        // [-225,1695]) only meet at the y=0 corner, so they DON'T tile: the
+        // region x in [-225,0], y in [0,956] is on NEITHER display — an L-shaped
+        // dead zone unique to this negative-origin layout. A frame stranded there
+        // overlaps nothing, so ensureVisible must take the `bestOverlapping ??
+        // displays[0]` fallback and still pull it onto a real display.
+        let deadZone = CGRect(x: -200, y: 100, width: 180, height: 700)
+        check("hard/geom: a frame in the inter-display dead zone is NOT mostly visible",
+              !DisplayGeometry.isMostlyVisible(deadZone, on: bothDisplays))
+        let rescuedFromGap = DisplayGeometry.ensureVisible(deadZone, displays: bothDisplays)
+        check("hard/geom: a frame in the dead zone is rescued onto SOME real display",
+              DisplayGeometry.isMostlyVisible(rescuedFromGap, on: bothDisplays))
+        check("hard/restore: a window stranded in the dead zone is restored onto a display",
+              DisplayGeometry.isMostlyVisible(
+                TeleportEngine.restoreFrame(original: deadZone, displays: bothDisplays),
+                on: bothDisplays))
+
+        // A frame straddling the y=0 SEAM where the displays DO share x (x in
+        // [0,1470]) is genuinely contiguous (built-in above, external below), so
+        // summing the two overlaps correctly reports it visible — it must NOT be
+        // perturbed by a restore. Guards against an over-eager clamp that would
+        // yank a legitimately-spanning window onto one screen.
+        let seam = CGRect(x: 100, y: -478, width: 600, height: 956)
+        check("hard/geom: a frame straddling the shared y=0 seam is mostly visible",
+              DisplayGeometry.isMostlyVisible(seam, on: bothDisplays))
+        check("hard/restore: a seam-straddling frame is left untouched (no spurious clamp)",
+              TeleportEngine.restoreFrame(original: seam, displays: bothDisplays) == seam)
     }
 
     /// Deterministic mirror of the LIVE displaytest assertion: the park corner
