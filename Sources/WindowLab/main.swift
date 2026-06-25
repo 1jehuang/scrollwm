@@ -163,8 +163,7 @@ case "scrollbench":
     let numbers = args.dropFirst().compactMap { Int($0) }
     runScrollBench(
         windows: numbers.first ?? 6,
-        hz: Double(numbers.dropFirst().first ?? 60),
-        spawn: args.contains("--spawn")
+        hz: Double(numbers.dropFirst().first ?? 60)
     )
 case "testwindow":
     runTestWindow(args: Array(args.dropFirst()))
@@ -269,9 +268,10 @@ default:
       WindowLab overlay [secs] [--selftest]
                                Metal overlay; ctrl+opt+scroll pans fake canvas.
                                --selftest posts synthetic scrolls and reports latency.
-      WindowLab scrollbench [n] [hz] [--spawn]
-                               animate n real windows via AX moves, measure jank.
-                               --spawn uses disposable test windows (default: your real ones)
+      WindowLab scrollbench [n] [hz]
+                               animate n disposable test windows via AX moves,
+                               measure jank. Headless: always spawns its own
+                               throwaway windows; never touches your real ones.
       WindowLab pan [secs] [n] [--spawn] [--selftest]
                                v1 slice: ctrl+opt+scroll pans real windows on a
                                virtual canvas with inertia. Windows restored after.

@@ -2,11 +2,15 @@ import Foundation
 import ApplicationServices
 import AppKit
 
-/// scrollbench: can we animate REAL windows via AX moves smoothly enough
+/// scrollbench: can we animate windows via AX moves smoothly enough
 /// to skip the Metal/SCK proxy layer (and the Screen Recording permission)?
 ///
-/// Simulates a viewport pan: every visible window translates together along
-/// an eased path, driven by a 60Hz tick. Measures per-tick AX commit cost,
+/// Headless by construction: the driver (`runScrollBench`) only ever animates
+/// disposable test windows it spawns itself, so a benchmark run never grabs or
+/// moves the user's real windows.
+///
+/// Simulates a viewport pan: every test window translates together along an
+/// eased path, driven by a 60Hz tick. Measures per-tick AX commit cost,
 /// per-window latency, and effective frame pacing. Restores all windows.
 enum ScrollAnimationBenchmark {
 
@@ -151,47 +155,35 @@ enum ScrollAnimationBenchmark {
     }
 }
 
-func runScrollBench(windows: Int, hz: Double, spawn: Bool) {
+/// Headless-only: scrollbench ALWAYS animates disposable test windows it spawns
+/// itself, never the user's real windows. This keeps it from grabbing or moving
+/// whatever you happen to be working on. The spawned windows are terminated on
+/// exit.
+func runScrollBench(windows: Int, hz: Double) {
     guard AXSource.isTrusted else {
         print("AX: NOT TRUSTED. Grant Accessibility permission first.")
         exit(2)
     }
 
-    var spawned: [Process] = []
-    var matched: [MatchedWindow]
-
-    if spawn {
-        print("Spawning \(windows) test windows...")
-        spawned = spawnTestWindows(count: windows)
-        Thread.sleep(forTimeInterval: 1.5) // let them appear
-
-        let pids = Set(spawned.map { $0.processIdentifier })
-        let axWindows = pids.flatMap { pid -> [AXWindowInfo] in
-            guard let app = NSRunningApplication(processIdentifier: pid) else { return [] }
-            return AXSource.windows(for: app)
-        }
-        let cg = CGWindowSource.listWindows(onscreenOnly: true)
-        matched = IdentityMatcher.match(axWindows: axWindows, cgWindows: cg)
-        print("Found \(matched.count) test windows via AX.\n")
-    } else {
-        let cg = CGWindowSource.listWindows(onscreenOnly: true)
-        let ax = AXSource.allWindows()
-        matched = IdentityMatcher.match(axWindows: ax, cgWindows: cg)
-    }
-
+    print("Spawning \(windows) disposable test windows...")
+    let spawned = spawnTestWindows(count: windows)
     defer {
         for p in spawned { p.terminate() }
     }
+    Thread.sleep(forTimeInterval: 1.5) // let them appear
 
-    print("scrollbench: animating real windows with AX moves (all restored afterwards)\n")
+    let pids = Set(spawned.map { $0.processIdentifier })
+    let axWindows = pids.flatMap { pid -> [AXWindowInfo] in
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return [] }
+        return AXSource.windows(for: app)
+    }
+    let cg = CGWindowSource.listWindows(onscreenOnly: true)
+    let matched = IdentityMatcher.match(axWindows: axWindows, cgWindows: cg)
+    print("Found \(matched.count) test windows via AX.\n")
+
+    print("scrollbench: animating disposable test windows via AX moves (terminated afterwards)\n")
     let (results, ticks) = ScrollAnimationBenchmark.run(
         matched: matched, hz: hz, maxWindows: windows
     )
     ScrollAnimationBenchmark.printReport(windows: results, ticks: ticks)
-
-    let unrestored = results.filter { !$0.restored }
-    if !unrestored.isEmpty && !spawn {
-        print("\nWARNING: \(unrestored.count) window(s) may not be restored:")
-        for r in unrestored { print("  - \(r.appName): \(r.title)") }
-    }
 }

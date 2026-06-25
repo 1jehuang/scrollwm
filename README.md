@@ -251,7 +251,7 @@ in this repo was validated against measured numbers on real hardware:
 swift build
 .build/debug/WindowLab probe -v        # enumerate + match windows, latency
 .build/debug/WindowLab bench           # AX move/resize cost per window
-.build/debug/WindowLab scrollbench 16 60 --spawn   # real-window animation jank
+.build/debug/WindowLab scrollbench 16 60          # real-window animation jank (headless)
 .build/debug/WindowLab pan 10 8 --spawn --selftest # scroll-driven panning
 .build/debug/WindowLab overlay 8 --selftest        # Metal overlay + event tap
 .build/debug/WindowLab capturebench 5  # SCK capture latency (needs Screen Rec)
