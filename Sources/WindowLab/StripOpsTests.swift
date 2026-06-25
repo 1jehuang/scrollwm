@@ -991,6 +991,97 @@ enum StripOpsTests {
         reb2.rebindStripDisplay(to: before)
         check("rebind: same-frame rebind is stable", reb2.screenFrame == before)
 
+        // --- StripDisplayResolver: hotplug strip-migration policy ------------
+        // Pure decision for "which display does the strip bind to after a
+        // monitor plug/unplug?". AX top-left plane; mirrors the user's real rig:
+        // built-in primary at AX (0,0,1470x956); external above-left at
+        // (-225,-1440,2560x1440).
+        let rBuiltin = CGRect(x: 0, y: 0, width: 1470, height: 956)
+        let rExternal = CGRect(x: -225, y: -1440, width: 2560, height: 1440)
+
+        // Strip on the built-in, both displays present -> stay on the built-in
+        // (its display is still here; bind to its current visible frame).
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin, rExternal])
+            check("resolver: strip display present -> same display",
+                  d.frame == rBuiltin && d.displayIndex == 0 && !d.migrated)
+        }
+
+        // Strip on the EXTERNAL, then the external is UNPLUGGED (only built-in
+        // survives) -> MIGRATE the strip to the built-in so its windows are
+        // rescued instead of orphaned off-screen. This is the catastrophic case.
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [rBuiltin])
+            check("resolver: strip display gone -> migrate to survivor",
+                  d.frame == rBuiltin && d.displayIndex == 0 && d.migrated)
+        }
+
+        // Strip display gone with SEVERAL survivors -> pick the largest by area
+        // (most room for the strip), deterministically.
+        do {
+            let small = CGRect(x: 0, y: 0, width: 1000, height: 800)
+            let big   = CGRect(x: 2000, y: 0, width: 2560, height: 1440)
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [small, big])
+            check("resolver: migrate picks the largest survivor",
+                  d.frame == big && d.displayIndex == 1 && d.migrated)
+        }
+
+        // Strip display merely RESIZED (same origin region, dropped resolution)
+        // -> recognized as the same screen and followed onto the new frame, NOT
+        // treated as gone (no spurious migration).
+        do {
+            let resized = CGRect(x: 0, y: 0, width: 1280, height: 720)
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [resized, rExternal])
+            check("resolver: resized strip display is followed, not migrated",
+                  d.frame == resized && d.displayIndex == 0 && !d.migrated)
+        }
+
+        // A display being ADDED back: strip is on the built-in, the external
+        // reappears -> strip stays put (the new display is just a candidate).
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin, rExternal])
+            check("resolver: re-added display leaves the strip put",
+                  d.frame == rBuiltin && !d.migrated)
+        }
+
+        // No displays at all (all monitors asleep): keep the last frame and
+        // report no choice so the caller leaves the strip untouched.
+        do {
+            let d = StripDisplayResolver.resolve(stripFrame: rBuiltin, displays: [])
+            check("resolver: no displays -> keep last frame, no index",
+                  d.frame == rBuiltin && d.displayIndex == nil && !d.migrated)
+        }
+
+        // A strip stranded entirely off every display (its monitor vanished and
+        // the survivor does not overlap at all) migrates to that survivor.
+        do {
+            let orphanStrip = CGRect(x: 9000, y: 9000, width: 1470, height: 956)
+            let d = StripDisplayResolver.resolve(
+                stripFrame: orphanStrip, displays: [rBuiltin])
+            check("resolver: fully-orphaned strip migrates to the survivor",
+                  d.frame == rBuiltin && d.migrated)
+        }
+
+        // Just below the overlap threshold counts as gone (migrate); just above
+        // counts as present (follow). Use a 20% default: a survivor overlapping
+        // 10% of the strip is "gone", one overlapping 30% is "present".
+        do {
+            let strip = CGRect(x: 0, y: 0, width: 1000, height: 1000) // area 1e6
+            // Display overlaps a 100x1000 = 1e5 = 10% sliver -> gone.
+            let sliver = CGRect(x: 900, y: 0, width: 1000, height: 1000)
+            let dGone = StripDisplayResolver.resolve(stripFrame: strip, displays: [sliver])
+            check("resolver: 10% overlap is below threshold -> migrate", dGone.migrated)
+            // Display overlaps a 300x1000 = 3e5 = 30% region -> present.
+            let chunk = CGRect(x: 700, y: 0, width: 1000, height: 1000)
+            let dHere = StripDisplayResolver.resolve(stripFrame: strip, displays: [chunk])
+            check("resolver: 30% overlap is above threshold -> follow", !dHere.migrated)
+        }
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }
