@@ -1308,6 +1308,133 @@ enum StripOpsTests {
               DisplaySelector.pick(spec: "largest", displays: one) == 0)
         check("select: single display, 'next' wraps to itself -> 0",
               DisplaySelector.pick(spec: "next", displays: one, current: 0) == 0)
+
+        // 'next' from an out-of-range / nonsense `current` must not crash and
+        // must land in range (defends moveStripToDisplay when the strip's index
+        // could not be identified). `current` -1 -> (-1+1)%2 == 0.
+        check("select: 'next' from current -1 stays in range (0)",
+              DisplaySelector.pick(spec: "next", displays: twoDisplays, current: -1) == 0)
+        // Whitespace-only / blank spec behaves like empty -> main.
+        check("select: blank '   ' spec defaults to main",
+              DisplaySelector.pick(spec: "   ", displays: twoDisplays) == 0)
+        // A non-integer numeric-looking spec is rejected (not silently floored).
+        check("select: '1.5' is not a valid index -> nil",
+              DisplaySelector.pick(spec: "1.5", displays: twoDisplays) == nil)
+        check("select: negative index '-1' -> nil",
+              DisplaySelector.pick(spec: "-1", displays: twoDisplays) == nil)
+
+        // --- StripDisplayBinding: launch/move AX flip ([md-move]) -------------
+        // REPRODUCE the launch bug: the strip on a NON-PRIMARY external must use
+        // the PRIMARY display's height for the Y-flip, not its own height.
+        // Real hardware in NSScreen order: built-in primary (0,0,1470,956) is
+        // also `main`; external (-225,956,1920,1080) sits ABOVE-and-LEFT.
+        let bdBuiltin = StripDisplayBinding.DisplayFrames(
+            full: CGRect(x: 0, y: 0, width: 1470, height: 956),
+            visible: CGRect(x: 0, y: 33, width: 1470, height: 890))   // menu bar @ top
+        let bdExternal = StripDisplayBinding.DisplayFrames(
+            full: CGRect(x: -225, y: 956, width: 1920, height: 1080),
+            visible: CGRect(x: -225, y: 956, width: 1920, height: 1080)) // no menu bar
+        let bdDisplays = [bdBuiltin, bdExternal]
+
+        // Strip on the PRIMARY built-in (index 0): AX == AppKit flipped about its
+        // own height (the two heights are the same here), the historical case.
+        let bindBuiltin = StripDisplayBinding.bind(displays: bdDisplays, stripIndex: 0, mainIndex: 0)
+        check("bind: builtin strip full flips about primary height (AX y=0)",
+              bindBuiltin?.stripFull == CGRect(x: 0, y: 0, width: 1470, height: 956))
+        check("bind: builtin strip visible AX top under the menu bar (y=33)",
+              bindBuiltin?.stripVisible == CGRect(x: 0, y: 33, width: 1470, height: 890))
+        check("bind: builtin strip's 'other' is the external, flipped to AX y=-1080",
+              bindBuiltin?.others == [CGRect(x: -225, y: -1080, width: 1920, height: 1080)])
+
+        // Strip on the NON-PRIMARY external (index 1): the WHOLE point. AX y must
+        // be primaryHeight(956) - extMaxY(2036) = -1080 (the brief's ground
+        // truth). The OLD hand-rolled flip used the external's own height 1080,
+        // giving y = 1080 - 2036 = -956 — 124px too low, off the display.
+        let bindExternal = StripDisplayBinding.bind(displays: bdDisplays, stripIndex: 1, mainIndex: 0)
+        check("bind: external strip uses PRIMARY height for Y-flip (AX y=-1080)",
+              bindExternal?.stripVisible == CGRect(x: -225, y: -1080, width: 1920, height: 1080))
+        check("bind: external strip full matches (negative-origin external)",
+              bindExternal?.stripFull == CGRect(x: -225, y: -1080, width: 1920, height: 1080))
+        check("bind: external strip's 'other' is the built-in at AX y=0",
+              bindExternal?.others == [CGRect(x: 0, y: 0, width: 1470, height: 956)])
+        // The exact regression guard: the buggy own-height flip would have put
+        // the external strip 124px too low. Assert we are NOT there.
+        check("bind: external strip is NOT at the buggy own-height y (-956)",
+              bindExternal?.stripVisible.origin.y == -1080 && bindExternal?.stripVisible.origin.y != -956)
+
+        // Out-of-range / empty are clean nils (caller keeps prior binding).
+        check("bind: out-of-range stripIndex -> nil",
+              StripDisplayBinding.bind(displays: bdDisplays, stripIndex: 2, mainIndex: 0) == nil)
+        check("bind: empty display list -> nil",
+              StripDisplayBinding.bind(displays: [], stripIndex: 0, mainIndex: nil) == nil)
+
+        // primaryHeight resolution order: origin-(0,0) display wins even when it
+        // is NOT main; falls back to main, then strip, in degenerate layouts.
+        check("bind: primaryHeight prefers the AppKit-origin display (956)",
+              StripDisplayBinding.primaryHeight(displays: bdDisplays, mainIndex: 1, stripIndex: 1) == 956)
+        let noOrigin = [
+            StripDisplayBinding.DisplayFrames(full: CGRect(x: -225, y: 956, width: 1920, height: 1080),
+                                              visible: CGRect(x: -225, y: 956, width: 1920, height: 1080)),
+            StripDisplayBinding.DisplayFrames(full: CGRect(x: 100, y: 100, width: 800, height: 600),
+                                              visible: CGRect(x: 100, y: 100, width: 800, height: 600)),
+        ]
+        check("bind: no origin display -> falls back to main's height (1080)",
+              StripDisplayBinding.primaryHeight(displays: noOrigin, mainIndex: 0, stripIndex: 1) == 1080)
+        check("bind: no origin + no main -> falls back to strip's height (600)",
+              StripDisplayBinding.primaryHeight(displays: noOrigin, mainIndex: nil, stripIndex: 1) == 600)
+
+        // --- rebindStripDisplay: cross-size relay (1470 -> 1920) ([md-move]) --
+        // Moving the strip from the narrow built-in onto the wider external must
+        // re-anchor every column's vertical band to the NEW display top and let
+        // width fractions scale to the NEW viewport width — the size-mismatch the
+        // brief calls out (1470 wide vs 1920 wide).
+        let narrow = CGRect(x: 0, y: 33, width: 1470, height: 890)   // built-in visible
+        let wide   = CGRect(x: -225, y: -1080, width: 1920, height: 1080) // external visible (AX)
+        let relayEng = makeEngine(count: 3, width: 300, screenWidth: narrow.width)
+        // Seed realistic top/heights as if arranged on the built-in.
+        for i in relayEng.slots.indices { relayEng.slots[i].y = narrow.minY; relayEng.slots[i].height = 600 }
+        let widthHalfNarrow = relayEng.width(forFraction: 0.5)
+        relayEng.rebindStripDisplay(to: wide)
+        check("rebind: screenFrame follows to the wide external",
+              relayEng.screenFrame.width == 1920)
+        check("rebind: every column re-pinned to the NEW display top (AX y=-1080)",
+              relayEng.slots.allSatisfy { abs($0.y - wide.minY) < 0.5 })
+        let widthHalfWide = relayEng.width(forFraction: 0.5)
+        check("rebind: a 50% width is WIDER on the 1920 display than the 1470 one",
+              widthHalfWide > widthHalfNarrow)
+        check("rebind: 50% width tracks the new viewport math exactly",
+              abs(widthHalfWide - (0.5 * (1920 - relayEng.gap) - relayEng.gap)) < 0.5)
+        // Heights TALLER than the new usable height are clamped; shorter kept.
+        let tallEng = makeEngine(count: 1, width: 300, screenWidth: 1470)
+        tallEng.slots[0].height = 2000                 // taller than 1080
+        tallEng.rebindStripDisplay(to: wide)
+        check("rebind: an over-tall column is clamped to the new display height",
+              tallEng.slots[0].height == wide.height)
+        let shortEng = makeEngine(count: 1, width: 300, screenWidth: 1470)
+        shortEng.slots[0].height = 500
+        shortEng.rebindStripDisplay(to: wide)
+        check("rebind: a column shorter than the new height is left unchanged",
+              shortEng.slots[0].height == 500)
+
+        // No-op rebind to the SAME geometry leaves the layout untouched
+        // (display-already-on safety: moving the strip to the display it is
+        // already on must not tear up the horizontal packing or corrupt heights).
+        // rebind always re-pins each column to the display TOP, which is a no-op
+        // here because an already-arranged strip's columns sit at that top
+        // (`y == screenFrame.minY`). The controller's moveStripToDisplay calls
+        // rebind unconditionally, so this is the model guarantee that "move to
+        // the current display" is harmless.
+        let sameEng = makeEngine(count: 3, width: 300, screenWidth: 1470)
+        for i in sameEng.slots.indices { sameEng.slots[i].y = sameEng.screenFrame.minY; sameEng.slots[i].height = 500 }
+        let ysBefore = sameEng.slots.map { $0.y }
+        let xsBefore = sameEng.slots.map { $0.canvasX }
+        let hsBefore = sameEng.slots.map { $0.height }
+        sameEng.rebindStripDisplay(to: sameEng.screenFrame)
+        check("rebind: same-frame rebind keeps every slot y/canvasX/height stable",
+              sameEng.slots.map { $0.y } == ysBefore
+                  && sameEng.slots.map { $0.canvasX } == xsBefore
+                  && sameEng.slots.map { $0.height } == hsBefore)
+
         // --- testWindowTiles: multi-display spawn placement (pure) -----------
         // Primary display (origin 0,0): layout is unchanged from the original
         // single-display tiling, so existing callers spawn identically.
