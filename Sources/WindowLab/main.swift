@@ -225,6 +225,8 @@ case "sandbox":
     runSandbox(windowCount: n, displayIndex: sandboxDisplay)
 case "displaytest":
     runDisplayTest()
+case "displaybindcheck":
+    runDisplayBindCheck()
 case "e2etest":
     runE2EKeybindingTest()
 case "revealtest":
