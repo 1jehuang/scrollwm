@@ -42,6 +42,13 @@ struct ScrollWMConfig: Equatable {
         /// larger minimum keep their size (we read back the real frame), so this
         /// is best-effort and never corrupts the layout. Defaults to 0.5.
         var spawnWidth: CGFloat? = 0.5
+        /// When true (default), every adopted window is stretched to FILL the
+        /// usable strip height (top pinned just under the menu bar), PaperWM
+        /// style, instead of keeping whatever (often short) frame it opened
+        /// with. Apps that enforce a larger minimum/fixed height keep it (we
+        /// read back the real frame), so this is best-effort and never corrupts
+        /// the layout. Set false to preserve each window's native height.
+        var fillHeight: Bool = true
         /// Which displays' windows the strip adopts. `stripDisplay` (default)
         /// manages ONLY the strip's own monitor and leaves the others alone;
         /// `allDisplays` is the legacy "one strip swallows every monitor"
@@ -163,6 +170,7 @@ struct ScrollWMConfig: Equatable {
                 "widthPresets": layout.widthPresets.map { Double($0) },
                 // A configured fraction, or JSON null to preserve native size.
                 "spawnWidth": layout.spawnWidth.map { Double($0) } ?? NSNull(),
+                "fillHeight": layout.fillHeight,
                 "adoptScope": layout.adoptScope.rawValue,
                 "stripDisplay": layout.stripDisplay,  // [md-select]
             ],
@@ -222,6 +230,7 @@ struct ScrollWMConfig: Equatable {
                     config.layout.spawnWidth = nil
                 }
             }
+            if let fh = layout["fillHeight"] as? Bool { config.layout.fillHeight = fh }
             if let s = layout["adoptScope"] as? String {
                 if let scope = AdoptionScope.Scope(configValue: s) {
                     config.layout.adoptScope = scope
@@ -361,6 +370,13 @@ struct ScrollWMConfig: Equatable {
         // minimum keep their size (we never shrink below what the app allows).
         "spawnWidth": 0.5,
 
+        // Stretch every adopted window to FILL the usable strip height (top
+        // pinned just under the menu bar), PaperWM-style. Set false to keep
+        // each window's own native height instead. Apps that enforce a larger
+        // minimum/fixed height keep it (we never force below what the app
+        // allows), so this is best-effort and never corrupts the layout.
+        "fillHeight": true,
+
         // Which displays' windows the strip manages:
         //   "stripDisplay" = ONLY the monitor the strip lives on; windows on
         //                    other monitors are left exactly where they are
@@ -445,7 +461,16 @@ struct ScrollWMConfig: Equatable {
         "width75":  ["opt+3", "cmd+3"],
         "width100": ["opt+4", "cmd+4"],
 
-        "closeWindow": "cmd+q"                  // close focused window (while managing)
+        "closeWindow": "cmd+q",                 // close focused window (while managing)
+
+        // Open a NEW window of the best terminal you have installed (Ghostty >
+        // kitty > WezTerm > Alacritty > iTerm2 > Warp > Hyper > Terminal.app),
+        // and adopt it into the strip. Rides the tap (active only while
+        // managing), so when ScrollWM is released cmd+enter behaves normally.
+        // For Ghostty/kitty, if you have not set a background yet, ScrollWM
+        // appends a pure-black background once (it never edits a background you
+        // already configured).
+        "spawnTerminal": "cmd+return"
       }
       // Optionally, niri-style "spawn" bindings: a chord -> a shell command run
       // (via /bin/sh -c) when you press it. These are always-on global hotkeys,
@@ -483,6 +508,7 @@ enum KeyAction: String, CaseIterable {
     case width75
     case width100
     case closeWindow
+    case spawnTerminal       // open a new window of the best installed terminal
 
     /// Short, human label for the menu-bar key-hint flash (e.g. "Focus →").
     /// Distinct from the longer tutorial descriptions; kept terse so it fits
@@ -506,6 +532,7 @@ enum KeyAction: String, CaseIterable {
         case .width75:            return "Width 75%"
         case .width100:           return "Width 100%"
         case .closeWindow:        return "Close window"
+        case .spawnTerminal:      return "New terminal"
         }
     }
 
@@ -527,6 +554,7 @@ enum KeyAction: String, CaseIterable {
         .width75:         ["opt+3", "cmd+3"],
         .width100:        ["opt+4", "cmd+4"],
         .closeWindow:     ["cmd+q"],
+        .spawnTerminal:   ["cmd+return"],
     ]
 }
 

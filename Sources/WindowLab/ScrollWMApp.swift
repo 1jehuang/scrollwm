@@ -119,6 +119,7 @@ final class ScrollWMController: NSObject {
         engine.minColumnWidth = config.layout.minColumnWidth
         engine.widthPresets = config.layout.widthPresets
         engine.spawnWidthFraction = config.layout.spawnWidth
+        engine.fillHeight = config.layout.fillHeight
         engine.focusMode = config.focusMode
         engine.adoptScope = config.layout.adoptScope
     }
@@ -1002,6 +1003,7 @@ final class ScrollWMController: NSObject {
         bind(.workspaceUp) { [weak self] in self?.switchWorkspace(by: -1) }
         bind(.moveToWorkspaceDown) { [weak self] in self?.moveFocusedToWorkspace(by: 1) }
         bind(.moveToWorkspaceUp) { [weak self] in self?.moveFocusedToWorkspace(by: -1) }
+        bind(.spawnTerminal) { TerminalLauncher.launchBest() }
 
         if tap.start() {
             moveTap = tap

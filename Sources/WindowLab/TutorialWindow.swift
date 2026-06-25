@@ -137,6 +137,9 @@ enum ChordFormatter {
             KeyTableRow("Close focused window", [.closeWindow]) {
                 chordText($0, .closeWindow)
             },
+            KeyTableRow("New terminal window", [.spawnTerminal]) {
+                chordText($0, .spawnTerminal)
+            },
         ]
     }
 }
