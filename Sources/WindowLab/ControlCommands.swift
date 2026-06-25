@@ -96,6 +96,18 @@ extension ScrollWMController {
             closeFocused()
             return "ok: closed \(title)"
 
+        // [md-select] Move the scrolling strip to another monitor at runtime.
+        // Works whether or not we're managing (dormant just re-binds geometry
+        // for the next arrange). The controller returns the one-line reply.
+        case "display":
+            guard let arg = args.first else {
+                let list = displayChoices().map {
+                    "\($0.index):\($0.name)\($0.isStrip ? "*" : "")"
+                }.joined(separator: ", ")
+                return "ok: displays: \(list) (usage: display <next|main|primary|largest|N>)"
+            }
+            return moveStripToDisplay(arg)
+
         case "focus-mode", "focusmode":
             guard let arg = args.first?.lowercased() else {
                 return "ok: focus-mode is \(focusMode.rawValue)"
@@ -121,7 +133,7 @@ extension ScrollWMController {
             return "ok: quitting (windows restored)"
 
         default:
-            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close focus-mode reload quit"
+            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close display focus-mode reload quit"
         }
     }
 

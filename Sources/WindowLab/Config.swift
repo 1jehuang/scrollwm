@@ -35,6 +35,11 @@ struct ScrollWMConfig: Equatable {
         var columnGap: CGFloat = 12
         var minColumnWidth: CGFloat = 200
         var widthPresets: [CGFloat] = [0.25, 0.50, 0.75, 1.0]
+        // [md-select] Which monitor the strip binds to at launch. One of
+        // "main" (default; the active display), "primary" (laptop panel),
+        // "largest" (the external on a laptop+monitor setup), or a 1-based
+        // display index ("1", "2", …). Resolved by DisplaySelector.pick.
+        var stripDisplay: String = "main"
     }
 
     /// Menu-bar mini-map sizing. The icon grows with the strip instead of being
@@ -107,6 +112,7 @@ struct ScrollWMConfig: Equatable {
                 "columnGap": Double(layout.columnGap),
                 "minColumnWidth": Double(layout.minColumnWidth),
                 "widthPresets": layout.widthPresets.map { Double($0) },
+                "stripDisplay": layout.stripDisplay,  // [md-select]
             ],
             "menuBar": [
                 "pointsPerScreen": Double(menuBar.pointsPerScreen),
@@ -146,6 +152,9 @@ struct ScrollWMConfig: Equatable {
             if let presets = layout["widthPresets"] as? [NSNumber], !presets.isEmpty {
                 config.layout.widthPresets = presets.map { CGFloat($0.doubleValue) }
             }
+            // [md-select] Initial strip display: "main"/"primary"/"largest"/index.
+            if let sd = layout["stripDisplay"] as? String { config.layout.stripDisplay = sd }
+            else if let sd = layout["stripDisplay"] as? NSNumber { config.layout.stripDisplay = "\(sd.intValue)" }
         }
         if let mb = obj["menuBar"] as? [String: Any] {
             if let p = mb["pointsPerScreen"] as? NSNumber { config.menuBar.pointsPerScreen = CGFloat(p.doubleValue) }
@@ -254,7 +263,15 @@ struct ScrollWMConfig: Equatable {
       "layout": {
         "columnGap": 12,          // px between columns and screen edges
         "minColumnWidth": 200,    // px floor; a column never shrinks below this
-        "widthPresets": [0.25, 0.50, 0.75, 1.0]  // fractions for the width keys
+        "widthPresets": [0.25, 0.50, 0.75, 1.0],  // fractions for the width keys
+
+        // Which monitor the scrolling strip binds to at launch:
+        //   "main"    = the active display (default)
+        //   "primary" = the macOS primary display (usually the laptop panel)
+        //   "largest" = the biggest display (the external on a laptop+monitor)
+        //   "1"/"2"/… = a 1-based display index
+        // Move it at runtime too: `scrollwm display <next|main|primary|largest|N>`.
+        "stripDisplay": "main"
       },
 
       // Menu-bar mini-map sizing. The icon GROWS with the strip instead of

@@ -390,7 +390,7 @@ enum StripOpsTests {
         {
           // a comment with a fake "key": value inside a string-ish // sequence
           "layout": { "columnGap": 20, "minColumnWidth": 150,
-                      "widthPresets": [0.3, 0.6, 0.9] },
+                      "widthPresets": [0.3, 0.6, 0.9], "stripDisplay": "largest" },
           "focusMode": "centered",
           "keybindings": {
             "focusNext": "ctrl+opt+k",           // override
@@ -403,6 +403,7 @@ enum StripOpsTests {
             check("config columnGap parsed", parsed.layout.columnGap == 20)
             check("config minColumnWidth parsed", parsed.layout.minColumnWidth == 150)
             check("config widthPresets parsed", parsed.layout.widthPresets == [0.3, 0.6, 0.9])
+            check("config stripDisplay parsed", parsed.layout.stripDisplay == "largest")  // [md-select]
             check("config focusMode parsed", parsed.focusMode == .centered)
             check("config keybinding override", parsed.keybindings[.focusNext] == ["ctrl+opt+k"])
             check("config keybinding array", parsed.keybindings[.width25] == ["opt+1", "cmd+1"])
@@ -439,6 +440,8 @@ enum StripOpsTests {
         }
         // Defaults ship with no spawn bindings (no personal config in product).
         check("default config has empty spawn", ScrollWMConfig.default.spawn.isEmpty)
+        // [md-select] Default strip display is "main" (NSScreen.main).
+        check("default config stripDisplay is 'main'", ScrollWMConfig.default.layout.stripDisplay == "main")
 
         // Every action has a parseable default chord (or is modifier-only).
         let allDefaultsParse = KeyAction.allCases.allSatisfy { action in
@@ -906,6 +909,69 @@ enum StripOpsTests {
         let before = reb2.screenFrame
         reb2.rebindStripDisplay(to: before)
         check("rebind: same-frame rebind is stable", reb2.screenFrame == before)
+
+        // --- DisplaySelector: pure strip-display PICK policy ([md-select]) ----
+        // Model the user's REAL hardware in NSScreen.screens order: built-in
+        // primary 1470x956 at AppKit (0,0) (also `main`), and the bigger external
+        // 2560x1440 at AppKit (-225, 956). `largest` must pick the external.
+        let builtin = DisplaySelector.DisplayInfo(
+            frame: CGRect(x: 0, y: 0, width: 1470, height: 956), isMain: true, isPrimary: true)
+        let external = DisplaySelector.DisplayInfo(
+            frame: CGRect(x: -225, y: 956, width: 2560, height: 1440), isMain: false, isPrimary: false)
+        let twoDisplays = [builtin, external]
+
+        check("select: empty spec defaults to main (built-in @ 0)",
+              DisplaySelector.pick(spec: "", displays: twoDisplays) == 0)
+        check("select: 'main' picks the active display (built-in @ 0)",
+              DisplaySelector.pick(spec: "main", displays: twoDisplays) == 0)
+        check("select: 'MAIN' is case-insensitive",
+              DisplaySelector.pick(spec: "MAIN", displays: twoDisplays) == 0)
+        check("select: ' largest ' trims whitespace",
+              DisplaySelector.pick(spec: " largest ", displays: twoDisplays) == 1)
+        check("select: 'primary' picks the AppKit-origin display (built-in @ 0)",
+              DisplaySelector.pick(spec: "primary", displays: twoDisplays) == 0)
+        check("select: 'largest' picks the EXTERNAL (bigger area, @ 1)",
+              DisplaySelector.pick(spec: "largest", displays: twoDisplays) == 1)
+        check("select: index '2' picks the second display (1-based)",
+              DisplaySelector.pick(spec: "2", displays: twoDisplays) == 1)
+        check("select: index '1' picks the first display",
+              DisplaySelector.pick(spec: "1", displays: twoDisplays) == 0)
+        check("select: out-of-range index '3' -> nil",
+              DisplaySelector.pick(spec: "3", displays: twoDisplays) == nil)
+        check("select: index '0' (not 1-based) -> nil",
+              DisplaySelector.pick(spec: "0", displays: twoDisplays) == nil)
+        check("select: garbage spec -> nil",
+              DisplaySelector.pick(spec: "banana", displays: twoDisplays) == nil)
+        check("select: empty display list -> nil",
+              DisplaySelector.pick(spec: "main", displays: []) == nil)
+
+        // 'next' cycles through NSScreen order, wrapping, anchored on `current`.
+        check("select: 'next' from 0 -> 1",
+              DisplaySelector.pick(spec: "next", displays: twoDisplays, current: 0) == 1)
+        check("select: 'next' from 1 wraps -> 0",
+              DisplaySelector.pick(spec: "next", displays: twoDisplays, current: 1) == 0)
+        check("select: 'next' with no current starts from main, -> 1",
+              DisplaySelector.pick(spec: "next", displays: twoDisplays, current: nil) == 1)
+
+        // When `main` is the EXTERNAL (user dragged the menu bar there), 'main'
+        // and 'primary' diverge: primary stays the AppKit-origin built-in.
+        let extIsMain = [
+            DisplaySelector.DisplayInfo(frame: CGRect(x: 0, y: 0, width: 1470, height: 956),
+                                        isMain: false, isPrimary: true),
+            DisplaySelector.DisplayInfo(frame: CGRect(x: -225, y: 956, width: 2560, height: 1440),
+                                        isMain: true, isPrimary: false),
+        ]
+        check("select: 'main' follows the active display (external @ 1)",
+              DisplaySelector.pick(spec: "main", displays: extIsMain) == 1)
+        check("select: 'primary' stays the AppKit-origin display (@ 0)",
+              DisplaySelector.pick(spec: "primary", displays: extIsMain) == 0)
+
+        // Single-display fallbacks: every spec resolves to the only screen.
+        let one = [builtin]
+        check("select: single display, 'largest' -> 0",
+              DisplaySelector.pick(spec: "largest", displays: one) == 0)
+        check("select: single display, 'next' wraps to itself -> 0",
+              DisplaySelector.pick(spec: "next", displays: one, current: 0) == 0)
 
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0

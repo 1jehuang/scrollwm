@@ -38,7 +38,12 @@ final class ScrollWMController: NSObject {
     private(set) var config: ScrollWMConfig
 
     override init() {
-        guard let screen = NSScreen.main else { fatalError("no screen") }
+        guard NSScreen.main != nil else { fatalError("no screen") }
+        config = ScrollWMConfig.load()
+        // [md-select] Bind the strip to the display the user configured
+        // (layout.stripDisplay), defaulting to NSScreen.main. Falls back to main
+        // if the spec is unknown / out of range.
+        let screen = Self.screen(forSpec: config.layout.stripDisplay) ?? NSScreen.main!
         let vf = screen.visibleFrame
         let axFrame = CGRect(
             x: vf.origin.x,
@@ -46,7 +51,6 @@ final class ScrollWMController: NSObject {
             width: vf.width,
             height: vf.height
         )
-        config = ScrollWMConfig.load()
         engine = TeleportEngine(screenFrame: axFrame)
         super.init()
 
@@ -139,6 +143,87 @@ final class ScrollWMController: NSObject {
             return DisplayGeometry.overlapArea(target, fa) < DisplayGeometry.overlapArea(target, fb)
         } ?? NSScreen.main
         if let strip { refreshDisplayGeometry(stripDisplay: strip, relayout: true) }
+    }
+
+    // MARK: - Strip display selection ([md-select])
+
+    /// Map `NSScreen.screens` (the order CLI/config indices reference) to the
+    /// pure `DisplaySelector.DisplayInfo` view of them, tagging which is `main`
+    /// (active display) and which is `primary` (AppKit origin). Keeping the
+    /// AppKit -> pure conversion in one place lets `DisplaySelector.pick` stay
+    /// unit-testable while production and tests agree on the policy.
+    private static func displayInfos() -> [DisplaySelector.DisplayInfo] {
+        let main = NSScreen.main
+        return NSScreen.screens.map { s in
+            DisplaySelector.DisplayInfo(
+                frame: s.frame,
+                isMain: s === main,
+                isPrimary: s.frame.origin == .zero)
+        }
+    }
+
+    /// Resolve a strip-display spec ("main"/"primary"/"largest"/"next"/index) to
+    /// a concrete `NSScreen`, or nil when the spec is unknown / out of range.
+    /// `current` is the strip's present display index, used only by `"next"`.
+    private static func screen(forSpec spec: String, current: Int? = nil) -> NSScreen? {
+        guard let idx = DisplaySelector.pick(spec: spec, displays: displayInfos(), current: current),
+              NSScreen.screens.indices.contains(idx) else { return nil }
+        return NSScreen.screens[idx]
+    }
+
+    /// Index (into `NSScreen.screens`) of the display the strip currently lives
+    /// on, by maximum overlap with the engine's live AX frame. nil if it cannot
+    /// be identified. Drives the `"next"` cycle so it advances from where we are.
+    private func currentStripDisplayIndex() -> Int? {
+        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
+                             ?? NSScreen.main)?.frame.height ?? engine.screenFrame.height
+        let target = engine.screenFrame
+        var best: Int?
+        var bestArea: CGFloat = -1
+        for (i, s) in NSScreen.screens.enumerated() {
+            let f = DisplayGeometry.axFrame(appKitFrame: s.visibleFrame, primaryHeight: primaryHeight)
+            let a = DisplayGeometry.overlapArea(target, f)
+            if a > bestArea { bestArea = a; best = i }
+        }
+        return best
+    }
+
+    /// Move the scrolling strip to another monitor at runtime. `spec` is
+    /// "next"/"main"/"primary"/"largest"/index. Re-identifies the target
+    /// `NSScreen`, rebinds the engine to its visible AX frame and relays every
+    /// managed window onto it (display-aware parking is refreshed too). Returns a
+    /// one-line, human-readable result for the control reply / CLI.
+    @discardableResult
+    func moveStripToDisplay(_ spec: String) -> String {
+        let current = currentStripDisplayIndex()
+        guard let idx = DisplaySelector.pick(spec: spec, displays: Self.displayInfos(), current: current),
+              NSScreen.screens.indices.contains(idx) else {
+            return "error: no such display '\(spec)' (use next|main|primary|largest|1-\(NSScreen.screens.count))"
+        }
+        let target = NSScreen.screens[idx]
+        // Relayout only matters while managing; when dormant we just re-bind the
+        // engine's geometry so the next arrange lands on the chosen display.
+        refreshDisplayGeometry(stripDisplay: target, relayout: isManaging)
+        if !isManaging {
+            // Dormant: refreshDisplayGeometry skips the rebind, so do it here so a
+            // subsequent arrange uses the new display's visible frame.
+            let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
+                                 ?? NSScreen.main ?? target).frame.height
+            engine.rebindStripDisplay(to: DisplayGeometry.axFrame(
+                appKitFrame: target.visibleFrame, primaryHeight: primaryHeight))
+        }
+        menuBar.refresh()
+        let name = target.localizedName
+        return "ok: strip on display \(idx + 1) (\(name))\(isManaging ? ", \(engine.slots.count) windows relaid" : "")"
+    }
+
+    /// Snapshot of the connected displays for the menu / status: (1-based index,
+    /// name, isCurrentStrip).
+    func displayChoices() -> [(index: Int, name: String, isStrip: Bool)] {
+        let cur = currentStripDisplayIndex()
+        return NSScreen.screens.enumerated().map { (i, s) in
+            (index: i + 1, name: s.localizedName, isStrip: i == cur)
+        }
     }
 
     /// Re-read the config file and apply it live. Keybindings are reinstalled
@@ -889,6 +974,23 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         focusModeItem.submenu = focusSubmenu
         menu.addItem(focusModeItem)
 
+        // [md-select] "Move strip to display" submenu, only when >1 monitor.
+        let displays = controller.displayChoices()
+        if displays.count > 1 {
+            let dispItem = NSMenuItem(title: "Move Strip to Display", action: nil, keyEquivalent: "")
+            let dispMenu = NSMenu()
+            for d in displays {
+                let mi = NSMenuItem(title: "Display \(d.index): \(d.name)",
+                                    action: #selector(moveStripToDisplayAction(_:)), keyEquivalent: "")
+                mi.target = self
+                mi.state = d.isStrip ? .on : .off
+                mi.representedObject = String(d.index)
+                dispMenu.addItem(mi)
+            }
+            dispItem.submenu = dispMenu
+            menu.addItem(dispItem)
+        }
+
 
         menu.addItem(.separator())
 
@@ -939,6 +1041,12 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         if let raw = sender.representedObject as? String,
            let mode = TeleportEngine.FocusMode(rawValue: raw) {
             controller.setFocusMode(mode)
+        }
+    }
+    // [md-select] Move the strip to the chosen display (1-based index in tag).
+    @objc private func moveStripToDisplayAction(_ sender: NSMenuItem) {
+        if let spec = sender.representedObject as? String {
+            _ = controller.moveStripToDisplay(spec)
         }
     }
     @objc private func quitAction() { controller.quit() }

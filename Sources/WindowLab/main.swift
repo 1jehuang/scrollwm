@@ -141,7 +141,7 @@ let command = args.first ?? (launchedAsAppBundle ? "run" : "probe")
 // These are the user-facing `scrollwm <verb>` commands (see runControlCLI).
 let controlVerbs: Set<String> = [
     "status", "arrange", "release", "toggle", "focus", "move", "width",
-    "workspace", "ws", "close", "focus-mode", "focusmode", "reload", "reload-config",
+    "workspace", "ws", "close", "display", "focus-mode", "focusmode", "reload", "reload-config",
     "tutorial", "ping", "quit",
 ]
 if controlVerbs.contains(command) {
@@ -236,6 +236,8 @@ default:
       scrollwm width <25|50|75|100|0.0-1.0>
                                    resize focused column
       scrollwm close               close the focused window
+      scrollwm display <next|main|primary|largest|N>
+                                   move the scrolling strip to another monitor
       scrollwm focus-mode [fit|centered]
                                    get/set how the viewport follows focus
       scrollwm reload              re-read the config file live
