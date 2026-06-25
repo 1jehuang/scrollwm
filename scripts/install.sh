@@ -15,6 +15,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=signing-lib.sh
 source "$REPO_DIR/scripts/signing-lib.sh"
 VERSION="$(cat "$REPO_DIR/VERSION" 2>/dev/null || echo 0.0.0-dev)"
@@ -81,10 +82,13 @@ cat <<DONE
 Installed: $APP  (v$VERSION)
 
 First run:
-  1. open "$APP"      (menu bar icon appears; nothing is touched yet)
-  2. grant Accessibility when prompted:
-     System Settings -> Privacy & Security -> Accessibility -> enable ScrollWM
-  3. use the menu bar icon -> "Arrange Windows into Strip", or run: scrollwm arrange
+  1. open "$APP"      (menu-bar icon appears; nothing is touched yet)
+  2. ScrollWM opens System Settings to Privacy & Security -> Accessibility.
+     Flip the ScrollWM switch ON -- its one and only permission.
+  3. It continues automatically (no relaunch) and arranges your current
+     windows. After that it's dormant until you Arrange again
+     (menu-bar icon -> "Arrange Windows into Strip", or run: scrollwm arrange).
+  (Already granted on a prior install? It skips all this and starts silently.)
 
 Controls (also in the in-app tutorial):
   ctrl+opt+left/right   focus previous/next column
