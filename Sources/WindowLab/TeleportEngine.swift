@@ -720,20 +720,41 @@ final class TeleportEngine {
         func repin(_ s: inout [Slot]) {
             for i in s.indices {
                 s[i].y = topY
-                // Fill mode: stretch to the new usable height; otherwise just
-                // clamp an over-tall window down so it fits the new display.
-                if fillHeight { s[i].height = maxH }
-                else if s[i].height > maxH { s[i].height = maxH }
+                // Clamp an over-tall window down so it fits the new display.
+                // In fill mode the real resize to the FULL new height is issued
+                // below via `applyFillHeight(force:)`; we deliberately do NOT
+                // pre-stamp `maxH` here, or that pass would see the model as
+                // "already full" and skip the cross-process resize, stranding
+                // the real window at its old-resolution height.
+                if s[i].height > maxH { s[i].height = maxH }
             }
         }
         repin(&slots)
         for i in workspaces.indices { repin(&workspaces[i].slots) }
-        // In fill mode, push the new full height to the live windows of the
-        // ACTIVE strip (the inactive workspaces' windows are parked off-screen
-        // and get re-stretched when re-placed). Reconciled against the real
-        // frame so an app that clamps height never desyncs the model.
+        // In fill mode, push the new full height to the REAL windows. `force:
+        // true` is required: a window that was already at the OLD full height
+        // now has a model height (clamped above, or unchanged when growing) that
+        // can equal the new target's tolerance, so the normal early-return would
+        // skip the resize. Reconciled against the real frame so an app that
+        // clamps height never desyncs the model.
+        //
+        // Both the ACTIVE strip AND the windows stashed in INACTIVE workspaces
+        // are resized: a parked window is only repositioned (not resized) when
+        // its workspace is later re-activated, so without resizing it here a
+        // resolution change would leave it stuck at the old height until the
+        // user happened to resize it. Parked windows keep their parked `y`
+        // (top-pin happens when re-placed); the active strip was top-pinned by
+        // `repin` above.
         if fillHeight {
-            for i in slots.indices { applyFillHeight(toSlotAt: i) }
+            for i in slots.indices { applyFillHeight(toSlotAt: i, force: true) }
+            // Inactive workspaces only: `workspaces[activeWorkspace]` is a STALE
+            // placeholder (the live active slots are `slots`, handled above), so
+            // resizing it would touch out-of-date / closed elements.
+            for w in workspaces.indices where w != activeWorkspace {
+                for i in workspaces[w].slots.indices {
+                    fillSlotToUsableHeight(&workspaces[w].slots[i], force: true)
+                }
+            }
         }
         // Keep the focused column visible under the new viewport width.
         if slots.indices.contains(focusIndex) {

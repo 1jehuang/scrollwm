@@ -229,38 +229,62 @@ extension TeleportEngine {
     /// positions from `slot.y`), write the full height, read back the REAL
     /// frame, store that, and schedule the same async reconcile the width keys
     /// use — so the strip model always matches reality even when the app wins.
-    func applyFillHeight(toSlotAt idx: Int) {
+    ///
+    /// `force` skips the "already full height" early-return and ALWAYS issues
+    /// the resize. The display-rebind path (`rebindStripDisplay`, a resolution /
+    /// monitor change) needs this: it updates the stored model height to the new
+    /// usable height up front, so the model would otherwise look "already full"
+    /// and the cross-process `setSize` would be skipped, leaving the REAL window
+    /// stuck at its old-resolution height. The adopt / spawn paths leave `force`
+    /// off so an unchanged window still skips the round-trip.
+    func applyFillHeight(toSlotAt idx: Int, force: Bool = false) {
         guard fillHeight else { return }
         guard slots.indices.contains(idx) else { return }
-        let slot = slots[idx]
-        guard slot.window.healthy else { return }
-
+        guard slots[idx].window.healthy else { return }
         // Always pin the top to the strip's top edge regardless of whether a
         // resize is needed: `teleport()` places the window from `slot.y`, so
         // this is what seats it just under the menu bar.
         slots[idx].y = screenFrame.origin.y
+        if fillSlotToUsableHeight(&slots[idx], force: force) {
+            // Slow/animated apps settle after the immediate read-back; the async
+            // reconcile refreshes the model + re-packs once the real size lands.
+            scheduleWidthReconcile(for: slots[idx].window)
+        }
+    }
 
+    /// Resize an arbitrary slot's REAL window to the usable strip height and
+    /// pull the model back to the live frame. Shared by the on-strip
+    /// `applyFillHeight` and the display-rebind relayout (which must also
+    /// re-fill windows parked in INACTIVE workspaces, where there is no `slots`
+    /// index to address). Returns true when a cross-process resize was issued
+    /// (so the caller can schedule the async reconcile). No top-pin here: the
+    /// caller owns `y` (the active strip pins it to the new top; parked windows
+    /// keep theirs until re-placed). No-op unless `fillHeight` is enabled, the
+    /// window is healthy, and (without `force`) the height actually differs.
+    @discardableResult
+    func fillSlotToUsableHeight(_ slot: inout Slot, force: Bool) -> Bool {
+        guard fillHeight, slot.window.healthy else { return false }
         let target = screenFrame.height
-        // Already full height: skip the cross-process round-trip entirely.
-        if abs(slot.height - target) <= 1 { return }
+        // Already full height: skip the cross-process round-trip entirely
+        // (unless forced, e.g. a resolution change where the model was already
+        // updated to the new height but the real window has not been resized).
+        if !force && abs(slot.height - target) <= 1 { return false }
 
         // Optimistically reflect the request, then pull the model back to the
         // real frame (apps clamp to their own min/fixed height while still
         // reporting success). Width is preserved at whatever the spawn-width
         // pass settled it to.
-        slots[idx].height = target
+        slot.height = target
         _ = AXSource.setSize(
             slot.window.element,
             kAXSizeAttribute as String,
             CGSize(width: slot.width, height: target)
         )
         if let actual = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
-            slots[idx].width = actual.width
-            slots[idx].height = actual.height
+            slot.width = actual.width
+            slot.height = actual.height
         }
-        // Slow/animated apps settle after the immediate read-back; the async
-        // reconcile refreshes the model + re-packs once the real size lands.
-        scheduleWidthReconcile(for: slot.window)
+        return true
     }
 
     /// Smallest preset COLUMN width (from `widthPresets`) that is at least

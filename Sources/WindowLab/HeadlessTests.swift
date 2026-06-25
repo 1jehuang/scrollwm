@@ -198,6 +198,52 @@ func runHeadlessOpsTest() {
         t.check("fill-height off: adopted the native-height window", false)
     }
 
+    // --- FILL HEIGHT across a RESOLUTION / DISPLAY change (regression for
+    // "spawned/relaid windows are the wrong height after I changed resolution"):
+    // rebindStripDisplay must physically resize the REAL windows to the NEW
+    // usable height, in BOTH directions, for the active strip AND windows parked
+    // in inactive workspaces. The bug: repin pre-stamped the model to the new
+    // height, so applyFillHeight saw "already full" and skipped the AX resize. ---
+    func rebindFillCase(_ name: String, from resA: CGRect, to resB: CGRect) {
+        let w = SimWindowWorld()
+        AXSource.backend = w
+        defer { AXSource.backend = world } // restore the suite's world
+        let e = TeleportEngine(screenFrame: resA)
+        e.fillHeight = true
+        let activePID: pid_t = 5700
+        let parkedPID: pid_t = 5701
+        _ = w.addWindow(pid: activePID, title: "RbActive",
+                        frame: CGRect(x: 60, y: 120, width: 700, height: 360))
+        _ = w.addWindow(pid: parkedPID, title: "RbParked",
+                        frame: CGRect(x: 820, y: 120, width: 700, height: 360))
+        let m = IdentityMatcher.match(
+            axWindows: [activePID, parkedPID].flatMap { AXSource.windows(forPID: $0) },
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true))
+        e.adopt(matched: m)
+        func liveH(_ pid: pid_t) -> CGFloat { w.windows(forPID: pid).first?.frame.height ?? -1 }
+        // Both windows fill the OLD usable height after adopt.
+        t.check("rebind/\(name): adopt filled both to old usable height (\(Int(resA.height)))",
+                abs(liveH(activePID) - resA.height) <= 1 && abs(liveH(parkedPID) - resA.height) <= 1)
+        // Send RbParked to an inactive workspace so it is stashed/parked, then
+        // come back so the active strip holds only RbActive.
+        e.focusIndex = e.slots.firstIndex { $0.window.title == "RbParked" } ?? 0
+        _ = e.moveFocusedToWorkspace(by: 1)
+        _ = e.switchWorkspace(by: -1)
+        // The resolution change.
+        _ = e.rebindStripDisplay(to: resB)
+        t.check("rebind/\(name): ACTIVE window resized to new usable height (\(Int(resB.height)))",
+                abs(liveH(activePID) - resB.height) <= 1)
+        t.check("rebind/\(name): PARKED (inactive-workspace) window resized to new usable height",
+                abs(liveH(parkedPID) - resB.height) <= 1)
+    }
+    rebindFillCase("shrink",
+                   from: CGRect(x: 0, y: 39, width: 1710, height: 1073),
+                   to:   CGRect(x: 0, y: 32, width: 1512, height: 944))
+    rebindFillCase("grow",
+                   from: CGRect(x: 0, y: 32, width: 1512, height: 944),
+                   to:   CGRect(x: 0, y: 39, width: 1710, height: 1073))
+
+
     // --- MOVE: reorder focused column right ---
     engine.focusIndex = 0
     let before = engine.slots.map { $0.window.title }
