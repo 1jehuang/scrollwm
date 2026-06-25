@@ -141,6 +141,28 @@ final class ScrollWMController: NSObject {
         if let strip { refreshDisplayGeometry(stripDisplay: strip, relayout: true) }
     }
 
+    /// Bind the strip to a SPECIFIC display (its visible frame becomes the
+    /// strip's usable area; its full frame the parking reference; every other
+    /// screen the "other" set). Unlike `refreshDisplayGeometry`, this updates the
+    /// strip's own `screenFrame` even when dormant, so a caller can place the
+    /// strip on a chosen monitor BEFORE arranging (used by `sandbox --display N`
+    /// to run the whole sandbox on an external screen). Relays any already-
+    /// managed windows onto the new geometry.
+    func bindStripToDisplay(_ stripDisplay: NSScreen) {
+        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
+                             ?? NSScreen.main ?? stripDisplay).frame.height
+        func axFull(_ s: NSScreen) -> CGRect {
+            DisplayGeometry.axFrame(appKitFrame: s.frame, primaryHeight: primaryHeight)
+        }
+        engine.stripDisplayFrame = axFull(stripDisplay)
+        engine.otherDisplayFrames = NSScreen.screens.filter { $0 !== stripDisplay }.map(axFull)
+        // rebindStripDisplay sets `screenFrame` and relays; on an empty strip the
+        // relay is a no-op, so this safely repositions the strip pre-arrange.
+        engine.rebindStripDisplay(
+            to: DisplayGeometry.axFrame(appKitFrame: stripDisplay.visibleFrame, primaryHeight: primaryHeight)
+        )
+    }
+
     /// Re-read the config file and apply it live. Keybindings are reinstalled
     /// so edits take effect without a relaunch. If currently managing, the
     /// strip is re-laid-out so layout changes (gap/width) show immediately.
@@ -490,6 +512,38 @@ final class ScrollWMController: NSObject {
     func debugWidth(forFraction f: CGFloat) -> CGFloat { engine.width(forFraction: f) }
     var debugActiveWorkspace: Int { engine.stripState.activeWorkspace }
     var debugWorkspaceCount: Int { engine.stripState.workspaceCount }
+
+    // --- Multi-display debug accessors (for the `displaytest` integration) ---
+    // These read/relay the SAME engine the production controller drives, so the
+    // test asserts real behavior, not a parallel mock.
+
+    /// The strip's current usable (visible) frame in AX global coords.
+    var debugScreenFrame: CGRect { engine.screenFrame }
+    /// Full AX frame of the display the strip is bound to (parking reference).
+    var debugStripDisplayFrame: CGRect? { engine.stripDisplayFrame }
+    /// Full AX frames of every OTHER display (drives the parking-corner choice).
+    var debugOtherDisplayFrames: [CGRect] { engine.otherDisplayFrames }
+    /// The shared off-screen parking corner the engine would park columns at.
+    var debugParkingPoint: CGPoint { engine.parkingPoint }
+    /// Live AX origin the focused column is committed at (nil if none/unhealthy).
+    var debugFocusedCommittedOrigin: CGPoint? {
+        engine.slots.indices.contains(engine.focusIndex)
+            ? engine.slots[engine.focusIndex].window.lastCommittedOrigin : nil
+    }
+    /// Re-bind the strip onto new display geometry at runtime and relay every
+    /// managed window onto it, exactly as a real monitor hotplug/rearrange would
+    /// via `screenParametersChanged`. `stripFull`/`others` are the parking
+    /// references (strip's own display vs every other), `visible` is the new
+    /// usable frame the strip should fill — all in AX global (top-left) coords.
+    /// Returns the number of AX position writes the relay issued. Used by
+    /// `displaytest` to simulate "the strip moved to the other monitor" (or, on a
+    /// single-display rig, onto a sub-region) and verify the windows follow.
+    @discardableResult
+    func debugRebindStrip(visible: CGRect, stripFull: CGRect, others: [CGRect]) -> Int {
+        engine.stripDisplayFrame = stripFull
+        engine.otherDisplayFrames = others
+        return engine.rebindStripDisplay(to: visible)
+    }
 
     /// Jump directly to a 1-based workspace index (CLI `workspace N`).
     func focusWorkspace(_ oneBased: Int) {
