@@ -216,6 +216,53 @@ extension TeleportEngine {
         scheduleWidthReconcile(for: slot.window)
     }
 
+    /// Stretch the column at `idx` to FILL the usable strip height (PaperWM /
+    /// niri style): pin its top to the strip's top edge and its height to the
+    /// full usable height. No-op unless `fillHeight` is enabled. This is what
+    /// makes a freshly opened (often short) window occupy the whole column
+    /// instead of leaving dead space below it.
+    ///
+    /// Robustness mirrors `applySpawnWidth`: many apps enforce a larger MINIMUM
+    /// (or a fixed) height and silently clamp the request while STILL returning
+    /// AX `.success`, and some resize asynchronously so the immediate read-back
+    /// is stale. So we never trust the request: we always pin `y` (teleport
+    /// positions from `slot.y`), write the full height, read back the REAL
+    /// frame, store that, and schedule the same async reconcile the width keys
+    /// use — so the strip model always matches reality even when the app wins.
+    func applyFillHeight(toSlotAt idx: Int) {
+        guard fillHeight else { return }
+        guard slots.indices.contains(idx) else { return }
+        let slot = slots[idx]
+        guard slot.window.healthy else { return }
+
+        // Always pin the top to the strip's top edge regardless of whether a
+        // resize is needed: `teleport()` places the window from `slot.y`, so
+        // this is what seats it just under the menu bar.
+        slots[idx].y = screenFrame.origin.y
+
+        let target = screenFrame.height
+        // Already full height: skip the cross-process round-trip entirely.
+        if abs(slot.height - target) <= 1 { return }
+
+        // Optimistically reflect the request, then pull the model back to the
+        // real frame (apps clamp to their own min/fixed height while still
+        // reporting success). Width is preserved at whatever the spawn-width
+        // pass settled it to.
+        slots[idx].height = target
+        _ = AXSource.setSize(
+            slot.window.element,
+            kAXSizeAttribute as String,
+            CGSize(width: slot.width, height: target)
+        )
+        if let actual = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
+            slots[idx].width = actual.width
+            slots[idx].height = actual.height
+        }
+        // Slow/animated apps settle after the immediate read-back; the async
+        // reconcile refreshes the model + re-packs once the real size lands.
+        scheduleWidthReconcile(for: slot.window)
+    }
+
     /// Smallest preset COLUMN width (from `widthPresets`) that is at least
     /// `minimum` points wide, or nil when even the widest preset is narrower
     /// than `minimum` (the window is wider than the 100% column). Used by the

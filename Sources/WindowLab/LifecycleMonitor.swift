@@ -250,6 +250,8 @@ final class LifecycleMonitor {
             // Snap each new window to the configured spawn width (no-op when
             // unset); the read-back keeps the model honest if the app clamps.
             for i in insertedIndices { engine.applySpawnWidth(toSlotAt: i) }
+            // Then stretch each to the full usable height (no-op when disabled).
+            for i in insertedIndices { engine.applyFillHeight(toSlotAt: i) }
         }
 
         // Reconcile each surviving column's stored size against the live AX
@@ -373,6 +375,8 @@ final class LifecycleMonitor {
         // when unset). Native apps that enforce a larger minimum keep their size
         // (we read back the real frame), so the model never diverges.
         for i in insertedIndices { engine.applySpawnWidth(toSlotAt: i) }
+        // Then stretch each to the full usable height (no-op when disabled).
+        for i in insertedIndices { engine.applyFillHeight(toSlotAt: i) }
         adoptedCount += onscreenNew.count
         engine.compactStrip()
         // Reveal the newest. `focus` -> `teleport` now only moves windows whose

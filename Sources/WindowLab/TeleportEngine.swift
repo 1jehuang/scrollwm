@@ -149,6 +149,16 @@ final class TeleportEngine {
     /// diverges from reality; the request is best-effort.
     var spawnWidthFraction: CGFloat?
 
+    /// When true, every adopted window is stretched to FILL the usable strip
+    /// height (top pinned to `screenFrame.origin.y`, height = `screenFrame.height`),
+    /// PaperWM-style, instead of keeping whatever (often short) frame it opened
+    /// with. Apps that enforce a larger MINIMUM height still win (we read back
+    /// and store the real, clamped frame), so the layout never diverges from
+    /// reality; the request is best-effort. Config-driven (`layout.fillHeight`).
+    /// Defaults to false in the bare engine so unit tests see the old behavior;
+    /// the production controller sets it from config (which defaults true).
+    var fillHeight: Bool = false
+
     // Metrics
     private(set) var lastTeleportMs: Double = 0
     private(set) var teleportLatencies: [Double] = []
@@ -226,6 +236,10 @@ final class TeleportEngine {
         // A fresh arrange starts from a single workspace.
         workspaces = [Workspace()]
         activeWorkspace = 0
+        // Stretch every column to fill the usable height (PaperWM-style) when
+        // enabled. No-op otherwise; clamps are reconciled against the live AX
+        // frame inside `applyFillHeight`.
+        for i in slots.indices { applyFillHeight(toSlotAt: i) }
         commitAll()
     }
 
@@ -706,11 +720,21 @@ final class TeleportEngine {
         func repin(_ s: inout [Slot]) {
             for i in s.indices {
                 s[i].y = topY
-                if s[i].height > maxH { s[i].height = maxH }
+                // Fill mode: stretch to the new usable height; otherwise just
+                // clamp an over-tall window down so it fits the new display.
+                if fillHeight { s[i].height = maxH }
+                else if s[i].height > maxH { s[i].height = maxH }
             }
         }
         repin(&slots)
         for i in workspaces.indices { repin(&workspaces[i].slots) }
+        // In fill mode, push the new full height to the live windows of the
+        // ACTIVE strip (the inactive workspaces' windows are parked off-screen
+        // and get re-stretched when re-placed). Reconciled against the real
+        // frame so an app that clamps height never desyncs the model.
+        if fillHeight {
+            for i in slots.indices { applyFillHeight(toSlotAt: i) }
+        }
         // Keep the focused column visible under the new viewport width.
         if slots.indices.contains(focusIndex) {
             viewportX = viewportTarget(for: slots[focusIndex], mode: focusMode,

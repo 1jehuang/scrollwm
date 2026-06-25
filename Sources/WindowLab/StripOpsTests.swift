@@ -495,6 +495,15 @@ enum StripOpsTests {
             check("config spawnWidth null -> nil (native size)", p.layout.spawnWidth == nil)
         } catch { check("config spawnWidth null parses", false) }
 
+        // fillHeight: defaults on, parses an explicit override, round-trips.
+        check("config fillHeight defaults on", ScrollWMConfig.default.layout.fillHeight == true)
+        do {
+            let p = try ScrollWMConfig.parse(jsonc: #"{ "layout": { "fillHeight": false } }"#)
+            check("config fillHeight false parsed", p.layout.fillHeight == false)
+            let pUnset = try ScrollWMConfig.parse(jsonc: #"{ "layout": { } }"#)
+            check("config fillHeight defaults when unset", pUnset.layout.fillHeight == true)
+        } catch { check("config fillHeight parses", false) }
+
         // Malformed JSON throws (caller falls back to defaults).
         var threw = false
         do { _ = try ScrollWMConfig.parse(jsonc: "{ not json ]") } catch { threw = true }

@@ -133,6 +133,71 @@ func runHeadlessOpsTest() {
         t.check("spawn-width clamp: adopted the min-width window", false)
     }
 
+    // --- FILL HEIGHT: an adopted short window stretches to the full usable
+    // height, top-pinned just under the menu bar; an app with a taller fixed/
+    // minimum height keeps it (model reconciles to the real frame) ---
+    let fillEngine = TeleportEngine(screenFrame: Headless.defaultVisibleFrame)
+    fillEngine.fillHeight = true
+    let usableTop = Headless.defaultVisibleFrame.origin.y
+    let usableH = Headless.defaultVisibleFrame.height
+    let shortPID: pid_t = 5400
+    _ = world.addWindow(pid: shortPID, title: "ShortWin",
+                        frame: CGRect(x: 60, y: 200, width: 700, height: 360))
+    if let shortInfo = AXSource.windows(forPID: shortPID).first {
+        t.check("fill-height: window opened shorter than the usable height",
+                shortInfo.frame.height < usableH - 50)
+        fillEngine.insert(window: shortInfo, at: 0)
+        fillEngine.applyFillHeight(toSlotAt: 0)
+        fillEngine.compactStrip()
+        fillEngine.teleport()   // commit the pinned top to the real window
+        let liveShort = AXSource.windows(forPID: shortPID).first?.frame ?? .zero
+        t.check("fill-height: real window stretched to full usable height (\(Int(usableH)))",
+                abs(liveShort.height - usableH) <= 1)
+        t.check("fill-height: real window top pinned under the menu bar (\(Int(usableTop)))",
+                abs(liveShort.origin.y - usableTop) <= 1)
+        t.check("fill-height: model height matches the real frame",
+                abs(fillEngine.slots[0].height - liveShort.height) <= 1)
+        t.check("fill-height: model top matches the real frame",
+                abs(fillEngine.slots[0].y - usableTop) <= 1)
+    } else {
+        t.check("fill-height: adopted the short window", false)
+    }
+
+    // A window whose hard MINIMUM height exceeds the usable height keeps its
+    // minimum (app wins); the model reconciles to that real, clamped height so
+    // it never claims a height the window does not actually have.
+    let tallMinPID: pid_t = 5500
+    let tallMin = usableH + 120
+    _ = world.addWindow(pid: tallMinPID, title: "TallMin",
+                        frame: CGRect(x: 60, y: 100, width: 700, height: 500),
+                        minSize: CGSize(width: 200, height: tallMin))
+    if let tallInfo = AXSource.windows(forPID: tallMinPID).first {
+        fillEngine.insert(window: tallInfo, at: 0)
+        fillEngine.applyFillHeight(toSlotAt: 0)
+        let liveTall = AXSource.windows(forPID: tallMinPID).first?.frame ?? .zero
+        t.check("fill-height clamp: app kept at least its minimum height", liveTall.height >= tallMin - 1)
+        t.check("fill-height clamp: model matches the real (clamped) height",
+                abs(fillEngine.slots[0].height - liveTall.height) <= 1)
+    } else {
+        t.check("fill-height clamp: adopted the tall-min window", false)
+    }
+
+    // fillHeight DISABLED preserves the window's native height (regression
+    // guard: the flag must actually gate the behavior).
+    let noFillEngine = TeleportEngine(screenFrame: Headless.defaultVisibleFrame)
+    noFillEngine.fillHeight = false
+    let nativePID: pid_t = 5600
+    _ = world.addWindow(pid: nativePID, title: "NativeH",
+                        frame: CGRect(x: 60, y: 200, width: 700, height: 360))
+    if let nativeInfo = AXSource.windows(forPID: nativePID).first {
+        noFillEngine.insert(window: nativeInfo, at: 0)
+        noFillEngine.applyFillHeight(toSlotAt: 0)
+        let liveNative = AXSource.windows(forPID: nativePID).first?.frame ?? .zero
+        t.check("fill-height off: native height preserved", abs(liveNative.height - 360) <= 1)
+    } else {
+        t.check("fill-height off: adopted the native-height window", false)
+    }
+
     // --- MOVE: reorder focused column right ---
     engine.focusIndex = 0
     let before = engine.slots.map { $0.window.title }
