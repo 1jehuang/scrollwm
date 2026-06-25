@@ -353,10 +353,12 @@ private enum ExhaustivePure {
         return fails
     }
 
-    /// computeParkingPoint over EVERY subset of the 4 canonical neighbor
-    /// positions (left/right/above/below) x preferred side. The parked sliver
-    /// (origin clamped to keep ~40px visible) must land on the STRIP's own
-    /// display, never inside a neighbor.
+    /// computeParkingX over EVERY subset of the 4 canonical neighbor positions
+    /// (left/right/above/below) x preferred side. A parked window keeps its full
+    /// vertical band and only slides off a SIDE, so the sliver (origin clamped to
+    /// keep ~40px visible) is a tall peek that must land on the STRIP's own
+    /// display, never inside a neighbor. Above/below neighbors must NOT affect
+    /// the chosen side; only a side neighbor sharing the vertical band does.
     static func parkingCorner() -> [String] {
         var fails: [String] = []
         let strip = CGRect(x: 0, y: 0, width: 1470, height: 956)
@@ -370,34 +372,33 @@ private enum ExhaustivePure {
         let winW: CGFloat = 600, winH: CGFloat = 400
         for mask in 0..<(1 << neighbors.count) {
             let others = neighbors.indices.filter { mask & (1 << $0) != 0 }.map { neighbors[$0].rect }
+            // A SIDE neighbor sharing the strip's vertical band blocks that edge.
+            let leftBlocked  = others.contains { $0.maxX <= strip.minX + 1 && $0.minY < strip.maxY && $0.maxY > strip.minY }
+            let rightBlocked = others.contains { $0.minX >= strip.maxX - 1 && $0.minY < strip.maxY && $0.maxY > strip.minY }
             for side in [TeleportEngine.ParkSide.left, .right] {
-                let p = TeleportEngine.computeParkingPoint(
+                let x = TeleportEngine.computeParkingX(
                     stripDisplay: strip, others: others, prefer: side, margin: 4000)
-                if !p.x.isFinite || !p.y.isFinite {
-                    fails.append("park(side=\(side), others=\(mask)): non-finite \(p)")
+                if !x.isFinite {
+                    fails.append("park(side=\(side), others=\(mask)): non-finite \(x)")
                     continue
                 }
-                // Model the macOS clamp: a window pushed to `p` keeps ~40px on the
-                // nearest display. We verify the clamped sliver intersects the
-                // STRIP display and does NOT end up fully inside a neighbor.
-                // The clamp pulls the origin back so the window stays >= margin
-                // visible on the strip display along the pushed axis.
-                let clamped = CGPoint(
-                    x: min(max(p.x, strip.minX - (winW - clampMargin)), strip.maxX - clampMargin),
-                    y: min(max(p.y, strip.minY - (winH - clampMargin)), strip.maxY - clampMargin))
-                let sliver = CGRect(x: clamped.x, y: clamped.y, width: winW, height: winH)
+                // Both side edges blocked => a sliver on a busy edge is
+                // unavoidable; skip (matches the production contract).
+                if leftBlocked && rightBlocked { continue }
+                // Model the macOS clamp: a window slid to `x` (full-height, pinned
+                // to the strip's top) keeps ~40px on the nearest display. The
+                // clamp pulls the origin back so the window stays >= margin
+                // visible on the strip display along the horizontal axis.
+                let clampedX = min(max(x, strip.minX - (winW - clampMargin)), strip.maxX - clampMargin)
+                let sliver = CGRect(x: clampedX, y: strip.minY, width: winW, height: winH)
                 let onStrip = DisplayGeometry.overlapArea(sliver, strip)
                 if onStrip <= 0 {
                     fails.append("park(side=\(side), others=\(mask)): sliver \(sliver) does not touch strip display")
                 }
-                // The pushed corner must be OUTSIDE every neighbor's interior
-                // (the whole point: never park onto a neighbor). We allow the
-                // sliver to touch the strip; check the raw push point p is not
-                // inside a neighbor that blocks that direction.
-                for (i, nb) in others.enumerated() {
-                    if nb.contains(p) {
-                        fails.append("park(side=\(side), others=\(mask)): corner \(p) lands inside neighbor #\(i) \(nb)")
-                    }
+                // The sliver must not land predominantly inside a neighbor.
+                if let landed = DisplayGeometry.display(bestOverlapping: sliver, displays: [strip] + others),
+                   landed != strip {
+                    fails.append("park(side=\(side), others=\(mask)): sliver \(sliver) lands on neighbor \(landed)")
                 }
             }
         }

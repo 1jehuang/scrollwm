@@ -281,21 +281,16 @@ private func approxEqual(_ a: CGRect, _ b: CGRect, tol: CGFloat = 1) -> Bool {
         && abs(a.width - b.width) <= tol && abs(a.height - b.height) <= tol
 }
 
-/// True if the parking corner sits at (or just past) an edge of the strip
-/// display that has NO neighbor in that direction, i.e. the clamp sliver will
-/// stay on the strip display. The corner is pushed `margin` (4000) past the
-/// chosen edges, so we just confirm it is on the FAR side of the strip from any
-/// blocking neighbor: its X is past whichever horizontal edge is free, its Y
-/// past whichever vertical edge is free.
+/// True if the parking edge sits at (or just past) a SIDE edge of the strip
+/// display that has NO neighbor in that direction, i.e. the clamp sliver (a tall
+/// full-height peek) will stay on the strip display. The window keeps its
+/// vertical band and only slides off a side, so this is a purely horizontal
+/// check: the X is past whichever side edge is free.
 private func parkingCornerFavorsStrip(_ p: CGPoint, strip s: CGRect, others: [CGRect]) -> Bool {
     func vOverlap(_ d: CGRect) -> Bool { d.minY < s.maxY && d.maxY > s.minY }
-    func hOverlap(_ d: CGRect) -> Bool { d.minX < s.maxX && d.maxX > s.minX }
     let rightBlocked = others.contains { $0.minX >= s.maxX - 1 && vOverlap($0) }
-    let botBlocked   = others.contains { $0.minY >= s.maxY - 1 && hOverlap($0) }
-    // X must be past a free horizontal edge; Y past a free vertical edge.
-    let xOK = rightBlocked ? (p.x < s.minX) : (p.x > s.maxX)
-    let yOK = botBlocked   ? (p.y < s.minY) : (p.y > s.maxY)
-    return xOK && yOK
+    // X must be past a FREE side edge (flip away from a blocking side neighbor).
+    return rightBlocked ? (p.x < s.minX) : (p.x > s.maxX)
 }
 
 private func rectStr(_ r: CGRect) -> String {

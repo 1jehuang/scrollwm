@@ -29,7 +29,7 @@ import CoreGraphics
 enum GeometryHardeningTests {
 
     /// The off-screen parking shove distance, matching
-    /// `TeleportEngine.computeParkingPoint`'s default `margin`.
+    /// `TeleportEngine.computeParkingX`'s default `margin`.
     static let parkMargin: CGFloat = 4000
 
     /// Run every hardening check, reporting through the caller's `check`.
@@ -66,66 +66,49 @@ enum GeometryHardeningTests {
                 primaryHeight: primaryH) == extAppKit)
 
         // ===================== (a) PARK on the negative-origin external ========
-        // Strip lives on the EXTERNAL; the built-in sits directly BELOW it
-        // (AX y>=0). A parked column must shove toward a FREE edge of the
-        // external so the macOS clamp sliver stays on the external — and the
-        // vertical free edge is the external's TOP (away from the built-in
-        // below), NEVER toward the built-in.
-        let extRight = TeleportEngine.computeParkingPoint(stripDisplay: extAX, others: [builtinAX], prefer: .right)
-        let extLeft  = TeleportEngine.computeParkingPoint(stripDisplay: extAX, others: [builtinAX], prefer: .left)
-        // Built-in is BELOW (botBlocked) => park UP past the external's top.
-        check("hard/park: external-strip parks ABOVE its top (away from built-in below), prefer=right",
-              extRight.y == extAX.minY - parkMargin)
-        check("hard/park: external-strip parks ABOVE its top (away from built-in below), prefer=left",
-              extLeft.y == extAX.minY - parkMargin)
-        check("hard/park: external-strip NEVER shoves toward the built-in below",
-              extRight.y < builtinAX.minY && extLeft.y < builtinAX.minY)
-        // Horizontally both sides are free (the built-in does not share the
-        // external's vertical band), so prefer is honored on each side.
+        // Strip lives on the EXTERNAL; the built-in sits directly BELOW it. A
+        // parked column keeps its full height and only slides off a SIDE, so a
+        // display below does NOT block either horizontal edge (it shares no part
+        // of the external's vertical band as a side neighbor). prefer is honored
+        // on each side, and the resulting sliver stays on the external display.
+        let extRight = TeleportEngine.computeParkingX(stripDisplay: extAX, others: [builtinAX], prefer: .right)
+        let extLeft  = TeleportEngine.computeParkingX(stripDisplay: extAX, others: [builtinAX], prefer: .left)
         check("hard/park: external-strip prefer=right shoves past the external's right edge",
-              extRight.x == extAX.maxX + parkMargin)
+              extRight == extAX.maxX + parkMargin)
         check("hard/park: external-strip prefer=left shoves past the external's left edge",
-              extLeft.x == extAX.minX - parkMargin)
-        check("hard/park: external-strip left/right corners differ (one sliver per side)",
-              extLeft.x != extRight.x)
-        // Contract mirror of the LIVE displaytest assertion: each park corner is
-        // on the FAR side of a strip edge that has no neighbor in that direction.
-        check("hard/park: external-strip prefer=right corner favors the strip (no neighbor spill)",
-              parkingCornerFavorsStrip(extRight, strip: extAX, others: [builtinAX]))
-        check("hard/park: external-strip prefer=left corner favors the strip (no neighbor spill)",
-              parkingCornerFavorsStrip(extLeft, strip: extAX, others: [builtinAX]))
+              extLeft == extAX.minX - parkMargin)
+        check("hard/park: external-strip left/right edges differ (one sliver per side)",
+              extLeft != extRight)
+        // Contract mirror of the LIVE displaytest assertion: each park edge is on
+        // the FAR side of a strip edge that has no neighbor in that direction.
+        check("hard/park: external-strip prefer=right edge favors the strip (no neighbor spill)",
+              parkingEdgeFavorsStrip(extRight, strip: extAX, others: [builtinAX]))
+        check("hard/park: external-strip prefer=left edge favors the strip (no neighbor spill)",
+              parkingEdgeFavorsStrip(extLeft, strip: extAX, others: [builtinAX]))
 
         // ===================== (b) VERTICAL stack, strip on the built-in =======
-        // External is ABOVE the built-in (topBlocked) => park DOWN past the
-        // built-in's bottom, away from the external above. This is the real
-        // user-facing case (strip on the laptop panel, monitor mounted above).
-        let biRight = TeleportEngine.computeParkingPoint(stripDisplay: builtinAX, others: [extAX], prefer: .right)
-        let biLeft  = TeleportEngine.computeParkingPoint(stripDisplay: builtinAX, others: [extAX], prefer: .left)
-        check("hard/park: built-in-strip parks BELOW its bottom (away from external above), prefer=right",
-              biRight.y == builtinAX.maxY + parkMargin)
-        check("hard/park: built-in-strip parks BELOW its bottom (away from external above), prefer=left",
-              biLeft.y == builtinAX.maxY + parkMargin)
-        check("hard/park: built-in-strip NEVER shoves up toward the external above",
-              biRight.y > extAX.maxY && biLeft.y > extAX.maxY)
+        // External is ABOVE the built-in. Because we never push off the top/
+        // bottom, the vertical neighbor is irrelevant and prefer is honored on
+        // each horizontal side. This is the real user-facing case (strip on the
+        // laptop panel, monitor mounted above): the peek is a tall sliver on the
+        // built-in's own left/right edge.
+        let biRight = TeleportEngine.computeParkingX(stripDisplay: builtinAX, others: [extAX], prefer: .right)
+        let biLeft  = TeleportEngine.computeParkingX(stripDisplay: builtinAX, others: [extAX], prefer: .left)
         check("hard/park: built-in-strip honors prefer=right horizontally (free edge)",
-              biRight.x == builtinAX.maxX + parkMargin)
+              biRight == builtinAX.maxX + parkMargin)
         check("hard/park: built-in-strip honors prefer=left horizontally (free edge)",
-              biLeft.x == builtinAX.minX - parkMargin)
-        check("hard/park: built-in-strip corners favor the strip (no spill onto external above)",
-              parkingCornerFavorsStrip(biRight, strip: builtinAX, others: [extAX])
-                && parkingCornerFavorsStrip(biLeft, strip: builtinAX, others: [extAX]))
+              biLeft == builtinAX.minX - parkMargin)
+        check("hard/park: built-in-strip edges favor the strip (no spill onto external above)",
+              parkingEdgeFavorsStrip(biRight, strip: builtinAX, others: [extAX])
+                && parkingEdgeFavorsStrip(biLeft, strip: builtinAX, others: [extAX]))
 
-        // PURE vertical stack (external directly above, no X offset): a clean
-        // top/bottom regression guard independent of the live left-shift.
-        let stackBuiltin = CGRect(x: 0, y: 0, width: 1470, height: 956)
-        let stackExtAbove = CGRect(x: 0, y: -1080, width: 1470, height: 1080) // directly above
-        check("hard/park: directly-stacked built-in-strip parks DOWN (external straight above)",
-              TeleportEngine.computeParkingPoint(stripDisplay: stackBuiltin, others: [stackExtAbove]).y
-                == stackBuiltin.maxY + parkMargin)
-        // ... and the symmetric strip-on-the-upper-display parks UP.
-        check("hard/park: directly-stacked external-strip parks UP (built-in straight below)",
-              TeleportEngine.computeParkingPoint(stripDisplay: stackExtAbove, others: [stackBuiltin]).y
-                == stackExtAbove.minY - parkMargin)
+        // A neighbor sharing the strip's vertical band on a side DOES flip it. A
+        // display directly to the RIGHT (overlapping the built-in's rows) forces
+        // an off-right park to flip to the free left edge.
+        let sideExt = CGRect(x: builtinAX.maxX, y: builtinAX.minY, width: 1920, height: 1080)
+        check("hard/park: side neighbor on the right flips an off-right park to the left edge",
+              TeleportEngine.computeParkingX(stripDisplay: builtinAX, others: [sideExt], prefer: .right)
+                == builtinAX.minX - parkMargin)
 
         // ===================== (c) RESTORE: display unplugged ==================
         let bothDisplays = [builtinAX, extAX]
@@ -233,30 +216,21 @@ enum GeometryHardeningTests {
               TeleportEngine.restoreFrame(original: seam, displays: bothDisplays) == seam)
     }
 
-    /// Deterministic mirror of the LIVE displaytest assertion: the park corner
-    /// `p` sits on the FAR side of a strip edge that has NO neighbor in that
-    /// direction, so the macOS clamp sliver will stay on the strip display. This
-    /// is the pure contract the corner-selection upholds; the displaytest proves
-    /// the real clamp honors it on hardware.
-    static func parkingCornerFavorsStrip(_ p: CGPoint, strip s: CGRect, others: [CGRect]) -> Bool {
+    /// Deterministic mirror of the LIVE displaytest assertion: the park edge `x`
+    /// sits on the FAR side of a strip edge that has NO side neighbor in that
+    /// direction, so the macOS clamp sliver will stay on the strip display. A
+    /// parked window keeps its full height and slides off a side only, so this is
+    /// a purely horizontal contract; the displaytest proves the real clamp honors
+    /// it on hardware.
+    static func parkingEdgeFavorsStrip(_ x: CGFloat, strip s: CGRect, others: [CGRect]) -> Bool {
         func vOverlap(_ d: CGRect) -> Bool { d.minY < s.maxY && d.maxY > s.minY }
-        func hOverlap(_ d: CGRect) -> Bool { d.minX < s.maxX && d.maxX > s.minX }
         let rightBlocked = others.contains { $0.minX >= s.maxX - 1 && vOverlap($0) }
         let leftBlocked  = others.contains { $0.maxX <= s.minX + 1 && vOverlap($0) }
-        let botBlocked   = others.contains { $0.minY >= s.maxY - 1 && hOverlap($0) }
-        let topBlocked   = others.contains { $0.maxY <= s.minY + 1 && hOverlap($0) }
-        // X must be past a FREE horizontal edge; Y past a FREE vertical edge.
-        // When an edge is blocked we expect the corner flipped to the opposite
-        // (free) side; when both on an axis are blocked, either far side is the
-        // unavoidable legacy fallback.
-        let xOK: Bool
-        if rightBlocked && !leftBlocked { xOK = p.x < s.minX }
-        else if leftBlocked && !rightBlocked { xOK = p.x > s.maxX }
-        else { xOK = p.x > s.maxX || p.x < s.minX }
-        let yOK: Bool
-        if botBlocked && !topBlocked { yOK = p.y < s.minY }
-        else if topBlocked && !botBlocked { yOK = p.y > s.maxY }
-        else { yOK = p.y > s.maxY || p.y < s.minY }
-        return xOK && yOK
+        // X must be past a FREE horizontal edge. When one side is blocked we
+        // expect the flip to the opposite (free) side; when both are blocked,
+        // either far side is the unavoidable fallback.
+        if rightBlocked && !leftBlocked { return x < s.minX }
+        if leftBlocked && !rightBlocked { return x > s.maxX }
+        return x > s.maxX || x < s.minX
     }
 }

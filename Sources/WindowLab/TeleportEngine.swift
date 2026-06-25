@@ -394,14 +394,17 @@ final class TeleportEngine {
         }
     }
 
-    /// Park a set of windows at the shared off-screen corner (see `teleport`'s
-    /// parking discussion). They collapse into one ~40px sliver instead of a row
-    /// of peeking edges, and their `lastCommittedOrigin` is updated so switching
-    /// back re-places them (their on-screen target differs from the park point).
+    /// Park a set of windows off the right side edge (see `teleport`'s parking
+    /// discussion). Each keeps its natural vertical band and only slides off the
+    /// side, so they collapse into one tall full-height sliver at that edge
+    /// instead of a row of peeking corners, and their `lastCommittedOrigin` is
+    /// updated so switching back re-places them (their on-screen target differs
+    /// from the park point).
     private func parkWindows(_ parked: [Slot]) {
-        let p = parkingPoint
+        let px = parkingX(prefer: .right)
         for slot in parked {
             guard slot.window.healthy else { continue }
+            let p = CGPoint(x: px, y: slot.y)
             if let last = slot.window.lastCommittedOrigin,
                abs(last.x - p.x) < 0.5, abs(last.y - p.y) < 0.5 { continue }
             let err = AXSource.setPoint(slot.window.element, kAXPositionAttribute as String, p)
@@ -595,17 +598,20 @@ final class TeleportEngine {
     /// least partly within the viewport, that is its natural strip position.
     /// If it is fully off-screen, park it on the SIDE it scrolled off: columns
     /// past the left edge collapse to a left-edge sliver, columns past the right
-    /// edge to a right-edge sliver (see `teleport` and `parkingPoint(prefer:)`).
-    /// Keeping the sliver on the matching side means the nub appears where the
-    /// content went, instead of always piling up in one corner.
+    /// edge to a right-edge sliver (see `teleport` and `parkingX(prefer:)`). The
+    /// window keeps its natural vertical band (`slot.y`) and only slides off the
+    /// side, so the macOS clamp leaves a thin FULL-HEIGHT peek at that edge where
+    /// the content went, instead of a small nub in a corner.
     func onScreenTarget(for slot: Slot) -> CGPoint {
         let left = slot.canvasX - viewportX           // viewport-relative left
         let right = left + slot.width
         if right <= 0 {
-            return parkingPoint(prefer: .left)        // scrolled fully off the LEFT
+            // Scrolled fully off the LEFT: slide off the left edge, keep `y`.
+            return CGPoint(x: parkingX(prefer: .left), y: slot.y)
         }
         if left >= screenFrame.width {
-            return parkingPoint(prefer: .right)       // scrolled fully off the RIGHT
+            // Scrolled fully off the RIGHT: slide off the right edge, keep `y`.
+            return CGPoint(x: parkingX(prefer: .right), y: slot.y)
         }
         return CGPoint(x: screenFrame.origin.x + slot.canvasX - viewportX, y: slot.y)
     }
@@ -635,68 +641,63 @@ final class TeleportEngine {
     /// side a column scrolled off, so the nub lands where the content went.
     enum ParkSide { case left, right }
 
-    /// Shared off-screen parking point for windows scrolled off `side`. Far
-    /// enough past that edge that macOS clamps every window pushed the same way
-    /// to the SAME spot, stacking them into a single minimal sliver rather than
-    /// a row of peeking edges. Display-aware: if the requested side abuts a
-    /// neighbor monitor, we flip to the opposite (free) edge so the sliver stays
-    /// on the strip's display and never peeks onto the neighbor (see
-    /// `computeParkingPoint`).
-    func parkingPoint(prefer side: ParkSide) -> CGPoint {
-        TeleportEngine.computeParkingPoint(
+    /// Off-screen X a window scrolled off `side` is shoved to. A parked window
+    /// keeps its natural vertical band (its slot `y`) and only slides sideways,
+    /// so macOS clamps it into a thin FULL-HEIGHT sliver at one side edge of the
+    /// strip display, rather than a corner nub. Every window pushed the same way
+    /// shares the same X, so they collapse into a single tall peek at that edge.
+    /// Display-aware: if the requested side abuts a neighbor monitor we flip to
+    /// the opposite (free) edge so the sliver stays on the strip's own display
+    /// and never peeks onto the neighbor (see `computeParkingX`).
+    func parkingX(prefer side: ParkSide) -> CGFloat {
+        TeleportEngine.computeParkingX(
             stripDisplay: stripDisplayFrame ?? screenFrame,
             others: otherDisplayFrames,
             prefer: side
         )
     }
 
-    /// Back-compat shorthand: the legacy single shared corner (right side).
-    /// Retained for call sites and tests that do not care about the side.
-    var parkingPoint: CGPoint { parkingPoint(prefer: .right) }
+    /// Debug/back-compat: the parking origin for a window pinned to the strip's
+    /// top, on the right edge. Used by the menu-bar/displaytest introspection;
+    /// production parking pairs `parkingX` with each slot's own `y`.
+    var parkingPoint: CGPoint {
+        CGPoint(x: parkingX(prefer: .right), y: screenFrame.origin.y)
+    }
 
-    /// Pure parking-corner policy (no side effects, unit-tested).
+    /// Pure parking-edge policy (no side effects, unit-tested).
     ///
-    /// Picks the corner of `stripDisplay` to shove parked windows past, so the
+    /// Picks the side edge of `stripDisplay` to shove parked windows past, so the
     /// unavoidable ~40px macOS clamp sliver lands on `stripDisplay` along an edge
-    /// that has NO adjacent display. Pushing toward a free edge makes macOS slide
-    /// the window back to the strip display's own outer edge (40px visible there)
-    /// instead of onto a neighbor monitor.
+    /// that has NO adjacent display. Because the window keeps its full height and
+    /// only slides horizontally, the sliver is a tall peek at the very left or
+    /// right edge of the strip display (not a corner).
     ///
-    /// Horizontal direction: honor the caller's `prefer`red side (the side the
-    /// column scrolled off) UNLESS that edge abuts a neighbor monitor, in which
-    /// case flip to the opposite edge if THAT one is free; if both horizontal
-    /// sides are blocked, fall back to the preferred side (a sliver on a busy
-    /// edge is unavoidable then). Vertical axis: a free edge if one exists, else
-    /// the legacy bottom direction. Windows pushed off the SAME side still share
-    /// one corner, so each side collapses to a single sliver.
-    static func computeParkingPoint(stripDisplay s: CGRect,
-                                    others: [CGRect],
-                                    prefer side: ParkSide = .right,
-                                    margin: CGFloat = 4000) -> CGPoint {
-        // A neighbor only "blocks" an edge if it actually abuts that side AND
-        // overlaps along the perpendicular axis (a display diagonally offset does
-        // not catch a sliver pushed straight out that edge).
+    /// Honor the caller's `prefer`red side (the side the column scrolled off)
+    /// UNLESS that edge abuts a neighbor monitor sharing the strip's vertical
+    /// band, in which case flip to the opposite edge if THAT one is free; if both
+    /// horizontal sides are blocked, fall back to the preferred side (a sliver on
+    /// a busy edge is then unavoidable). Vertical neighbors are irrelevant: we
+    /// never push the window off the top or bottom.
+    static func computeParkingX(stripDisplay s: CGRect,
+                                others: [CGRect],
+                                prefer side: ParkSide = .right,
+                                margin: CGFloat = 4000) -> CGFloat {
+        // A neighbor only "blocks" a side if it actually abuts that edge AND
+        // overlaps the strip's vertical band (a display offset above/below does
+        // not catch a full-height sliver pushed straight out the side).
         func vOverlap(_ d: CGRect) -> Bool { d.minY < s.maxY && d.maxY > s.minY }
-        func hOverlap(_ d: CGRect) -> Bool { d.minX < s.maxX && d.maxX > s.minX }
         let leftBlocked  = others.contains { $0.maxX <= s.minX + 1 && vOverlap($0) }
         let rightBlocked = others.contains { $0.minX >= s.maxX - 1 && vOverlap($0) }
-        let topBlocked   = others.contains { $0.maxY <= s.minY + 1 && hOverlap($0) }
-        let botBlocked   = others.contains { $0.minY >= s.maxY - 1 && hOverlap($0) }
 
-        // Honor the preferred horizontal side when it is free; otherwise flip to
-        // the opposite edge if that one is free; otherwise keep the preferred
-        // side (both blocked -> unavoidable, so respect the caller's intent).
+        // Honor the preferred side when it is free; otherwise flip to the
+        // opposite edge if that one is free; otherwise keep the preferred side
+        // (both blocked -> unavoidable, so respect the caller's intent).
         let goRight: Bool
         switch side {
         case .right: goRight = !rightBlocked ? true  : (!leftBlocked ? false : true)
         case .left:  goRight = !leftBlocked  ? false : (!rightBlocked ? true : false)
         }
-        // Vertical: prefer a free edge; keep legacy bottom when both are taken.
-        let goBottom: Bool = !botBlocked ? true : (!topBlocked ? false : true)
-
-        let x = goRight ? s.maxX + margin : s.minX - margin
-        let y = goBottom ? s.maxY + margin : s.minY - margin
-        return CGPoint(x: x, y: y)
+        return goRight ? s.maxX + margin : s.minX - margin
     }
 
     /// Re-bind the strip to a new display geometry at runtime and relay every

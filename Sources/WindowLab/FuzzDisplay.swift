@@ -54,14 +54,23 @@ private func macClamp(origin: CGPoint, size: CGSize, displays: [CGRect],
     }
     let req = CGRect(origin: origin, size: size)
     if displays.contains(where: { $0.intersects(req) }) { return origin }
-    var best = clampTo(displays[0])
-    var bestDist = hypot(best.x - origin.x, best.y - origin.y)
-    for d in displays.dropFirst() {
+    // Match `SimWindowWorld.clamp`: prefer a display reachable by a PURE
+    // single-axis move (a side-parked full-height window slides straight back
+    // onto the display covering its y-band, never diagonally onto a disjoint
+    // neighbor); fall back to the nearest overall only if no pure-axis fix
+    // exists (a true corner push off every display's band).
+    var pureBest: (p: CGPoint, dist: CGFloat)?
+    var anyBest: (p: CGPoint, dist: CGFloat)?
+    for d in displays {
         let c = clampTo(d)
-        let dist = hypot(c.x - origin.x, c.y - origin.y)
-        if dist < bestDist { best = c; bestDist = dist }
+        let dx = c.x - origin.x, dy = c.y - origin.y
+        let dist = hypot(dx, dy)
+        if anyBest == nil || dist < anyBest!.dist { anyBest = (c, dist) }
+        if abs(dx) < 0.5 || abs(dy) < 0.5 {
+            if pureBest == nil || dist < pureBest!.dist { pureBest = (c, dist) }
+        }
     }
-    return best
+    return (pureBest ?? anyBest)!.p
 }
 
 // MARK: - Hotplug fuzzer (resolver + engine rebind against the sim world)
@@ -346,23 +355,24 @@ private enum DisplayPureFuzz {
                width: CGFloat(rng.double(in: w)), height: CGFloat(rng.double(in: h)))
     }
 
-    // 2) computeParkingPoint: the parked sliver lands on the strip's OWN display.
+    // 2) computeParkingX: the parked FULL-HEIGHT sliver lands on the strip's OWN
+    //    display. A parked window keeps its natural vertical band and only slides
+    //    off a side, so this is a purely horizontal contract.
     private static func parkingChecks(_ rng: inout SplitMix64, _ iters: Int, _ bad: (String) -> Void) {
         for _ in 0..<iters {
-            // --- (i) ARBITRARY (possibly overlapping) layouts: the corner is
-            // always finite, outside the strip, and favors a free strip edge.
-            // These hold regardless of physical realizability.
+            // --- (i) ARBITRARY (possibly overlapping) layouts: the edge is
+            // always finite, outside the strip horizontally, and favors a free
+            // strip side. These hold regardless of physical realizability.
             let strip = randRect(&rng, w: 640...3840, h: 480...2160)
             let others = (0..<rng.int(in: 0...3)).map { _ in randRect(&rng, w: 640...3840, h: 480...2160) }
             for side in [TeleportEngine.ParkSide.left, .right] {
-                let p = TeleportEngine.computeParkingPoint(stripDisplay: strip, others: others, prefer: side)
-                if !p.x.isFinite || !p.y.isFinite { bad("parking non-finite: strip=\(rectStr(strip)) others=\(others.map(rectStr)) -> \(p)"); continue }
-                // The shove is past a strip edge on each axis (a corner outside it).
-                if p.x > strip.minX && p.x < strip.maxX { bad("parking x inside strip: strip=\(rectStr(strip)) -> \(p)") }
-                if p.y > strip.minY && p.y < strip.maxY { bad("parking y inside strip: strip=\(rectStr(strip)) -> \(p)") }
-                // Documented contract: corner favors the strip (past FREE edges).
-                if !GeometryHardeningTests.parkingCornerFavorsStrip(p, strip: strip, others: others) {
-                    bad("parking corner does not favor strip (side=\(side)): strip=\(rectStr(strip)) others=\(others.map(rectStr)) -> \(p)")
+                let x = TeleportEngine.computeParkingX(stripDisplay: strip, others: others, prefer: side)
+                if !x.isFinite { bad("parking non-finite: strip=\(rectStr(strip)) others=\(others.map(rectStr)) -> \(x)"); continue }
+                // The shove is past a strip side edge (outside it horizontally).
+                if x > strip.minX && x < strip.maxX { bad("parking x inside strip: strip=\(rectStr(strip)) -> \(x)") }
+                // Documented contract: edge favors the strip (past a FREE side).
+                if !GeometryHardeningTests.parkingEdgeFavorsStrip(x, strip: strip, others: others) {
+                    bad("parking edge does not favor strip (side=\(side)): strip=\(rectStr(strip)) others=\(others.map(rectStr)) -> \(x)")
                 }
             }
 
@@ -370,22 +380,24 @@ private enum DisplayPureFuzz {
             // the actual macOS off-screen clamp and prove the parked sliver lands
             // on the STRIP, never inside a neighbor. Real displays never overlap,
             // so the nearest-display clamp is only meaningful on a tiled layout.
+            // The parked window keeps its full vertical band (origin y = strip
+            // top), so the sliver is a TALL peek at the chosen side edge.
             let (rStrip, rOthers, blockedSides) = tiledLayout(&rng)
             let allDisplays = [rStrip] + rOthers
             for side in [TeleportEngine.ParkSide.left, .right] {
-                let p = TeleportEngine.computeParkingPoint(stripDisplay: rStrip, others: rOthers, prefer: side)
-                // Skip an axis where BOTH edges are blocked (a sliver on a busy
-                // edge is then unavoidable, matching the production contract).
-                let horizForced = blockedSides.left && blockedSides.right
-                let vertForced = blockedSides.top && blockedSides.bottom
-                if horizForced || vertForced { continue }
-                let size = CGSize(width: 360, height: 280)
+                let x = TeleportEngine.computeParkingX(stripDisplay: rStrip, others: rOthers, prefer: side)
+                // Skip when BOTH side edges are blocked (a sliver on a busy edge
+                // is then unavoidable, matching the production contract).
+                if blockedSides.left && blockedSides.right { continue }
+                // Full-height-ish window pinned to the strip's vertical band.
+                let size = CGSize(width: 360, height: min(280, rStrip.height))
+                let p = CGPoint(x: x, y: rStrip.minY)
                 let clamped = macClamp(origin: p, size: size, displays: allDisplays)
                 let frame = CGRect(origin: clamped, size: size)
                 if let landed = DisplayGeometry.display(bestOverlapping: frame, displays: allDisplays),
                    landed != rStrip {
                     bad("parked sliver landed on a NEIGHBOR not the strip (side=\(side)): "
-                        + "strip=\(rectStr(rStrip)) others=\(rOthers.map(rectStr)) park=\(p) clamped=\(rectStr(frame)) landed=\(rectStr(landed))")
+                        + "strip=\(rectStr(rStrip)) others=\(rOthers.map(rectStr)) parkX=\(x) clamped=\(rectStr(frame)) landed=\(rectStr(landed))")
                 } else if !frame.intersects(rStrip) {
                     bad("parked sliver does not touch the strip (side=\(side)): strip=\(rectStr(rStrip)) clamped=\(rectStr(frame))")
                 }

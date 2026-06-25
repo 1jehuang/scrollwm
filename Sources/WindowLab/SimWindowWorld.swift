@@ -336,13 +336,25 @@ final class SimWindowWorld: WindowBackend {
         // it (it is on-screen). Otherwise pull it onto the nearest display.
         let req = CGRect(origin: origin, size: size)
         if displays.contains(where: { $0.intersects(req) }) { return origin }
-        var best = clampTo(displays[0])
-        var bestDist = hypot(best.x - origin.x, best.y - origin.y)
-        for d in displays.dropFirst() {
+        // macOS keeps a window on the display its current band points at, never
+        // teleporting it diagonally across a gap onto a vertically/horizontally
+        // disjoint neighbor. So prefer a display reachable by a PURE single-axis
+        // move (dx==0 or dy==0) — e.g. a window shoved straight off the side at
+        // its natural y slides back onto the display covering that y-band, not
+        // down onto an L-shaped neighbor that merely sticks out horizontally.
+        // Only when no pure-axis fix exists (e.g. a window pushed off a corner,
+        // off every display's band) do we fall back to the nearest overall.
+        var pureBest: (p: CGPoint, dist: CGFloat)?
+        var anyBest: (p: CGPoint, dist: CGFloat)?
+        for d in displays {
             let c = clampTo(d)
-            let dist = hypot(c.x - origin.x, c.y - origin.y)
-            if dist < bestDist { best = c; bestDist = dist }
+            let dx = c.x - origin.x, dy = c.y - origin.y
+            let dist = hypot(dx, dy)
+            if anyBest == nil || dist < anyBest!.dist { anyBest = (c, dist) }
+            if abs(dx) < 0.5 || abs(dy) < 0.5 {
+                if pureBest == nil || dist < pureBest!.dist { pureBest = (c, dist) }
+            }
         }
-        return best
+        return (pureBest ?? anyBest)!.p
     }
 }
