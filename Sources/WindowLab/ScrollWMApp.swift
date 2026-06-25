@@ -1554,57 +1554,83 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         onReady()
     }
 
-    AccessibilityPermission.shared.resolveAtLaunch { state in
-        if state == .granted {
+    // Present the onboarding window (idempotent). Wired into the launch
+    // decision below; the window itself decides whether to fire the one-time
+    // system modal via `AccessibilityPermission.shouldAutoPrompt`, so this is
+    // safe to call on both a genuine first run and a real later revocation.
+    func presentOnboarding() {
+        guard !started, onboardingKeepAlive == nil else { return }
+        let ob = OnboardingWindowController()
+        ob.onGranted = {
             startOnce()
-            return
-        }
-        func presentOnboarding() {
-            let ob = OnboardingWindowController()
-            ob.onGranted = {
-                startOnce()
-                // This is a FRESH, user-initiated grant via onboarding (not a
-                // transient relaunch of an already-trusted app), so arrange the
-                // desktop right away — ScrollWM's first visible act tidies the
-                // windows with zero extra clicks. Defer a beat so the onboarding
-                // window has finished closing / restoring hidden apps first.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                    controller.arrangeOnFirstGrant()
-                }
+            // This is a FRESH, user-initiated grant via onboarding (not a
+            // transient relaunch of an already-trusted app), so arrange the
+            // desktop right away — ScrollWM's first visible act tidies the
+            // windows with zero extra clicks. Defer a beat so the onboarding
+            // window has finished closing / restoring hidden apps first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                controller.arrangeOnFirstGrant()
             }
-            ob.present()
-            onboardingKeepAlive = ob
         }
+        ob.present()
+        onboardingKeepAlive = ob
+    }
 
-        // If Accessibility has ever been granted on this machine, a launch-time
-        // `false` is almost certainly a stale/transient TCC reading (signature
-        // re-eval after an update, WindowServer hiccup), NOT a real revocation.
-        // Wait silently (no UI, no prompt) and start the instant trust returns.
-        // Only if it stays untrusted well past any plausible stale window do we
-        // surface onboarding — and even then it will NOT fire the system modal,
-        // because we've prompted before (see OnboardingWindow). This is the core
-        // of "never ask the user when it's already on".
-        if AccessibilityPermission.shared.hasEverBeenGranted {
-            print("ScrollWM: Accessibility not yet readable at launch; waiting silently (no prompt).")
-            let silentDeadline = Date().addingTimeInterval(8.0)
-            AccessibilityPermission.shared.observe { state in
-                if state == .granted {
-                    startOnce()
-                } else if !started && Date() >= silentDeadline && onboardingKeepAlive == nil {
-                    // Genuinely still off after the extended grace: show help
-                    // (troubleshooting copy, no modal) so a real revocation
-                    // isn't an invisible dead end.
-                    presentOnboarding()
-                }
+    // The launch decision (start silently / wait silently for a stale `false`
+    // to clear / surface onboarding) is the PURE `PermissionPolicy.launchAction`
+    // — the SAME function the unit tests pin down — so the tested logic is the
+    // logic that actually runs. It encodes the central guarantee: never ask the
+    // user when Accessibility is already on, and never re-fire the system modal
+    // on a machine that has been granted before (a launch-time `false` there is
+    // almost always a stale TCC reading after an update, not a real revocation).
+    let perm = AccessibilityPermission.shared
+    let launchStart = Date()
+    var announcedSilentWait = false
+
+    func evaluateLaunch() {
+        let action = PermissionPolicy.launchAction(
+            isTrusted: perm.isTrustedNow,
+            hasPrompted: perm.hasPrompted,
+            hasEverBeenGranted: perm.hasEverBeenGranted,
+            elapsed: Date().timeIntervalSince(launchStart))
+        switch action {
+        case .start:
+            launchPollKeepAlive?.invalidate(); launchPollKeepAlive = nil
+            perm.startLiveUpdates()
+            startOnce()
+        case .waitSilently:
+            // Inside a grace window: show nothing, fire nothing. On an
+            // ever-granted machine the wait is extended (a `false` is stale),
+            // so note it once for the logs.
+            if perm.hasEverBeenGranted && !announcedSilentWait {
+                announcedSilentWait = true
+                print("ScrollWM: Accessibility not yet readable at launch; waiting silently (no prompt).")
             }
-            return
+        case .showOnboarding:
+            launchPollKeepAlive?.invalidate(); launchPollKeepAlive = nil
+            perm.startLiveUpdates()
+            if !perm.hasEverBeenGranted {
+                print("""
+                ScrollWM needs Accessibility permission (its only permission).
+                Grant it in: System Settings -> Privacy & Security -> Accessibility
+                Waiting for grant... (the app will start automatically)
+                """)
+            }
+            presentOnboarding()
         }
-        print("""
-        ScrollWM needs Accessibility permission (its only permission).
-        Grant it in: System Settings -> Privacy & Security -> Accessibility
-        Waiting for grant... (the app will start automatically)
-        """)
-        presentOnboarding()
+    }
+
+    // Evaluate immediately (a granted machine starts with zero delay), then on
+    // a fixed cadence until the decision is terminal. A repeating timer — not a
+    // state-change observer — is what makes the extended silent window actually
+    // resolve to onboarding when trust never returns (the prior observer-only
+    // path could leave a genuine revocation as an invisible dead end, because
+    // the observer fires only on a state CHANGE that never came).
+    evaluateLaunch()
+    if !started {
+        let timer = Timer(timeInterval: 0.25, repeats: true) { _ in evaluateLaunch() }
+        RunLoop.main.add(timer, forMode: .common)
+        launchPollKeepAlive = timer
     }
 
     app.run()
@@ -1613,6 +1639,11 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
 /// Keep app-lifetime objects created inside closures from being deallocated.
 var scrollWMControllerKeepAlive: ScrollWMController?
 var onboardingKeepAlive: OnboardingWindowController?
+/// The launch-time permission poll timer (drives `PermissionPolicy.launchAction`
+/// on a fixed cadence until the decision is terminal). Held so it isn't
+/// deallocated mid-resolution; invalidated and cleared once we start or show
+/// onboarding.
+var launchPollKeepAlive: Timer?
 
 enum CrashTestPhase { case none, crash }
 

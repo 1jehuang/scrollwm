@@ -148,38 +148,14 @@ final class AccessibilityPermission {
         return state
     }
 
-    /// Resolve the launch-time state, tolerating the stale-`false` window.
-    ///
-    /// If trust shows up (immediately or within `graceSeconds`), completes with
-    /// `.granted` and the app should start silently — no UI, no prompt. If the
-    /// grace window elapses still-untrusted, completes with `.notDetermined`
-    /// or `.denied` so the caller can show onboarding.
-    func resolveAtLaunch(graceSeconds: TimeInterval = 2.0,
-                         completion: @escaping (State) -> Void) {
-        let started = Date()
-
-        func tick() {
-            // refresh() updates the cached state + the granted marker; its
-            // result is the live trust reading we feed the PURE grace policy.
-            let isGranted = refresh() == .granted
-            let elapsed = Date().timeIntervalSince(started)
-            switch PermissionPolicy.graceTick(isTrusted: isGranted,
-                                              elapsed: elapsed,
-                                              graceSeconds: graceSeconds) {
-            case .resolvedGranted:
-                ensurePolling()
-                completion(.granted)
-            case .keepWaiting:
-                // Still inside the stale-false grace window: re-check soon,
-                // showing no UI and firing no prompt.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: tick)
-            case .graceExpired:
-                // Genuinely untrusted after the grace window.
-                ensurePolling()
-                completion(state)
-            }
-        }
-        tick()
+    /// Start the continuous live poll so the cached `state` tracks a
+    /// hand-flipped Accessibility toggle within a fraction of a second, with no
+    /// relaunch. Idempotent; safe to call once the launch decision has resolved
+    /// (e.g. after a silent granted start) so menu items and any later observer
+    /// see fresh state. The launch-time decision itself is driven by the PURE
+    /// `PermissionPolicy.launchAction` in the run loop, not here.
+    func startLiveUpdates() {
+        ensurePolling()
     }
 
     /// Fire the one-time system Accessibility prompt (adds ScrollWM to the
