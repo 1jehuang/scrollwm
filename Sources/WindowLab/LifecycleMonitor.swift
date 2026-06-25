@@ -212,7 +212,12 @@ final class LifecycleMonitor {
         // each immediately to the RIGHT of the focused column (PaperWM/niri
         // style) and focus the newest so the viewport follows the window the
         // user just opened. Cross-Space windows are intentionally skipped.
-        let newWindows = addTokens.map { standard[$0] }
+        // Display-scope: with one Space spanning multiple monitors the planner's
+        // current-Space additions include windows on OTHER displays; drop those
+        // under the default `stripDisplay` scope so a window opened on the
+        // external monitor is not yanked onto the strip. Same pure rule as
+        // `arrange` (`engine.filterByAdoptScope`).
+        let newWindows = engine.filterByAdoptScope(addTokens.map { standard[$0] }) { $0.frame }
         var lastInsertedIndex: Int?
         if !newWindows.isEmpty {
             // Insertion point sits just after the current focus. Inserting at
@@ -305,9 +310,14 @@ final class LifecycleMonitor {
         // Current-Space gate via the on-screen CG list (cheap, one syscall).
         let cg = CGWindowSource.listWindows(onscreenOnly: true)
         let matched = IdentityMatcher.match(axWindows: unmanaged, cgWindows: cg)
-        let onscreenNew = matched.enumerated()
+        let onscreenMatches = matched.enumerated()
             .filter { $0.element.cg != nil }
             .map { unmanaged[$0.offset] }
+        // Display-scope: drop newly-created windows that live on ANOTHER monitor
+        // under the default `stripDisplay` scope, so the fast path never yanks an
+        // external-display window onto the strip. Same pure rule as
+        // `arrange`/`applyResync` (`engine.filterByAdoptScope`).
+        let onscreenNew = engine.filterByAdoptScope(onscreenMatches) { $0.frame }
         guard !onscreenNew.isEmpty else { return }
 
         // If we already manage windows but none are on the current Space, the

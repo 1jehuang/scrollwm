@@ -80,6 +80,7 @@ final class ScrollWMController: NSObject {
         engine.minColumnWidth = config.layout.minColumnWidth
         engine.widthPresets = config.layout.widthPresets
         engine.focusMode = config.focusMode
+        engine.adoptScope = config.layout.adoptScope
     }
 
     /// Feed the multi-display layout (in AX top-left global coordinates) to the
@@ -226,7 +227,13 @@ final class ScrollWMController: NSObject {
         // offscreen AX windows belong to other Spaces; moving them would
         // surprise the user later.
         let onscreen = matched.filter { $0.cg != nil }
-        engine.adopt(matched: onscreen)
+        // Scope adoption to the strip's own display (default). With one Space
+        // spanning multiple monitors, "onscreen" includes windows on OTHER
+        // displays; without this filter arrange would yank them onto the strip.
+        // `allDisplays` keeps the legacy whole-desktop behavior. Pure policy +
+        // the engine's live display geometry live in `filterByAdoptScope`.
+        let scoped = engine.filterByAdoptScope(onscreen) { $0.ax.frame }
+        engine.adopt(matched: scoped)
         guard !engine.slots.isEmpty else {
             print("arrange: no manageable windows found")
             return

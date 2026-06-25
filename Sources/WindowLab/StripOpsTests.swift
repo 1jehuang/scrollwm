@@ -907,6 +907,100 @@ enum StripOpsTests {
         reb2.rebindStripDisplay(to: before)
         check("rebind: same-frame rebind is stable", reb2.screenFrame == before)
 
+        // --- AdoptionScope: which displays' windows the strip adopts ----------
+        // Ground the policy in the user's REAL hardware so the test proves the
+        // multi-display "yank" fix: built-in primary 1470x956 at AX (0,0); the
+        // external Samsung 5K above-and-left at AX (-225,-1440,2560,1440).
+        let scopeStrip = CGRect(x: 0, y: 0, width: 1470, height: 956)            // built-in (strip)
+        let scopeExt   = CGRect(x: -225, y: -1440, width: 2560, height: 1440)    // external
+        // Two candidate windows: one squarely on the built-in, one on the
+        // external. AX frames (top-left global).
+        let onBuiltin  = CGRect(x: 200, y: 100, width: 900, height: 600)
+        let onExternal = CGRect(x: 100, y: -1200, width: 1200, height: 800)
+
+        // belongsToStripDisplay: built-in window stays, external window goes.
+        check("scope: built-in window belongs to the strip display",
+              AdoptionScope.belongsToStripDisplay(onBuiltin, stripDisplay: scopeStrip, others: [scopeExt]))
+        check("scope: external window does NOT belong to the strip display",
+              !AdoptionScope.belongsToStripDisplay(onExternal, stripDisplay: scopeStrip, others: [scopeExt]))
+
+        // filter(stripDisplay): keep ONLY the built-in window (index 0).
+        let scopeFrames = [onBuiltin, onExternal]
+        check("scope: stripDisplay keeps only the strip-display window",
+              AdoptionScope.filter(frames: scopeFrames, stripDisplay: scopeStrip,
+                                   others: [scopeExt], scope: .stripDisplay) == [0])
+        // filter(allDisplays): legacy behavior keeps BOTH windows.
+        check("scope: allDisplays keeps every window (legacy)",
+              AdoptionScope.filter(frames: scopeFrames, stripDisplay: scopeStrip,
+                                   others: [scopeExt], scope: .allDisplays) == [0, 1])
+
+        // Single-display setup (no `others`): nothing is ever dropped, even
+        // under stripDisplay, because every window is on the strip's display.
+        check("scope: single display keeps everything under stripDisplay",
+              AdoptionScope.filter(frames: scopeFrames, stripDisplay: scopeStrip,
+                                   others: [], scope: .stripDisplay) == [0, 1])
+
+        // Safety bias: a window overlapping NO display (e.g. parked far away) is
+        // KEPT rather than silently lost.
+        let orphan = CGRect(x: 9000, y: 9000, width: 400, height: 300)
+        check("scope: window overlapping no display is kept (never lose a window)",
+              AdoptionScope.belongsToStripDisplay(orphan, stripDisplay: scopeStrip, others: [scopeExt]))
+
+        // A window straddling the bezel goes to whichever display it covers more
+        // of; tilt it mostly onto the external and confirm it is dropped.
+        let mostlyExternal = CGRect(x: -200, y: -1100, width: 1000, height: 700)
+        check("scope: bezel-straddling window follows its majority display",
+              !AdoptionScope.belongsToStripDisplay(mostlyExternal, stripDisplay: scopeStrip, others: [scopeExt]))
+
+        // Scope string parsing is tolerant of case/aliases; unknown -> nil.
+        check("scope: parse 'stripDisplay'", AdoptionScope.Scope(configValue: "stripDisplay") == .stripDisplay)
+        check("scope: parse 'allDisplays'", AdoptionScope.Scope(configValue: "allDisplays") == .allDisplays)
+        check("scope: parse is case-insensitive", AdoptionScope.Scope(configValue: "ALLDISPLAYS") == .allDisplays)
+        check("scope: unknown scope -> nil", AdoptionScope.Scope(configValue: "moon") == nil)
+
+        // Config plumbing: the new key parses, defaults to stripDisplay, and
+        // round-trips through the documented default file.
+        check("scope: config default is stripDisplay",
+              ScrollWMConfig.default.layout.adoptScope == .stripDisplay)
+        do {
+            let parsedAll = try ScrollWMConfig.parse(jsonc: """
+            { "layout": { "adoptScope": "allDisplays" } }
+            """)
+            check("scope: config parses adoptScope override", parsedAll.layout.adoptScope == .allDisplays)
+            let parsedBad = try ScrollWMConfig.parse(jsonc: """
+            { "layout": { "adoptScope": "bogus" } }
+            """)
+            check("scope: bad adoptScope falls back to default",
+                  parsedBad.layout.adoptScope == .stripDisplay)
+        } catch {
+            check("scope: adoptScope config parses", false)
+        }
+
+        // The engine glue (`filterByAdoptScope`) applies the same rule using its
+        // own display geometry. Build an engine bound to the built-in with the
+        // external registered, feed it two MatchedWindow-like frames, and check
+        // both scopes. This is the EXACT path arrange/resync take.
+        func scopeEngine(_ scope: AdoptionScope.Scope) -> TeleportEngine {
+            let eng = TeleportEngine(screenFrame: scopeStrip)
+            eng.stripDisplayFrame = scopeStrip
+            eng.otherDisplayFrames = [scopeExt]
+            eng.adoptScope = scope
+            return eng
+        }
+        let frames = [onBuiltin, onExternal]
+        let keptStrip = scopeEngine(.stripDisplay).filterByAdoptScope(frames) { $0 }
+        check("scope-engine: stripDisplay keeps only the built-in frame",
+              keptStrip == [onBuiltin])
+        let keptAll = scopeEngine(.allDisplays).filterByAdoptScope(frames) { $0 }
+        check("scope-engine: allDisplays keeps both frames", keptAll == frames)
+        // With NO other displays registered, even stripDisplay keeps everything
+        // (degenerate single-monitor case): never drop a window.
+        let engNoOthers = TeleportEngine(screenFrame: scopeStrip)
+        engNoOthers.stripDisplayFrame = scopeStrip
+        engNoOthers.adoptScope = .stripDisplay
+        check("scope-engine: single display keeps everything",
+              engNoOthers.filterByAdoptScope(frames) { $0 } == frames)
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

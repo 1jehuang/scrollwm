@@ -35,6 +35,11 @@ struct ScrollWMConfig: Equatable {
         var columnGap: CGFloat = 12
         var minColumnWidth: CGFloat = 200
         var widthPresets: [CGFloat] = [0.25, 0.50, 0.75, 1.0]
+        /// Which displays' windows the strip adopts. `stripDisplay` (default)
+        /// manages ONLY the strip's own monitor and leaves the others alone;
+        /// `allDisplays` is the legacy "one strip swallows every monitor"
+        /// behavior. See `AdoptionScope`.
+        var adoptScope: AdoptionScope.Scope = .stripDisplay
     }
 
     /// Menu-bar mini-map sizing. The icon grows with the strip instead of being
@@ -107,6 +112,7 @@ struct ScrollWMConfig: Equatable {
                 "columnGap": Double(layout.columnGap),
                 "minColumnWidth": Double(layout.minColumnWidth),
                 "widthPresets": layout.widthPresets.map { Double($0) },
+                "adoptScope": layout.adoptScope.rawValue,
             ],
             "menuBar": [
                 "pointsPerScreen": Double(menuBar.pointsPerScreen),
@@ -145,6 +151,13 @@ struct ScrollWMConfig: Equatable {
             if let m = layout["minColumnWidth"] as? NSNumber { config.layout.minColumnWidth = CGFloat(m.doubleValue) }
             if let presets = layout["widthPresets"] as? [NSNumber], !presets.isEmpty {
                 config.layout.widthPresets = presets.map { CGFloat($0.doubleValue) }
+            }
+            if let s = layout["adoptScope"] as? String {
+                if let scope = AdoptionScope.Scope(configValue: s) {
+                    config.layout.adoptScope = scope
+                } else {
+                    print("config: unknown layout.adoptScope '\(s)' (expected 'stripDisplay' or 'allDisplays'); using default")
+                }
             }
         }
         if let mb = obj["menuBar"] as? [String: Any] {
@@ -254,7 +267,15 @@ struct ScrollWMConfig: Equatable {
       "layout": {
         "columnGap": 12,          // px between columns and screen edges
         "minColumnWidth": 200,    // px floor; a column never shrinks below this
-        "widthPresets": [0.25, 0.50, 0.75, 1.0]  // fractions for the width keys
+        "widthPresets": [0.25, 0.50, 0.75, 1.0],  // fractions for the width keys
+
+        // Which displays' windows the strip manages:
+        //   "stripDisplay" = ONLY the monitor the strip lives on; windows on
+        //                    other monitors are left exactly where they are
+        //                    (PaperWM/niri-style; the default).
+        //   "allDisplays"  = legacy: one strip swallows every current-Space
+        //                    window across ALL monitors.
+        "adoptScope": "stripDisplay"
       },
 
       // Menu-bar mini-map sizing. The icon GROWS with the strip instead of
