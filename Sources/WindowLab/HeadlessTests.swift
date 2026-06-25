@@ -399,10 +399,40 @@ func runHeadlessSpawnLatencyTest() {
         t.check("new window adopted", false)
     }
 
+    // --- Publish-race adoption: a window readable via AX but WITHHELD from the
+    // WindowServer on-screen list for ~150ms (the real kAXWindowCreated-beats-
+    // publish gap). The single-shot fast path used to miss this and fall back to
+    // the 2s poll; the bounded retry must adopt it well under that. ---
+    let raceStartCount = engine.slots.count
+    let raceT0 = Clock.nowAbsNs()
+    // Distinct title (no "Seed" substring) so the current-Space gate cannot
+    // false-match it to a stale CG entry during the withhold window.
+    _ = world.addWindow(pid: seedPID, title: "Helper",
+                        frame: CGRect(x: 860, y: 80, width: 360, height: 420),
+                        notify: true, cgPublishDelay: 0.15)
+    var raceAdoptedNs: UInt64?
+    let raceDeadline = Clock.nowAbsNs() + 3_000_000_000
+    while Clock.nowAbsNs() < raceDeadline {
+        Headless.pump(0.01)
+        if engine.slots.count > raceStartCount { raceAdoptedNs = Clock.nowAbsNs(); break }
+    }
+    if let raceAdoptedNs {
+        let ms = Double(raceAdoptedNs &- raceT0) / 1e6
+        print(String(format: "[headless-spawnlatency] publish-race window adopted in %.0f ms", ms))
+        t.check("publish-race window adopted", true)
+        // The poll is 5s; adoption under ~1s proves the retry bridged the gap.
+        t.check("publish-race adoption < 1000ms (retry bridged the gap, not poll)", ms < 1000)
+        // It must arrive AFTER the publish delay (we can't adopt before it is
+        // on-screen), confirming the retry waited for the WindowServer.
+        t.check("publish-race adoption respected the publish delay (>= 140ms)", ms >= 140)
+    } else {
+        t.check("publish-race window adopted", false)
+    }
+
     // --- Close latency: destroy the new window, time the gap close. ---
     let countBeforeClose = engine.slots.count
     if countBeforeClose >= 2 {
-        if let extra = world.snapshot().first(where: { $0.title == "Seed-2" })?.element {
+        if let extra = world.snapshot().first(where: { $0.title == "Helper" })?.element {
             let tc0 = Clock.nowAbsNs()
             world.destroyWindow(extra, notify: true)
             var closedNs: UInt64?

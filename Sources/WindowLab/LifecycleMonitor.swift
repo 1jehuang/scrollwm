@@ -27,6 +27,18 @@ final class LifecycleMonitor {
     /// Coalesces overlapping poll/event triggers into one enumeration.
     private var enumerating = false
 
+    /// Fast-adopt retry policy for the kAXWindowCreated -> WindowServer-publish
+    /// race. When an app fires `kAXWindowCreated` the window exists in AX
+    /// immediately, but the WindowServer's on-screen list (our current-Space
+    /// gate) can lag it by a few frames. A single attempt that lost that race
+    /// used to bail and leave the window unadopted until the 2s safety-net poll,
+    /// which is the visible "new window snaps in late" latency. So `fastAdopt`
+    /// re-tries a bounded number of times at a short interval before giving up to
+    /// the poll: worst-case adoption is ~`maxFastAdoptRetries * fastAdoptRetryDelay`
+    /// (a few hundred ms) instead of the full poll interval.
+    private let maxFastAdoptRetries = 8
+    private let fastAdoptRetryDelay: TimeInterval = 0.04
+
     /// Restrict adoption to these PIDs (test mode). Nil = all regular apps.
     var pidFilter: Set<pid_t>? {
         didSet { windowEvents?.pidFilter = pidFilter }
@@ -295,7 +307,7 @@ final class LifecycleMonitor {
     /// the current Space AND the strip itself is currently on the current Space
     /// (so we never mix windows from different Spaces). If anything is
     /// ambiguous it simply does nothing and lets the poll converge.
-    private func fastAdopt(pids: Set<pid_t>) {
+    private func fastAdopt(pids: Set<pid_t>, attempt: Int = 0) {
         guard Self.sessionIsActive() else { return }
         // Respect an explicit pid filter (sandbox/test mode); the observer only
         // watches filtered pids anyway, so this is usually a no-op.
@@ -313,7 +325,13 @@ final class LifecycleMonitor {
         // still on-screen as the shared parking sliver) from being re-adopted
         // into the active workspace by the fast path.
         let unmanaged = appWindows.filter { info in !engine.isManaged(info.element) }
-        guard !unmanaged.isEmpty else { return }
+        guard !unmanaged.isEmpty else {
+            // AX has not published the new window's element yet (it can lag the
+            // `kAXWindowCreated` notification by a frame or two). Retry shortly
+            // rather than waiting for the slow poll.
+            scheduleFastAdoptRetry(pids: pids, attempt: attempt)
+            return
+        }
 
         // Current-Space gate via the on-screen CG list (cheap, one syscall).
         let cg = CGWindowSource.listWindows(onscreenOnly: true)
@@ -326,7 +344,16 @@ final class LifecycleMonitor {
         // external-display window onto the strip. Same pure rule as
         // `arrange`/`applyResync` (`engine.filterByAdoptScope`).
         let onscreenNew = engine.filterByAdoptScope(onscreenMatches) { $0.frame }
-        guard !onscreenNew.isEmpty else { return }
+        guard !onscreenNew.isEmpty else {
+            // The window exists in AX but the WindowServer has not yet listed it
+            // on-screen (the current-Space publish race), OR it is genuinely on
+            // another display/Space. We cannot tell those apart from one sample,
+            // so retry a bounded number of times: a real same-Space window shows
+            // up within a few frames, while a foreign-Space window simply keeps
+            // missing and is correctly left to the poll once the retries lapse.
+            scheduleFastAdoptRetry(pids: pids, attempt: attempt)
+            return
+        }
 
         // If we already manage windows but none are on the current Space, the
         // user is on another Space: defer to the poll (stay frozen).
@@ -354,6 +381,19 @@ final class LifecycleMonitor {
         engine.focus(index: lastInsertedIndex)
         lastResyncMs = Double(Clock.nowAbsNs() &- start) / 1e6
         onChange?(onscreenNew.count, 0)
+    }
+
+    /// Re-run `fastAdopt` for the same firing pids after a short delay, up to
+    /// `maxFastAdoptRetries` times. This closes the `kAXWindowCreated` ->
+    /// WindowServer-publish gap so a same-Space window is adopted within a few
+    /// frames instead of waiting for the 2s safety-net poll. A window that keeps
+    /// missing (genuinely on another Space / display) exhausts the retries
+    /// harmlessly and is left to the poll, preserving the Space-freeze contract.
+    private func scheduleFastAdoptRetry(pids: Set<pid_t>, attempt: Int) {
+        guard attempt < maxFastAdoptRetries else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + fastAdoptRetryDelay) { [weak self] in
+            self?.fastAdopt(pids: pids, attempt: attempt + 1)
+        }
     }
 
     /// True if any managed window is currently on the user's Space, judged by

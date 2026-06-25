@@ -44,6 +44,12 @@ final class SimWindowWorld: WindowBackend {
         var fullscreen: Bool
         var hasCloseButton: Bool
         var alive: Bool = true
+        /// Wall-clock time before which this window is WITHHELD from the
+        /// WindowServer on-screen list, even though it already exists in AX.
+        /// Models the real `kAXWindowCreated`-beats-WindowServer-publish race: a
+        /// just-created window is readable via AX a few frames before it appears
+        /// on-screen. Zero (the default) means "published immediately".
+        var cgPublishAt: TimeInterval = 0
 
         init(id: Int, pid: pid_t, appName: String, title: String,
              role: String, subrole: String, frame: CGRect, minSize: CGSize,
@@ -98,6 +104,13 @@ final class SimWindowWorld: WindowBackend {
     /// Add a window to the world. Returns its element token. When `notify` is
     /// true and an observer is subscribed, fires a created event (the new-window
     /// fast path) so the strip adopts it like a real `kAXWindowCreated`.
+    ///
+    /// `cgPublishDelay` models the real WindowServer-publish race: for that many
+    /// seconds after creation the window is readable via AX (so the fast-adopt
+    /// path "sees" it) but is WITHHELD from the on-screen list (so the
+    /// current-Space gate fails), exactly like a just-opened real window. The
+    /// fast-adopt retry must bridge that gap; zero (the default) publishes the
+    /// window immediately, preserving every existing test's behavior.
     @discardableResult
     func addWindow(pid: pid_t, title: String, frame: CGRect,
                    minSize: CGSize = .zero,
@@ -106,7 +119,8 @@ final class SimWindowWorld: WindowBackend {
                    minimized: Bool = false, fullscreen: Bool = false,
                    hasCloseButton: Bool = true,
                    appName: String? = nil,
-                   notify: Bool = false) -> AXUIElement {
+                   notify: Bool = false,
+                   cgPublishDelay: TimeInterval = 0) -> AXUIElement {
         lock.lock()
         let id = nextID; nextID += 1
         let win = Win(id: id, pid: pid, appName: appName ?? "Sim-\(pid)",
@@ -114,6 +128,9 @@ final class SimWindowWorld: WindowBackend {
                       frame: frame, minSize: minSize,
                       minimized: minimized, fullscreen: fullscreen,
                       hasCloseButton: hasCloseButton)
+        if cgPublishDelay > 0 {
+            win.cgPublishAt = Date().timeIntervalSinceReferenceDate + cgPublishDelay
+        }
         wins.append(win)
         let sink = onCreated
         lock.unlock()
@@ -178,11 +195,15 @@ final class SimWindowWorld: WindowBackend {
 
     func cgWindows(onscreenOnly: Bool) -> [CGWindowInfo] {
         lock.lock(); defer { lock.unlock() }
+        let now = Date().timeIntervalSinceReferenceDate
         // The WindowServer on-screen list = current-Space, visible windows. A
         // minimized or app-hidden window is NOT on screen, so it drops out here
-        // (which is exactly what makes `arrange`/`resync` skip them).
+        // (which is exactly what makes `arrange`/`resync` skip them). A window
+        // still within its `cgPublishAt` window is withheld too, modeling the
+        // WindowServer publish lag after `kAXWindowCreated`.
         return wins.compactMap { w -> CGWindowInfo? in
             if onscreenOnly && (w.minimized || hiddenApps.contains(w.pid)) { return nil }
+            if onscreenOnly && w.cgPublishAt > now { return nil }
             nextCGID += 1
             return CGWindowInfo(
                 windowID: nextCGID, ownerPID: w.pid, ownerName: w.appName,

@@ -958,6 +958,10 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     /// Periodic visibility re-check so the item re-heals if another app pushes
     /// it out of the menu bar after launch (see `ensureVisible`).
     private var visibilityWatchdog: Timer?
+    /// Observer for app-activation, the usual trigger for our item being pushed
+    /// out of the menu bar; lets us re-heal immediately rather than on the next
+    /// watchdog tick. Removed in `deinit`.
+    private var appActivationObserver: NSObjectProtocol?
 
     static let autosaveName = "ScrollWMMain"
 
@@ -1008,12 +1012,37 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
 
         // Watchdog: another app can push us out of view later (e.g. it
         // activates with a wide menu bar). Re-check periodically and re-heal so
-        // ScrollWM stays "always showing" rather than only at launch.
-        visibilityWatchdog = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        // ScrollWM stays "always showing" rather than only at launch. Reassert
+        // `isVisible` every tick too: it is cheap and pins the item shown even
+        // if something flips the flag. A 2s cadence re-heals promptly without
+        // measurable cost (the check is a couple of frame reads).
+        visibilityWatchdog = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self else { return }
+            self.statusItem?.isVisible = true
             if !self.isVisibleInMenuBar {
                 self.healAttempt = 0
                 self.ensureVisible()
+            }
+        }
+
+        // Event-driven re-heal: the usual cause of our item being squeezed out
+        // is ANOTHER app activating with a wide menu bar (which shrinks the
+        // third-party status area). React the moment that happens instead of
+        // waiting up to a full watchdog tick, so the icon never visibly
+        // disappears. A short delay lets the system settle the new menu bar
+        // layout before we measure + re-place.
+        appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self else { return }
+                self.statusItem?.isVisible = true
+                if !self.isVisibleInMenuBar {
+                    self.healAttempt = 0
+                    self.ensureVisible()
+                }
             }
         }
 
@@ -1033,6 +1062,13 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         // the configured floor; grows/shrinks as windows are added/removed.
         statusItem = NSStatusBar.system.statusItem(withLength: contentWidth + Self.hPadding)
         statusItem.autosaveName = NSStatusItem.AutosaveName(Self.autosaveName)
+        // "Always showing" contract: force the item visible (defends against a
+        // visibility=false that AppKit may have persisted under our autosaveName
+        // from a prior run or an errant drag) and forbid user removal, so the
+        // icon cannot be dragged out of the menu bar. The user asked for it to
+        // never leave the bar, so we override any saved-hidden state.
+        statusItem.isVisible = true
+        statusItem.behavior = []   // no .removalAllowed -> cannot be removed
 
         // Host the high-refresh animated mini-map inside the status button. The
         // view is click-through (hitTest -> nil) so the button still receives
@@ -1100,6 +1136,13 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         createStatusItem()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             self?.ensureVisible()
+        }
+    }
+
+    deinit {
+        visibilityWatchdog?.invalidate()
+        if let appActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(appActivationObserver)
         }
     }
 
