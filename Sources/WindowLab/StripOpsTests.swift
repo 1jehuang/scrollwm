@@ -1369,6 +1369,107 @@ enum StripOpsTests {
         check("reveal: didReveal true when a window was unminimized",
               WindowReveal.Result(unhiddenApps: 0, unminimizedWindows: 2).didReveal)
 
+        // --- SemVer parse + ordering (in-app updater) -----------------------
+        func sv(_ s: String) -> SemVer? { SemVer(s) }
+        check("semver: parses plain", sv("1.2.3") == SemVer("1.2.3"))
+        check("semver: tolerates leading v", sv("v0.1.2")?.description == "0.1.2")
+        check("semver: missing components default to 0",
+              sv("1")?.description == "1.0.0" && sv("1.4")?.description == "1.4.0")
+        check("semver: rejects non-numeric", sv("nightly") == nil)
+        check("semver: patch ordering", sv("0.1.1")! < sv("0.1.2")!)
+        check("semver: minor ordering", sv("0.1.9")! < sv("0.2.0")!)
+        check("semver: major ordering", sv("0.9.9")! < sv("1.0.0")!)
+        check("semver: prerelease < final of same core",
+              sv("0.2.0-dev")! < sv("0.2.0")!)
+        check("semver: dev build never outranks a real release",
+              sv("0.0.0-dev")! < sv("0.1.1")!)
+        check("semver: prerelease ordering rc.1 < rc.2",
+              sv("1.0.0-rc.1")! < sv("1.0.0-rc.2")!)
+        check("semver: equal versions are not <",
+              !(sv("0.1.1")! < sv("0.1.1")!))
+        check("semver: build metadata ignored", sv("1.2.3+abc")?.description == "1.2.3")
+
+        // --- Updater: SHA256SUMS parsing (pure) -----------------------------
+        let sums = """
+        e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ScrollWM-0.1.2.zip
+        deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0  ScrollWM-0.1.2.dmg
+        """
+        check("updater: expectedSHA256 finds the zip line",
+              Updater.expectedSHA256(fromSums: sums, fileName: "ScrollWM-0.1.2.zip")
+                == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        check("updater: expectedSHA256 nil for unknown file",
+              Updater.expectedSHA256(fromSums: sums, fileName: "nope.zip") == nil)
+        check("updater: expectedSHA256 tolerates binary '*' marker",
+              Updater.expectedSHA256(fromSums: "abc123  *ScrollWM-9.9.9.zip\n",
+                                     fileName: "ScrollWM-9.9.9.zip") == "abc123")
+
+        // --- Updater: release JSON parse + evaluate (pure) ------------------
+        let releaseJSON = """
+        [
+          {
+            "tag_name": "v0.2.0",
+            "draft": false,
+            "prerelease": false,
+            "html_url": "https://example.com/v0.2.0",
+            "body": "notes here",
+            "assets": [
+              {"name": "ScrollWM-0.2.0.zip", "browser_download_url": "https://example.com/ScrollWM-0.2.0.zip"},
+              {"name": "SHA256SUMS.txt", "browser_download_url": "https://example.com/SHA256SUMS.txt"}
+            ]
+          },
+          {
+            "tag_name": "v0.2.1-rc.1",
+            "draft": false,
+            "prerelease": true,
+            "html_url": "https://example.com/rc",
+            "assets": [
+              {"name": "ScrollWM-0.2.1-rc.1.zip", "browser_download_url": "https://example.com/rc.zip"}
+            ]
+          },
+          {
+            "tag_name": "v0.3.0",
+            "draft": true,
+            "assets": []
+          },
+          {
+            "tag_name": "v0.1.0",
+            "draft": false,
+            "prerelease": false,
+            "assets": [
+              {"name": "ScrollWM-0.1.0.zip", "browser_download_url": "https://example.com/old.zip"}
+            ]
+          }
+        ]
+        """.data(using: .utf8)!
+        let parsed = Updater.parseReleases(releaseJSON)
+        check("updater: parses non-draft releases with a zip (drops draft v0.3.0)",
+              parsed.count == 3)
+        check("updater: parsed release captures zip + sums URLs",
+              parsed.first(where: { $0.tagName == "v0.2.0" })?.sha256SumsURL == "https://example.com/SHA256SUMS.txt")
+
+        // Stable channel: ignore the rc, offer v0.2.0 over an older current.
+        let stable = Updater.evaluate(releases: parsed, current: SemVer("0.1.1")!, allowPrerelease: false)
+        check("updater: stable channel offers v0.2.0 update",
+              stable == .updateAvailable(parsed.first(where: { $0.tagName == "v0.2.0" })!, current: SemVer("0.1.1")!))
+
+        // Pre-release channel: the rc (0.2.1-rc.1) outranks 0.2.0.
+        if case let .updateAvailable(rel, _) = Updater.evaluate(releases: parsed, current: SemVer("0.1.1")!, allowPrerelease: true) {
+            check("updater: prerelease channel offers the rc", rel.tagName == "v0.2.1-rc.1")
+        } else {
+            check("updater: prerelease channel offers the rc", false)
+        }
+
+        // Already current: up to date, no nag.
+        check("updater: up to date when current >= newest stable",
+              Updater.evaluate(releases: parsed, current: SemVer("0.2.0")!, allowPrerelease: false)
+                == .upToDate(current: SemVer("0.2.0")!))
+
+        // Empty input -> up to date (never a spurious update).
+        check("updater: no releases -> up to date",
+              Updater.evaluate(releases: [], current: SemVer("0.1.1")!, allowPrerelease: false)
+                == .upToDate(current: SemVer("0.1.1")!))
+
+
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

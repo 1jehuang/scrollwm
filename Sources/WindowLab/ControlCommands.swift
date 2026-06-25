@@ -127,13 +127,18 @@ extension ScrollWMController {
             showTutorial()
             return "ok: opened tutorial"
 
+        case "update", "update-check":
+            // `scrollwm update` checks; `scrollwm update --install` applies it.
+            let install = args.contains("--install") || args.contains("install")
+            return controlUpdateCheck(install: install)
+
         case "quit":
             // Reply BEFORE terminating so the CLI sees confirmation.
             DispatchQueue.main.async { [weak self] in self?.quit() }
             return "ok: quitting (windows restored)"
 
         default:
-            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close display focus-mode reload quit"
+            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close display focus-mode reload update quit"
         }
     }
 

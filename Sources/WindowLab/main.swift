@@ -142,7 +142,7 @@ let command = args.first ?? (launchedAsAppBundle ? "run" : "probe")
 let controlVerbs: Set<String> = [
     "status", "arrange", "release", "toggle", "focus", "move", "width",
     "workspace", "ws", "close", "display", "focus-mode", "focusmode", "reload", "reload-config",
-    "tutorial", "ping", "quit",
+    "tutorial", "update", "update-check", "ping", "quit",
 ]
 if controlVerbs.contains(command) {
     exit(runControlCLI(Array(args)))
@@ -197,6 +197,11 @@ case "cycle":
     runCycleTest()
 case "unittest":
     exit(StripOpsTests.run() ? 0 : 1)
+case "updatecheck":
+    // Dev helper: run the LIVE GitHub update check directly (no running app).
+    // `--install` additionally stages + applies it if this is an installed app.
+    exit(runUpdateCheckCLI(install: args.contains("--install"),
+                           allowPrerelease: args.contains("--prerelease")))
 case "animtest":
     exit(MenuBarAnimationTests.run() ? 0 : 1)
 case "animrender":
@@ -258,6 +263,7 @@ default:
       scrollwm focus-mode [fit|centered]
                                    get/set how the viewport follows focus
       scrollwm reload              re-read the config file live
+      scrollwm update [--install]  check GitHub for a newer release (and install it)
       scrollwm tutorial            open the in-app cheat sheet
       scrollwm quit                restore windows and quit the app
 
@@ -280,6 +286,10 @@ default:
                                Arrange/release via menu, ctrl+opt+esc, or the CLI.
                                Exact frame restore on release/quit/crash.
       WindowLab unittest       pure-logic tests for width/move/close ops (no AX needed)
+      WindowLab updatecheck [--install] [--prerelease] [--stage-only]
+                               check GitHub Releases for a newer ScrollWM (pure
+                               network; --stage-only downloads+verifies+extracts
+                               without self-replacing, for CI/dev validation).
       WindowLab animtest       pure-logic tests for the animated menu-bar
                                mini-map (Spring physics + action inference)
       WindowLab opstest        integration test: spawn windows, exercise

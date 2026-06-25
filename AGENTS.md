@@ -69,6 +69,10 @@ for any behavior you change; prefer extracting pure functions (e.g.
 - `ControlServer.swift`      Unix-socket control plane (server + client) for the CLI
 - `ControlCommands.swift`    maps `scrollwm <verb>` requests to controller actions
 - `ControlCLI.swift`         `scrollwm` CLI: connect to the running app, print reply
+- `Updater.swift`            in-app updater: GitHub Releases check (pure parse/
+                             evaluate) + download/verify(SHA-256)/swap/relaunch
+- `UpdateCoordinator.swift`  schedules background checks, prompts/installs, state
+- `SemVer.swift`             PURE semantic-version parse + ordering (unit-tested)
 - `Sandbox.swift`            sandbox mode (safe live testing)
 - `Config.swift`             JSONC config file (single source of truth for keybinds)
 

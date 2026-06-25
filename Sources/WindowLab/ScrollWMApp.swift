@@ -21,6 +21,11 @@ final class ScrollWMController: NSObject {
     /// Keyboard tap for the move bindings (Cmd+H/L) that Carbon cannot grab.
     private var moveTap: KeyboardEventTap?
 
+    /// In-app updater: checks GitHub Releases so users actually receive new
+    /// versions. Created by the production `run` path (`startUpdates()`); nil in
+    /// sandbox/tests so they never phone home.
+    private var updateCoordinator: UpdateCoordinator?
+
     /// Pending coalesced re-evaluation of a display change. macOS fires
     /// `didChangeScreenParameters` SEVERAL times in quick succession for a
     /// single hotplug / resolution change (each intermediate arrangement is its
@@ -305,7 +310,67 @@ final class ScrollWMController: NSObject {
         }
         menuBar.applyConfig(config)
         menuBar.refresh()
+        updateCoordinator?.updateConfig(config.update)
         print("config reloaded from \(ScrollWMConfig.fileURL.path)")
+    }
+
+    // MARK: - Updates
+
+    /// Stand up the in-app updater (production `run` path only). Schedules the
+    /// background check per config; manual checks always work regardless.
+    func startUpdates() {
+        guard updateCoordinator == nil else { return }
+        let coord = UpdateCoordinator(controller: self, config: config.update)
+        updateCoordinator = coord
+        coord.start()
+    }
+
+    /// Whether the updater is live (used to gate the menu item).
+    var updatesEnabled: Bool { updateCoordinator != nil }
+
+    /// User-initiated "Check for Updates…" (menu). Always reports an outcome.
+    func checkForUpdates() {
+        guard let coord = updateCoordinator else {
+            // Updater not wired (e.g. AX still resolving): build a one-shot.
+            let coord = UpdateCoordinator(controller: self, config: config.update)
+            updateCoordinator = coord
+            coord.checkNow()
+            return
+        }
+        coord.checkNow()
+    }
+
+    /// CLI `scrollwm update [--install]`: synchronously check GitHub and return
+    /// a one-line reply. With `install`, an available update is downloaded +
+    /// verified + applied asynchronously AFTER this reply is sent (the app then
+    /// restores windows and relaunches). Runs on the main thread (control plane).
+    func controlUpdateCheck(install: Bool) -> String {
+        let updater = Updater(allowPrerelease: config.update.allowPrerelease)
+        switch updater.checkSync() {
+        case .failure(let err):
+            return "error: \(err.localizedDescription)"
+        case .success(.upToDate(let cur)):
+            return "ok: up to date (v\(cur))"
+        case .success(.noUsableAsset(let rel)):
+            return "ok: newer tag \(rel.tagName) found but no installable asset yet"
+        case .success(.updateAvailable(let rel, let cur)):
+            if !install {
+                return "ok: update available v\(rel.version) (you have v\(cur)). "
+                    + "Run `scrollwm update --install` or use the menu."
+            }
+            guard Bundle.main.bundleURL.pathExtension == "app" else {
+                return "error: update v\(rel.version) available, but this is a dev build (won't self-replace). "
+                    + "Download: \(rel.htmlURL)"
+            }
+            // Install after the reply is sent so the CLI sees confirmation.
+            let coord = updateCoordinator ?? {
+                let c = UpdateCoordinator(controller: self, config: config.update)
+                updateCoordinator = c
+                return c
+            }()
+            DispatchQueue.main.async { coord.beginInstall(rel, announce: false) }
+            return "ok: installing v\(rel.version)… ScrollWM will restore windows and relaunch"
+        }
     }
 
     // MARK: - Tutorial / config UX
@@ -1174,6 +1239,10 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         reload.target = self
         menu.addItem(reload)
 
+        let checkUpdates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesAction), keyEquivalent: "")
+        checkUpdates.target = self
+        menu.addItem(checkUpdates)
+
         let axOK = AccessibilityPermission.shared.state.isGranted
         let perm = NSMenuItem(title: axOK ? "Accessibility: granted ✓" : "Accessibility: MISSING — click to open Settings",
                               action: axOK ? nil : #selector(openAXSettings), keyEquivalent: "")
@@ -1218,6 +1287,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     @objc private func showTutorial() { controller.showTutorial() }
     @objc private func openConfigFile() { controller.openConfigFile() }
     @objc private func reloadConfigAction() { controller.reloadConfig() }
+    @objc private func checkForUpdatesAction() { controller.checkForUpdates() }
 }
 
 // MARK: - Entry
@@ -1243,6 +1313,7 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         readyDone = true
         print("ScrollWM running (dormant). Use the menu bar item, the toggle key, or the `scrollwm` CLI to arrange.")
         controller.showTutorialOnFirstRunIfNeeded()
+        controller.startUpdates()
         if selftest { runScrollWMSelftest(controller: controller) }
         if crashPhase == .crash { runCrashPhase(controller: controller) }
     }
