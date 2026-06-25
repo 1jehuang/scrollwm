@@ -271,8 +271,22 @@ final class TeleportEngine {
     @discardableResult
     func switchWorkspace(by delta: Int) -> Int {
         guard delta != 0 else { return activeWorkspace }
-        let target = activeWorkspace + delta
-        if target < 0 { return activeWorkspace }            // already at the top
+        if delta < 0 {
+            // Going UP: clamp an overshoot to the topmost workspace rather than
+            // either trapping or no-op'ing. From ws0 this is still a no-op (the
+            // clamp lands on the current workspace), preserving "up at the top
+            // does nothing"; from a lower workspace a big jump lands on ws0.
+            let target = max(0, activeWorkspace + delta)
+            if target != activeWorkspace { activateWorkspace(target) }
+            return activeWorkspace
+        }
+        // Going DOWN: clamp an overshoot to AT MOST one past the last existing
+        // workspace. niri-style dynamic workspaces keep only a single trailing
+        // empty one, so `down by 3` from the last real workspace lands on that
+        // one new workspace, never on an out-of-range index (the old code
+        // appended a single workspace but still indexed at `activeWorkspace +
+        // delta`, trapping with "Index out of range" for any delta >= 2).
+        let target = min(activeWorkspace + delta, workspaces.count)
         if target >= workspaces.count {
             // Only one trailing empty workspace ever exists: if the current one
             // is already empty there is nothing below to create.
@@ -290,7 +304,11 @@ final class TeleportEngine {
     @discardableResult
     func moveFocusedToWorkspace(by delta: Int) -> Bool {
         guard slots.indices.contains(focusIndex), delta != 0 else { return false }
-        let target = activeWorkspace + delta
+        // Clamp a downward overshoot to at most one past the last workspace, for
+        // the same reason as `switchWorkspace`: append a single trailing empty
+        // workspace and target THAT, never an out-of-range index (`by: 2` used
+        // to append one workspace but index at `activeWorkspace + 2`, trapping).
+        let target = min(activeWorkspace + delta, workspaces.count)
         if target < 0 { return false }                       // no workspace above
         if target >= workspaces.count { workspaces.append(Workspace()) }
 
@@ -466,8 +484,12 @@ final class TeleportEngine {
 
             if slot.width >= screenFrame.width {
                 // Wider than the screen: align its left edge (with a small gap)
-                // so the start of the window is visible.
-                return slotLeft - gap
+                // so the start of the window is visible. Clamp at 0 like the
+                // other branches: viewportX 0 already maps the strip's leading
+                // `gap` margin to the screen edge, so 0 is the leftmost
+                // meaningful scroll position and a negative offset would push
+                // the strip's start off the left of the screen.
+                return max(0, slotLeft - gap)
             }
             if slotLeft < viewLeft {
                 // Overflows left: bring its left edge to the viewport's left

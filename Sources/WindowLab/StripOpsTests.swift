@@ -285,6 +285,17 @@ enum StripOpsTests {
         // expected: slotLeft - gap = 500 - 12 = 488
         check("fit: oversized column aligns left to 488", abs(fitBig - 488) < 0.5)
 
+        // REGRESSION (fuzz): an oversized column near the strip's leading edge
+        // must clamp the viewport target at 0, never go negative (which would
+        // push the strip's start off the left of the screen). Other fit/centered
+        // branches already clamp at 0; the wide-column branch used to not.
+        var bigEdge = ef.slots[1]
+        bigEdge.canvasX = ef.gap            // 12, the leading margin
+        bigEdge.width = 2000                 // wider than the 1600 screen
+        let fitBigEdge = ef.viewportTarget(for: bigEdge, mode: .fit, currentViewportX: 0)
+        check("fit: oversized column at the leading edge clamps viewport at 0 (not negative)",
+              fitBigEdge >= -0.0001)
+
         // --- FocusMode round-trips through rawValue ---
         check("FocusMode rawValue round-trip centered",
               TeleportEngine.FocusMode(rawValue: "centered") == .centered)
@@ -978,6 +989,36 @@ enum StripOpsTests {
         check("workspaces: move up at top edge is a no-op",
               ewMoveTop.moveFocusedToWorkspace(by: -1) == false)
         check("workspaces: failed move kept both columns", ewMoveTop.slots.count == 2)
+
+        // --- REGRESSION (fuzz seed 12345): overshooting workspace switch/move ---
+        // A jump of |delta| >= 2 past the last workspace used to append exactly
+        // ONE trailing workspace but then index at `activeWorkspace + delta`,
+        // which is STILL out of range -> a hard `Index out of range` trap.
+        // niri keeps only one trailing empty workspace, so an overshoot must
+        // clamp to that single new workspace, never crash.
+        let ewOver = makeEngine(count: 2)
+        let ovTitles = ewOver.slots.map { $0.window.title }
+        let ovEnded = ewOver.switchWorkspace(by: 3)   // from ws0 (only ws); used to TRAP
+        check("workspaces: switch down by 3 does not crash and lands on ws1",
+              ovEnded == 1 && ewOver.activeWorkspace == 1)
+        check("workspaces: overshoot switch created exactly one trailing workspace",
+              ewOver.workspaceCount == 2)
+        check("workspaces: overshoot switch destination is empty", ewOver.slots.isEmpty)
+        ewOver.switchWorkspace(by: -5)                // overshoot UP clamps to the top
+        check("workspaces: overshoot up clamps to ws0", ewOver.activeWorkspace == 0)
+        check("workspaces: overshoot up restored the original columns",
+              ewOver.slots.map { $0.window.title } == ovTitles)
+
+        // moveFocusedToWorkspace with the same overshoot also must not trap.
+        let ewMoveOver = makeEngine(count: 2)
+        ewMoveOver.focusIndex = 0
+        let movedOverTitle = ewMoveOver.slots[0].window.title
+        let okOver = ewMoveOver.moveFocusedToWorkspace(by: 4)  // used to TRAP
+        check("workspaces: move-to-workspace by 4 does not crash", okOver)
+        check("workspaces: overshoot move landed on a single new trailing workspace",
+              ewMoveOver.activeWorkspace == 1 && ewMoveOver.workspaceCount == 2)
+        check("workspaces: overshoot move carried the focused column",
+              ewMoveOver.slots.count == 1 && ewMoveOver.slots.first?.window.title == movedOverTitle)
 
         // allManagedSlots + isManaged span every workspace (used by restore +
         // lifecycle so parked windows are never lost or re-adopted).

@@ -242,6 +242,11 @@ case "headlesstest":
     // Run EVERY headless integration test in one child-process sweep, so a
     // single command verifies the whole suite without touching the desktop.
     runHeadlessSuite()
+case "fuzz":
+    // Seeded, reproducible property-based fuzzing of the real engine + pure
+    // logic against the in-memory sim world. Fully headless: never touches a
+    // real window or the keyboard. A failure prints the seed + replayable op log.
+    runFuzz(args: Array(args))
 case "hotkeyprobe":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 20
     runHotkeyProbe(seconds: seconds)
@@ -307,6 +312,16 @@ default:
                                closed and no global keystroke is injected, so it
                                never touches your screen or focus. Safe to run
                                anytime, even while you work.
+      WindowLab fuzz [seed] [--steps N] [--seeds K] [--iters M]
+                               [--engine-only | --pure-only] [--replay SEED]
+                               seeded, reproducible property-based fuzzing of the
+                               real engine + pure logic against the in-memory sim
+                               world. Drives long random op sequences and asserts
+                               model invariants after every step (compactness,
+                               focus/workspace bounds, finite geometry, no dup
+                               windows, model==reality width). HEADLESS: never
+                               touches your screen or focus. A failure prints the
+                               seed + full op log; --replay <seed> re-runs it.
       WindowLab opstest        integration test for width/move/close/focus-sync.
                                HEADLESS by default (in-memory windows). Pass
                                --live to exercise REAL spawned windows instead.
