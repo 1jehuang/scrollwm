@@ -79,6 +79,7 @@ final class ScrollWMController: NSObject {
         engine.gap = config.layout.columnGap
         engine.minColumnWidth = config.layout.minColumnWidth
         engine.widthPresets = config.layout.widthPresets
+        engine.spawnWidthFraction = config.layout.spawnWidth
         engine.focusMode = config.focusMode
     }
 

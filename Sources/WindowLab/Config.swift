@@ -35,6 +35,13 @@ struct ScrollWMConfig: Equatable {
         var columnGap: CGFloat = 12
         var minColumnWidth: CGFloat = 200
         var widthPresets: [CGFloat] = [0.25, 0.50, 0.75, 1.0]
+        /// Width a newly opened window is snapped to, as a fraction of the usable
+        /// strip width. Many native apps open at an oversized frame that ignores
+        /// the column layout; resizing on adoption makes them land at a tidy
+        /// column. `nil` preserves each window's native size. Apps that enforce a
+        /// larger minimum keep their size (we read back the real frame), so this
+        /// is best-effort and never corrupts the layout. Defaults to 0.5.
+        var spawnWidth: CGFloat? = 0.5
     }
 
     /// Menu-bar mini-map sizing. The icon grows with the strip instead of being
@@ -107,6 +114,8 @@ struct ScrollWMConfig: Equatable {
                 "columnGap": Double(layout.columnGap),
                 "minColumnWidth": Double(layout.minColumnWidth),
                 "widthPresets": layout.widthPresets.map { Double($0) },
+                // A configured fraction, or JSON null to preserve native size.
+                "spawnWidth": layout.spawnWidth.map { Double($0) } ?? NSNull(),
             ],
             "menuBar": [
                 "pointsPerScreen": Double(menuBar.pointsPerScreen),
@@ -145,6 +154,16 @@ struct ScrollWMConfig: Equatable {
             if let m = layout["minColumnWidth"] as? NSNumber { config.layout.minColumnWidth = CGFloat(m.doubleValue) }
             if let presets = layout["widthPresets"] as? [NSNumber], !presets.isEmpty {
                 config.layout.widthPresets = presets.map { CGFloat($0.doubleValue) }
+            }
+            // spawnWidth: a number snaps new windows to that fraction; an
+            // explicit null (or any non-number) preserves native size. Clamp to
+            // a sane (0, 1] range so a typo can never request a degenerate width.
+            if layout.keys.contains("spawnWidth") {
+                if let sw = layout["spawnWidth"] as? NSNumber {
+                    config.layout.spawnWidth = min(1.0, max(0.05, CGFloat(sw.doubleValue)))
+                } else {
+                    config.layout.spawnWidth = nil
+                }
             }
         }
         if let mb = obj["menuBar"] as? [String: Any] {
@@ -254,7 +273,15 @@ struct ScrollWMConfig: Equatable {
       "layout": {
         "columnGap": 12,          // px between columns and screen edges
         "minColumnWidth": 200,    // px floor; a column never shrinks below this
-        "widthPresets": [0.25, 0.50, 0.75, 1.0]  // fractions for the width keys
+        "widthPresets": [0.25, 0.50, 0.75, 1.0],  // fractions for the width keys
+
+        // Width a NEWLY opened window snaps to, as a fraction of the usable
+        // strip width. Many native apps (Messages, Discord, Calendar, ...) open
+        // at an oversized frame that ignores the column layout; this resizes
+        // them on adoption so they land at a tidy column. Set to null to keep
+        // each window's own native size instead. Apps that enforce a larger
+        // minimum keep their size (we never shrink below what the app allows).
+        "spawnWidth": 0.5
       },
 
       // Menu-bar mini-map sizing. The icon GROWS with the strip instead of

@@ -214,6 +214,7 @@ final class LifecycleMonitor {
         // user just opened. Cross-Space windows are intentionally skipped.
         let newWindows = addTokens.map { standard[$0] }
         var lastInsertedIndex: Int?
+        var insertedIndices: [Int] = []
         if !newWindows.isEmpty {
             // Insertion point sits just after the current focus. Inserting at
             // focusIndex+1 never shifts the focused window's own index, so the
@@ -221,9 +222,13 @@ final class LifecycleMonitor {
             var insertAt = engine.slots.isEmpty ? 0 : engine.focusIndex + 1
             for info in newWindows {
                 engine.insert(window: info, at: insertAt)
+                insertedIndices.append(insertAt)
                 lastInsertedIndex = insertAt
                 insertAt += 1
             }
+            // Snap each new window to the configured spawn width (no-op when
+            // unset); the read-back keeps the model honest if the app clamps.
+            for i in insertedIndices { engine.applySpawnWidth(toSlotAt: i) }
         }
 
         // Reconcile each surviving column's stored size against the live AX
@@ -317,11 +322,17 @@ final class LifecycleMonitor {
         let start = Clock.nowAbsNs()
         var insertAt = engine.slots.isEmpty ? 0 : engine.focusIndex + 1
         var lastInsertedIndex = insertAt
+        var insertedIndices: [Int] = []
         for info in onscreenNew {
             engine.insert(window: info, at: insertAt)
+            insertedIndices.append(insertAt)
             lastInsertedIndex = insertAt
             insertAt += 1
         }
+        // Snap each freshly opened window to the configured spawn width (no-op
+        // when unset). Native apps that enforce a larger minimum keep their size
+        // (we read back the real frame), so the model never diverges.
+        for i in insertedIndices { engine.applySpawnWidth(toSlotAt: i) }
         adoptedCount += onscreenNew.count
         engine.compactStrip()
         // Reveal the newest. `focus` -> `teleport` now only moves windows whose

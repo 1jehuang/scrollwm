@@ -136,6 +136,47 @@ extension TeleportEngine {
         }
     }
 
+    /// Resize a freshly adopted column at index `idx` toward the configured
+    /// `spawnWidthFraction`, if any. This is what makes a native app land at a
+    /// tidy column width instead of whatever (often oversized) frame it opened
+    /// with - the recurring "native apps don't spawn at the suggested size"
+    /// complaint.
+    ///
+    /// Robustness mirrors `setFocusedWidth`: many apps (Discord, Messages,
+    /// Firefox, ...) enforce a larger minimum and silently clamp the request
+    /// while STILL returning AX `.success`, and some resize asynchronously so the
+    /// immediate read-back is stale. So we never trust the request: we write it,
+    /// read back the REAL frame, store that, and schedule the same async
+    /// reconcile the width keys use, so the strip model always matches reality
+    /// even when the app wins. No-op when no spawn width is configured, the
+    /// window is unhealthy, or it is already within a point of the target.
+    func applySpawnWidth(toSlotAt idx: Int) {
+        guard let fraction = spawnWidthFraction else { return }
+        guard slots.indices.contains(idx) else { return }
+        let slot = slots[idx]
+        guard slot.window.healthy else { return }
+
+        let target = width(forFraction: fraction)
+        // Already close enough (e.g. a window that opened at exactly the column
+        // width): skip the cross-process round-trip entirely.
+        if abs(slot.width - target) <= 1 { return }
+
+        // Optimistically reflect the request, then pull back to the real frame.
+        slots[idx].width = target
+        _ = AXSource.setSize(
+            slot.window.element,
+            kAXSizeAttribute as String,
+            CGSize(width: target, height: slot.height)
+        )
+        if let actual = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
+            slots[idx].width = actual.width
+            slots[idx].height = actual.height
+        }
+        // Slow/animated apps settle after the immediate read-back; the async
+        // reconcile refreshes the model + re-packs once the real size lands.
+        scheduleWidthReconcile(for: slot.window)
+    }
+
     /// Move the focused column one position toward `delta` (negative = left,
     /// positive = right) within the strip. Returns false at the edges or when
     /// nothing is focused.

@@ -140,6 +140,15 @@ final class TeleportEngine {
     /// `widthPresets`.
     var widthPresets: [CGFloat] = TeleportEngine.widthPresets
 
+    /// Target width (as a fraction of the usable strip width) that a NEWLY
+    /// opened window is resized to on adoption, so native apps land at a tidy
+    /// column instead of whatever (often oversized) frame they opened with.
+    /// `nil` preserves the window's native size (the old behavior). Config-driven
+    /// (`layout.spawnWidth`). Apps that enforce a larger minimum still win (we
+    /// read back and store the real, clamped frame), so the layout never
+    /// diverges from reality; the request is best-effort.
+    var spawnWidthFraction: CGFloat?
+
     // Metrics
     private(set) var lastTeleportMs: Double = 0
     private(set) var teleportLatencies: [Double] = []

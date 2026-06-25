@@ -117,6 +117,84 @@ func runStripOpsIntegrationTest() {
         }
         clampProc.terminate()
 
+        // --- SPAWN WIDTH: a newly opened window is snapped to a column ---
+        // The recurring complaint: native apps open at an oversized frame that
+        // ignores the strip. With `spawnWidthFraction` set, adoption resizes the
+        // new window toward that column width. We spawn a deliberately WIDE
+        // window, adopt it via the same insert+applySpawnWidth path the
+        // lifecycle monitor uses, and verify the REAL window shrank to the
+        // target. A second window with a hard minimum LARGER than the target
+        // verifies the app still wins and the model tracks the real frame.
+        let spawnEngine = TeleportEngine(screenFrame: axFrame)
+        spawnEngine.spawnWidthFraction = 0.25
+        let spawnTarget = spawnEngine.width(forFraction: 0.25)
+
+        let wideProc = spawnTestWindowWithMin(width: 1200, height: 500, minWidth: 1, title: "SpawnWide")
+        Thread.sleep(forTimeInterval: 1.5)
+        let widePid = wideProc.processIdentifier
+        func wideWindows() -> [AXWindowInfo] {
+            guard let a = NSRunningApplication(processIdentifier: widePid), !a.isTerminated else { return [] }
+            return AXSource.windows(for: a)
+        }
+        if let wideInfo = IdentityMatcher.match(
+            axWindows: wideWindows(),
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+        ).first(where: { $0.ax.pid == widePid })?.ax {
+            check("spawn-width: wide window opened wider than the target",
+                  wideInfo.frame.width > spawnTarget + 50)
+            DispatchQueue.main.sync {
+                spawnEngine.insert(window: wideInfo, at: 0)
+                spawnEngine.applySpawnWidth(toSlotAt: 0)
+                spawnEngine.compactStrip()   // mirrors the lifecycle adopt path
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+            let liveWide = wideWindows().first?.frame.size.width ?? 0
+            check("spawn-width: real window shrank to the column target (\(Int(spawnTarget)))",
+                  abs(liveWide - spawnTarget) <= 8)
+            check("spawn-width: model matches the real (resized) width",
+                  abs(spawnEngine.slots[0].width - liveWide) <= 8)
+            check("spawn-width: strip stays compact", StripOpsTests.isCompact(spawnEngine))
+            DispatchQueue.main.sync { _ = spawnEngine.releaseAll() }
+        } else {
+            check("spawn-width: adopted the wide window", false)
+        }
+        wideProc.terminate()
+
+        // A window whose hard minimum exceeds the spawn target must NOT shrink
+        // below its minimum, and the model must store that real (clamped) width.
+        let spawnClampEngine = TeleportEngine(screenFrame: axFrame)
+        spawnClampEngine.spawnWidthFraction = 0.25
+        let scTarget = spawnClampEngine.width(forFraction: 0.25)
+        let scMin = 880.0
+        let scProc = spawnTestWindowWithMin(width: 1000, height: 500, minWidth: scMin, title: "SpawnClamp")
+        Thread.sleep(forTimeInterval: 1.5)
+        let scPid = scProc.processIdentifier
+        func scWindows() -> [AXWindowInfo] {
+            guard let a = NSRunningApplication(processIdentifier: scPid), !a.isTerminated else { return [] }
+            return AXSource.windows(for: a)
+        }
+        if let scInfo = IdentityMatcher.match(
+            axWindows: scWindows(),
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+        ).first(where: { $0.ax.pid == scPid })?.ax {
+            check("spawn-width clamp: target is below the window minimum", scTarget < scMin)
+            DispatchQueue.main.sync {
+                spawnClampEngine.insert(window: scInfo, at: 0)
+                spawnClampEngine.applySpawnWidth(toSlotAt: 0)
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+            let liveSC = scWindows().first?.frame.size.width ?? 0
+            check("spawn-width clamp: app kept its minimum (did not shrink to target)",
+                  liveSC >= scMin - 8)
+            check("spawn-width clamp: model stores the real clamped width, not the target",
+                  abs(spawnClampEngine.slots[0].width - liveSC) <= 8
+                      && spawnClampEngine.slots[0].width > scTarget + 8)
+            DispatchQueue.main.sync { _ = spawnClampEngine.releaseAll() }
+        } else {
+            check("spawn-width clamp: adopted the min-width window", false)
+        }
+        scProc.terminate()
+
         // --- MOVE: reorder focused column right, verify model order ---
         engine.focusIndex = 0
         let before = engine.slots.map { $0.window.title }

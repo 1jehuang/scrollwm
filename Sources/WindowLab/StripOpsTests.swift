@@ -366,6 +366,30 @@ enum StripOpsTests {
         check("new window keeps its real (un-clamped) width", eWide.slots[0].width == 2000)
         check("new window keeps its real (un-clamped) height", eWide.slots[0].height == 1200)
 
+        // --- SPAWN WIDTH: a new window snaps to the configured fraction ---
+        // With `spawnWidthFraction` set, a freshly inserted column should be
+        // resized toward that fraction of the usable width. (Synthetic windows
+        // have no live AX size, so the optimistic model update is what we assert;
+        // the integration test `opstest` covers the real-AX readback/clamp.)
+        let eSpawn = TeleportEngine(screenFrame: CGRect(x: 0, y: 0, width: 1600, height: 1000))
+        eSpawn.spawnWidthFraction = 0.5
+        let halfTarget = eSpawn.width(forFraction: 0.5)
+        eSpawn.insert(window: synthInfo(3), at: 0)   // synthInfo width 400 != target
+        eSpawn.applySpawnWidth(toSlotAt: 0)
+        check("spawn width resizes a new column to the configured fraction",
+              abs(eSpawn.slots[0].width - halfTarget) < 0.5)
+
+        // Nil spawn width preserves the window's native size (old behavior).
+        let eNoSpawn = TeleportEngine(screenFrame: CGRect(x: 0, y: 0, width: 1600, height: 1000))
+        eNoSpawn.spawnWidthFraction = nil
+        eNoSpawn.insert(window: synthInfo(4), at: 0) // native width 400
+        eNoSpawn.applySpawnWidth(toSlotAt: 0)
+        check("nil spawn width preserves native size", eNoSpawn.slots[0].width == 400)
+
+        // An out-of-range index is a safe no-op (never crashes).
+        eNoSpawn.applySpawnWidth(toSlotAt: 99)
+        check("spawn width on a bad index is a no-op", eNoSpawn.slots.count == 1)
+
         // --- Config: chord parsing ---
         if let c = Chord(string: "cmd+shift+h") {
             check("chord cmd+shift+h keyCode is H (4)", c.keyCode == 4)
@@ -409,9 +433,25 @@ enum StripOpsTests {
             // Untouched bindings keep their defaults.
             check("config default kept for unset action",
                   parsed.keybindings[.toggleArrange] == KeyAction.defaultChords[.toggleArrange])
+            // spawnWidth unset in this JSON -> keeps the default (0.5).
+            check("config spawnWidth defaults when unset", parsed.layout.spawnWidth == 0.5)
         } catch {
             check("config JSONC parses", false)
         }
+
+        // spawnWidth: a number is parsed and clamped into (0, 1].
+        do {
+            let p = try ScrollWMConfig.parse(jsonc: #"{ "layout": { "spawnWidth": 0.75 } }"#)
+            check("config spawnWidth number parsed", p.layout.spawnWidth == 0.75)
+            let pHigh = try ScrollWMConfig.parse(jsonc: #"{ "layout": { "spawnWidth": 5 } }"#)
+            check("config spawnWidth clamped to 1.0", pHigh.layout.spawnWidth == 1.0)
+        } catch { check("config spawnWidth number parses", false) }
+
+        // spawnWidth: explicit null preserves native size (nil fraction).
+        do {
+            let p = try ScrollWMConfig.parse(jsonc: #"{ "layout": { "spawnWidth": null } }"#)
+            check("config spawnWidth null -> nil (native size)", p.layout.spawnWidth == nil)
+        } catch { check("config spawnWidth null parses", false) }
 
         // Malformed JSON throws (caller falls back to defaults).
         var threw = false
