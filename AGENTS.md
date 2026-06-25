@@ -42,7 +42,11 @@ All of these are headless-ish and safe (spawn disposable windows or pure logic):
 .build/debug/WindowLab opstest        # integration: width/move/close vs live AX readback
 .build/debug/WindowLab e2etest        # real controller + synthesized hotkeys
 .build/debug/WindowLab spawnlatency   # new-window adoption latency (AX observer fast path)
-.build/debug/WindowLab sandbox [n]    # live, interactive, isolated to spawned windows
+.build/debug/WindowLab displaytest    # multi-display: real controller locked to spawned
+                                      #   windows; asserts on-display/parking/rebind vs AX
+.build/debug/WindowLab sandbox [n] [--display M]
+                                      # live, interactive, isolated to spawned windows
+                                      #   (--display M tiles them on monitor M, 0-based L->R)
 ```
 
 Always run `unittest` + `e2etest` before claiming a change is done. Add a test

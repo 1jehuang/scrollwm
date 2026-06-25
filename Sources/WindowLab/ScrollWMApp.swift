@@ -21,6 +21,16 @@ final class ScrollWMController: NSObject {
     /// Keyboard tap for the move bindings (Cmd+H/L) that Carbon cannot grab.
     private var moveTap: KeyboardEventTap?
 
+    /// Pending coalesced re-evaluation of a display change. macOS fires
+    /// `didChangeScreenParameters` SEVERAL times in quick succession for a
+    /// single hotplug / resolution change (each intermediate arrangement is its
+    /// own event). We debounce the burst into one re-bind from the SETTLED
+    /// geometry, so the strip never thrashes through every transient layout.
+    private var displayChangeDebounce: DispatchWorkItem?
+    /// Debounce window for `screenParametersChanged`: long enough to swallow a
+    /// hotplug burst, short enough to feel instant.
+    private let displayChangeDebounceInterval: TimeInterval = 0.25
+
     /// Lazily-created tutorial window controller (config-driven cheat sheet).
     private lazy var tutorial = TutorialWindowController(configProvider: { [weak self] in
         self?.config ?? .default
@@ -38,7 +48,12 @@ final class ScrollWMController: NSObject {
     private(set) var config: ScrollWMConfig
 
     override init() {
-        guard let screen = NSScreen.main else { fatalError("no screen") }
+        guard NSScreen.main != nil else { fatalError("no screen") }
+        config = ScrollWMConfig.load()
+        // [md-select] Bind the strip to the display the user configured
+        // (layout.stripDisplay), defaulting to NSScreen.main. Falls back to main
+        // if the spec is unknown / out of range.
+        let screen = Self.screen(forSpec: config.layout.stripDisplay) ?? NSScreen.main!
         let vf = screen.visibleFrame
         let axFrame = CGRect(
             x: vf.origin.x,
@@ -46,7 +61,6 @@ final class ScrollWMController: NSObject {
             width: vf.width,
             height: vf.height
         )
-        config = ScrollWMConfig.load()
         engine = TeleportEngine(screenFrame: axFrame)
         super.init()
 
@@ -81,6 +95,7 @@ final class ScrollWMController: NSObject {
         engine.widthPresets = config.layout.widthPresets
         engine.spawnWidthFraction = config.layout.spawnWidth
         engine.focusMode = config.focusMode
+        engine.adoptScope = config.layout.adoptScope
     }
 
     /// Feed the multi-display layout (in AX top-left global coordinates) to the
@@ -125,21 +140,152 @@ final class ScrollWMController: NSObject {
     }
 
     /// Re-evaluate the display layout when monitors are plugged/unplugged or
-    /// rearranged. The strip's display is the one that best overlaps the
-    /// engine's current `screenFrame`; fall back to the main screen if it can't
-    /// be identified (e.g. the strip's display was just unplugged).
+    /// rearranged. macOS fires this several times for one physical change, so we
+    /// DEBOUNCE the burst and act once on the settled geometry.
     @objc private func screenParametersChanged() {
+        displayChangeDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.applySettledDisplayChange()
+        }
+        displayChangeDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + displayChangeDebounceInterval,
+                                      execute: work)
+    }
+
+    /// Decide where the strip should live after a (debounced) display change and
+    /// re-bind to it. Handles the catastrophic case where the strip's OWN
+    /// display was unplugged: `StripDisplayResolver` detects that no surviving
+    /// display still overlaps the strip and MIGRATES the strip to the best
+    /// survivor, rescuing windows that would otherwise be orphaned off-screen.
+    /// A display being ADDED back is the same code path: it simply becomes a
+    /// candidate the resolver may pick (or, more often, leaves the strip put).
+    private func applySettledDisplayChange() {
+        let screens = NSScreen.screens
+        // No screens at all (all monitors asleep/disconnected): keep the last
+        // geometry untouched until one reappears (resolver case 3).
+        guard !screens.isEmpty else { return }
+
+        let primaryHeight = (screens.first { $0.frame.origin == .zero }
+                             ?? NSScreen.main ?? screens[0]).frame.height
+        // Visible AX frames of every available display, parallel to `screens`.
+        let visibleFrames = screens.map {
+            DisplayGeometry.axFrame(appKitFrame: $0.visibleFrame, primaryHeight: primaryHeight)
+        }
+
+        // Pure policy: same display (resized) -> follow it; strip display gone
+        // -> migrate to the best survivor; no displays -> keep put.
+        let decision = StripDisplayResolver.resolve(
+            stripFrame: engine.screenFrame, displays: visibleFrames)
+        guard let idx = decision.displayIndex else { return }
+
+        if decision.migrated {
+            print("display change: strip's display gone; migrating strip to "
+                  + "\(screens[idx].localizedName)")
+        }
+        refreshDisplayGeometry(stripDisplay: screens[idx], relayout: true)
+    }
+
+    // MARK: - Strip display selection ([md-select])
+
+    /// Map `NSScreen.screens` (the order CLI/config indices reference) to the
+    /// pure `DisplaySelector.DisplayInfo` view of them, tagging which is `main`
+    /// (active display) and which is `primary` (AppKit origin). Keeping the
+    /// AppKit -> pure conversion in one place lets `DisplaySelector.pick` stay
+    /// unit-testable while production and tests agree on the policy.
+    private static func displayInfos() -> [DisplaySelector.DisplayInfo] {
+        let main = NSScreen.main
+        return NSScreen.screens.map { s in
+            DisplaySelector.DisplayInfo(
+                frame: s.frame,
+                isMain: s === main,
+                isPrimary: s.frame.origin == .zero)
+        }
+    }
+
+    /// Resolve a strip-display spec ("main"/"primary"/"largest"/"next"/index) to
+    /// a concrete `NSScreen`, or nil when the spec is unknown / out of range.
+    /// `current` is the strip's present display index, used only by `"next"`.
+    private static func screen(forSpec spec: String, current: Int? = nil) -> NSScreen? {
+        guard let idx = DisplaySelector.pick(spec: spec, displays: displayInfos(), current: current),
+              NSScreen.screens.indices.contains(idx) else { return nil }
+        return NSScreen.screens[idx]
+    }
+
+    /// Index (into `NSScreen.screens`) of the display the strip currently lives
+    /// on, by maximum overlap with the engine's live AX frame. nil if it cannot
+    /// be identified. Drives the `"next"` cycle so it advances from where we are.
+    private func currentStripDisplayIndex() -> Int? {
         let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
                              ?? NSScreen.main)?.frame.height ?? engine.screenFrame.height
         let target = engine.screenFrame
-        // Choose by maximum overlap with the strip's current AX frame: robust to
-        // a display that resized (origin/width shifted) but is "the same screen".
-        let strip = NSScreen.screens.max { a, b in
-            let fa = DisplayGeometry.axFrame(appKitFrame: a.visibleFrame, primaryHeight: primaryHeight)
-            let fb = DisplayGeometry.axFrame(appKitFrame: b.visibleFrame, primaryHeight: primaryHeight)
-            return DisplayGeometry.overlapArea(target, fa) < DisplayGeometry.overlapArea(target, fb)
-        } ?? NSScreen.main
-        if let strip { refreshDisplayGeometry(stripDisplay: strip, relayout: true) }
+        var best: Int?
+        var bestArea: CGFloat = -1
+        for (i, s) in NSScreen.screens.enumerated() {
+            let f = DisplayGeometry.axFrame(appKitFrame: s.visibleFrame, primaryHeight: primaryHeight)
+            let a = DisplayGeometry.overlapArea(target, f)
+            if a > bestArea { bestArea = a; best = i }
+        }
+        return best
+    }
+
+    /// Move the scrolling strip to another monitor at runtime. `spec` is
+    /// "next"/"main"/"primary"/"largest"/index. Re-identifies the target
+    /// `NSScreen`, rebinds the engine to its visible AX frame and relays every
+    /// managed window onto it (display-aware parking is refreshed too). Returns a
+    /// one-line, human-readable result for the control reply / CLI.
+    @discardableResult
+    func moveStripToDisplay(_ spec: String) -> String {
+        let current = currentStripDisplayIndex()
+        guard let idx = DisplaySelector.pick(spec: spec, displays: Self.displayInfos(), current: current),
+              NSScreen.screens.indices.contains(idx) else {
+            return "error: no such display '\(spec)' (use next|main|primary|largest|1-\(NSScreen.screens.count))"
+        }
+        let target = NSScreen.screens[idx]
+        // Relayout only matters while managing; when dormant we just re-bind the
+        // engine's geometry so the next arrange lands on the chosen display.
+        refreshDisplayGeometry(stripDisplay: target, relayout: isManaging)
+        if !isManaging {
+            // Dormant: refreshDisplayGeometry skips the rebind, so do it here so a
+            // subsequent arrange uses the new display's visible frame.
+            let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
+                                 ?? NSScreen.main ?? target).frame.height
+            engine.rebindStripDisplay(to: DisplayGeometry.axFrame(
+                appKitFrame: target.visibleFrame, primaryHeight: primaryHeight))
+        }
+        menuBar.refresh()
+        let name = target.localizedName
+        return "ok: strip on display \(idx + 1) (\(name))\(isManaging ? ", \(engine.slots.count) windows relaid" : "")"
+    }
+
+    /// Snapshot of the connected displays for the menu / status: (1-based index,
+    /// name, isCurrentStrip).
+    func displayChoices() -> [(index: Int, name: String, isStrip: Bool)] {
+        let cur = currentStripDisplayIndex()
+        return NSScreen.screens.enumerated().map { (i, s) in
+            (index: i + 1, name: s.localizedName, isStrip: i == cur)
+        }
+    }
+
+    /// Bind the strip to a SPECIFIC display (its visible frame becomes the
+    /// strip's usable area; its full frame the parking reference; every other
+    /// screen the "other" set). Unlike `refreshDisplayGeometry`, this updates the
+    /// strip's own `screenFrame` even when dormant, so a caller can place the
+    /// strip on a chosen monitor BEFORE arranging (used by `sandbox --display N`
+    /// to run the whole sandbox on an external screen). Relays any already-
+    /// managed windows onto the new geometry.
+    func bindStripToDisplay(_ stripDisplay: NSScreen) {
+        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
+                             ?? NSScreen.main ?? stripDisplay).frame.height
+        func axFull(_ s: NSScreen) -> CGRect {
+            DisplayGeometry.axFrame(appKitFrame: s.frame, primaryHeight: primaryHeight)
+        }
+        engine.stripDisplayFrame = axFull(stripDisplay)
+        engine.otherDisplayFrames = NSScreen.screens.filter { $0 !== stripDisplay }.map(axFull)
+        // rebindStripDisplay sets `screenFrame` and relays; on an empty strip the
+        // relay is a no-op, so this safely repositions the strip pre-arrange.
+        engine.rebindStripDisplay(
+            to: DisplayGeometry.axFrame(appKitFrame: stripDisplay.visibleFrame, primaryHeight: primaryHeight)
+        )
     }
 
     /// Re-read the config file and apply it live. Keybindings are reinstalled
@@ -227,7 +373,13 @@ final class ScrollWMController: NSObject {
         // offscreen AX windows belong to other Spaces; moving them would
         // surprise the user later.
         let onscreen = matched.filter { $0.cg != nil }
-        engine.adopt(matched: onscreen)
+        // Scope adoption to the strip's own display (default). With one Space
+        // spanning multiple monitors, "onscreen" includes windows on OTHER
+        // displays; without this filter arrange would yank them onto the strip.
+        // `allDisplays` keeps the legacy whole-desktop behavior. Pure policy +
+        // the engine's live display geometry live in `filterByAdoptScope`.
+        let scoped = engine.filterByAdoptScope(onscreen) { $0.ax.frame }
+        engine.adopt(matched: scoped)
         guard !engine.slots.isEmpty else {
             print("arrange: no manageable windows found")
             return
@@ -491,6 +643,38 @@ final class ScrollWMController: NSObject {
     func debugWidth(forFraction f: CGFloat) -> CGFloat { engine.width(forFraction: f) }
     var debugActiveWorkspace: Int { engine.stripState.activeWorkspace }
     var debugWorkspaceCount: Int { engine.stripState.workspaceCount }
+
+    // --- Multi-display debug accessors (for the `displaytest` integration) ---
+    // These read/relay the SAME engine the production controller drives, so the
+    // test asserts real behavior, not a parallel mock.
+
+    /// The strip's current usable (visible) frame in AX global coords.
+    var debugScreenFrame: CGRect { engine.screenFrame }
+    /// Full AX frame of the display the strip is bound to (parking reference).
+    var debugStripDisplayFrame: CGRect? { engine.stripDisplayFrame }
+    /// Full AX frames of every OTHER display (drives the parking-corner choice).
+    var debugOtherDisplayFrames: [CGRect] { engine.otherDisplayFrames }
+    /// The shared off-screen parking corner the engine would park columns at.
+    var debugParkingPoint: CGPoint { engine.parkingPoint }
+    /// Live AX origin the focused column is committed at (nil if none/unhealthy).
+    var debugFocusedCommittedOrigin: CGPoint? {
+        engine.slots.indices.contains(engine.focusIndex)
+            ? engine.slots[engine.focusIndex].window.lastCommittedOrigin : nil
+    }
+    /// Re-bind the strip onto new display geometry at runtime and relay every
+    /// managed window onto it, exactly as a real monitor hotplug/rearrange would
+    /// via `screenParametersChanged`. `stripFull`/`others` are the parking
+    /// references (strip's own display vs every other), `visible` is the new
+    /// usable frame the strip should fill — all in AX global (top-left) coords.
+    /// Returns the number of AX position writes the relay issued. Used by
+    /// `displaytest` to simulate "the strip moved to the other monitor" (or, on a
+    /// single-display rig, onto a sub-region) and verify the windows follow.
+    @discardableResult
+    func debugRebindStrip(visible: CGRect, stripFull: CGRect, others: [CGRect]) -> Int {
+        engine.stripDisplayFrame = stripFull
+        engine.otherDisplayFrames = others
+        return engine.rebindStripDisplay(to: visible)
+    }
 
     /// Jump directly to a 1-based workspace index (CLI `workspace N`).
     func focusWorkspace(_ oneBased: Int) {
@@ -929,6 +1113,23 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         focusModeItem.submenu = focusSubmenu
         menu.addItem(focusModeItem)
 
+        // [md-select] "Move strip to display" submenu, only when >1 monitor.
+        let displays = controller.displayChoices()
+        if displays.count > 1 {
+            let dispItem = NSMenuItem(title: "Move Strip to Display", action: nil, keyEquivalent: "")
+            let dispMenu = NSMenu()
+            for d in displays {
+                let mi = NSMenuItem(title: "Display \(d.index): \(d.name)",
+                                    action: #selector(moveStripToDisplayAction(_:)), keyEquivalent: "")
+                mi.target = self
+                mi.state = d.isStrip ? .on : .off
+                mi.representedObject = String(d.index)
+                dispMenu.addItem(mi)
+            }
+            dispItem.submenu = dispMenu
+            menu.addItem(dispItem)
+        }
+
 
         menu.addItem(.separator())
 
@@ -979,6 +1180,12 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         if let raw = sender.representedObject as? String,
            let mode = TeleportEngine.FocusMode(rawValue: raw) {
             controller.setFocusMode(mode)
+        }
+    }
+    // [md-select] Move the strip to the chosen display (1-based index in tag).
+    @objc private func moveStripToDisplayAction(_ sender: NSMenuItem) {
+        if let spec = sender.representedObject as? String {
+            _ = controller.moveStripToDisplay(spec)
         }
     }
     @objc private func quitAction() { controller.quit() }

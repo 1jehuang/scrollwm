@@ -165,6 +165,28 @@ final class TeleportEngine {
 
     // MARK: - Adoption
 
+    /// Restrict adoption candidates to the windows that belong on the strip's
+    /// display under the active `adoptScope`. PURE policy lives in
+    /// `AdoptionScope`; this is the thin glue that feeds it the engine's own
+    /// display geometry (`stripDisplayFrame`/`otherDisplayFrames`). Used by both
+    /// the initial arrange path and the live resync/fast-adopt paths so the rule
+    /// is applied identically everywhere.
+    ///
+    /// `frame(_:)` projects each candidate to its AX frame (top-left global).
+    /// Returns the kept candidates in their original order.
+    func filterByAdoptScope<T>(_ candidates: [T], frame: (T) -> CGRect) -> [T] {
+        guard adoptScope != .allDisplays else { return candidates }
+        let strip = stripDisplayFrame ?? screenFrame
+        let kept = AdoptionScope.filter(
+            frames: candidates.map(frame),
+            stripDisplay: strip,
+            others: otherDisplayFrames,
+            scope: adoptScope
+        )
+        let keep = Set(kept)
+        return candidates.indices.filter { keep.contains($0) }.map { candidates[$0] }
+    }
+
     /// Lay out adopted windows as a strip of columns, preserving sizes.
     /// The strip opens with a `gap` leading margin so the first column is not
     /// flush against the screen edge (symmetric with the trailing margin).
@@ -544,6 +566,12 @@ final class TeleportEngine {
     /// direction with no adjacent screen.
     var otherDisplayFrames: [CGRect] = []
 
+    /// Which displays' windows the strip is allowed to adopt. Pushed from
+    /// `config.layout.adoptScope` (single source of truth), so both the initial
+    /// arrange and the live resync/fast-adopt paths apply the SAME rule, and a
+    /// `reloadConfig` updates it for the running monitor. See `AdoptionScope`.
+    var adoptScope: AdoptionScope.Scope = .stripDisplay
+
     /// Which horizontal edge a parked window should slide toward. Mirrors the
     /// side a column scrolled off, so the nub lands where the content went.
     enum ParkSide { case left, right }
@@ -716,29 +744,61 @@ final class TeleportEngine {
         LatencyStats(label: "teleport.full", samples: teleportLatencies)
     }
 
+    /// PURE restore-target policy: where a window with pre-adoption frame
+    /// `original` should be put back, clamped onto a currently-available display.
+    ///
+    /// A window's `originalFrame` was captured before adoption and can point at a
+    /// monitor that has since been UNPLUGGED — restoring it verbatim would strand
+    /// the window fully off-screen. `DisplayGeometry.ensureVisible` returns the
+    /// frame UNCHANGED when it is still mostly visible (the common case — no
+    /// perturbation), and only when it is not does it pull/shrink the window onto
+    /// the best available display. No side effects; unit-tested directly.
+    static func restoreFrame(original: CGRect, displays: [CGRect]) -> CGRect {
+        DisplayGeometry.ensureVisible(original, displays: displays)
+    }
+
+    /// PURE restore plan consumed by `releaseAll`: every managed window paired
+    /// with the display-safe frame to restore it to, given the displays that are
+    /// available RIGHT NOW. Exposed so the "monitor unplugged" behavior is
+    /// unit-testable without AX (the same plan `releaseAll` actually applies).
+    func restorePlan(displays: [CGRect]) -> [(window: ManagedWindowRef, target: CGRect)] {
+        allManagedSlots.map { slot in
+            (slot.window, Self.restoreFrame(original: slot.window.originalFrame, displays: displays))
+        }
+    }
+
     /// Restore every managed window to its pre-adoption frame (position AND
     /// size) and stop managing it. Returns the number of failures.
+    ///
+    /// Display-safe: each restore target is run through `restorePlan`, which
+    /// clamps a frame onto a currently-available display when its original
+    /// monitor is gone, so unplugging a monitor before Release can never leave a
+    /// window stranded off-screen. The clamp is a no-op for windows whose saved
+    /// frame is still mostly visible (the overwhelmingly common case).
     ///
     /// Failures are determined by READBACK, not AX error codes: some windows
     /// (e.g. fixed-size ones) return errors for no-op resizes while ending up
     /// exactly where they belong.
+    ///
+    /// `displays` defaults to the live `NSScreen` layout; tests inject a fixed
+    /// set (e.g. simulating an unplugged monitor) to exercise the clamp.
     @discardableResult
-    func releaseAll() -> Int {
+    func releaseAll(displays: [CGRect]? = nil) -> Int {
+        let displays = displays ?? DisplayGeometry.currentVisibleAXDisplays()
         var failures = 0
         // Restore EVERY workspace's windows, not just the active strip, so a
         // window parked in an inactive vertical workspace is also put back.
-        for slot in allManagedSlots {
-            let w = slot.window
-            _ = AXSource.setPoint(w.element, kAXPositionAttribute as String, w.originalFrame.origin)
-            _ = AXSource.setSize(w.element, kAXSizeAttribute as String, w.originalFrame.size)
+        for (w, target) in restorePlan(displays: displays) {
+            _ = AXSource.setPoint(w.element, kAXPositionAttribute as String, target.origin)
+            _ = AXSource.setSize(w.element, kAXSizeAttribute as String, target.size)
 
             // Verify by reading back the actual frame.
             if let pos = AXSource.copyPoint(w.element, kAXPositionAttribute as String),
                let size = AXSource.copySize(w.element, kAXSizeAttribute as String) {
-                let ok = abs(pos.x - w.originalFrame.origin.x) <= 2
-                    && abs(pos.y - w.originalFrame.origin.y) <= 2
-                    && abs(size.width - w.originalFrame.width) <= 2
-                    && abs(size.height - w.originalFrame.height) <= 2
+                let ok = abs(pos.x - target.origin.x) <= 2
+                    && abs(pos.y - target.origin.y) <= 2
+                    && abs(size.width - target.width) <= 2
+                    && abs(size.height - target.height) <= 2
                 if !ok { failures += 1 }
             } else {
                 failures += 1

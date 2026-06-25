@@ -67,25 +67,64 @@ func runTestWindow(args: [String]) {
     app.run()
 }
 
-/// Spawn N test windows as child processes; returns Process handles.
-/// Windows are tiled across the screen.
-func spawnTestWindows(count: Int) -> [Process] {
-    guard let exe = Bundle.main.executablePath ?? CommandLine.arguments.first else { return [] }
-    let screen = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1470, height: 956)
+/// Resolve a 0-based display index to an `NSScreen`, ordered LEFT-to-RIGHT by
+/// AppKit X then top-to-bottom by Y, so `--display 0` is the leftmost monitor
+/// regardless of which one macOS calls "main". Returns nil for an out-of-range
+/// index (caller falls back to the default display).
+func displayForIndex(_ index: Int) -> NSScreen? {
+    let ordered = NSScreen.screens.sorted {
+        $0.frame.origin.x != $1.frame.origin.x
+            ? $0.frame.origin.x < $1.frame.origin.x
+            : $0.frame.origin.y < $1.frame.origin.y
+    }
+    return ordered.indices.contains(index) ? ordered[index] : nil
+}
 
-    var processes: [Process] = []
-    let cols = 4
-    let w = 320.0, h = 240.0
-    for i in 0..<count {
+/// One tiled test-window placement (AppKit coords, bottom-left origin).
+struct TestWindowTile: Equatable {
+    var x, y, width, height: Double
+}
+
+/// PURE tiling math for `spawnTestWindows`: lay `count` windows out as a grid on
+/// `displayFrame` (the target display's AppKit frame, bottom-left origin). Kept
+/// pure (no AppKit/Process) so the multi-display origin offset is unit-testable
+/// without spawning anything: every tile is anchored to the display's OWN
+/// origin, so a monitor placed left of / above the primary (negative origin)
+/// gets windows on ITS surface, not the primary's. For the primary display
+/// (origin (0,0)) this reduces to the original single-display layout exactly.
+func testWindowTiles(count: Int, displayFrame f: CGRect,
+                     cols: Int = 4, width: Double = 320, height: Double = 240) -> [TestWindowTile] {
+    (0..<max(0, count)).map { i in
         let col = i % cols
         let row = i / cols
-        let x = 40.0 + Double(col) * (w + 20)
-        // NSWindow y is bottom-left origin.
-        let y = screen.height - 120.0 - Double(row) * (h + 30) - h
+        let x = Double(f.origin.x) + 40.0 + Double(col) * (width + 20)
+        // NSWindow y is bottom-left origin; offset by the display's own origin.
+        let y = Double(f.origin.y) + Double(f.height) - 120.0 - Double(row) * (height + 30) - height
+        return TestWindowTile(x: x, y: y, width: width, height: height)
+    }
+}
 
+/// Spawn N test windows as child processes; returns Process handles.
+/// Windows are tiled across the target screen.
+///
+/// `onDisplay` chooses WHICH monitor to tile the windows on. When nil (the
+/// default) it targets `NSScreen.main`, so existing callers are byte-for-byte
+/// unchanged on a single-display setup. Passing a non-primary screen honors that
+/// display's AppKit origin (which can be negative in X and/or Y for a monitor
+/// placed left of / above the built-in panel), so the disposable windows land
+/// ON the external monitor — exactly what the multi-display `displaytest` and
+/// `sandbox --display N` need to exercise cross-display behavior live.
+func spawnTestWindows(count: Int, onDisplay screen: NSScreen? = nil) -> [Process] {
+    guard let exe = Bundle.main.executablePath ?? CommandLine.arguments.first else { return [] }
+    // AppKit frame of the target display (bottom-left origin, Y up). The default
+    // (main) display reduces to origin (0,0), preserving the old layout exactly.
+    let frame = (screen ?? NSScreen.main)?.frame ?? CGRect(x: 0, y: 0, width: 1470, height: 956)
+
+    var processes: [Process] = []
+    for (i, t) in testWindowTiles(count: count, displayFrame: frame).enumerated() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)
-        p.arguments = ["testwindow", "\(x)", "\(y)", "\(w)", "\(h)", "ScrollBench-\(i)"]
+        p.arguments = ["testwindow", "\(t.x)", "\(t.y)", "\(t.width)", "\(t.height)", "ScrollBench-\(i)"]
         do {
             try p.run()
         } catch {

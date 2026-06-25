@@ -414,7 +414,7 @@ enum StripOpsTests {
         {
           // a comment with a fake "key": value inside a string-ish // sequence
           "layout": { "columnGap": 20, "minColumnWidth": 150,
-                      "widthPresets": [0.3, 0.6, 0.9] },
+                      "widthPresets": [0.3, 0.6, 0.9], "stripDisplay": "largest" },
           "focusMode": "centered",
           "keybindings": {
             "focusNext": "ctrl+opt+k",           // override
@@ -427,6 +427,7 @@ enum StripOpsTests {
             check("config columnGap parsed", parsed.layout.columnGap == 20)
             check("config minColumnWidth parsed", parsed.layout.minColumnWidth == 150)
             check("config widthPresets parsed", parsed.layout.widthPresets == [0.3, 0.6, 0.9])
+            check("config stripDisplay parsed", parsed.layout.stripDisplay == "largest")  // [md-select]
             check("config focusMode parsed", parsed.focusMode == .centered)
             check("config keybinding override", parsed.keybindings[.focusNext] == ["ctrl+opt+k"])
             check("config keybinding array", parsed.keybindings[.width25] == ["opt+1", "cmd+1"])
@@ -479,6 +480,8 @@ enum StripOpsTests {
         }
         // Defaults ship with no spawn bindings (no personal config in product).
         check("default config has empty spawn", ScrollWMConfig.default.spawn.isEmpty)
+        // [md-select] Default strip display is "main" (NSScreen.main).
+        check("default config stripDisplay is 'main'", ScrollWMConfig.default.layout.stripDisplay == "main")
 
         // Every action has a parseable default chord (or is modifier-only).
         let allDefaultsParse = KeyAction.allCases.allSatisfy { action in
@@ -990,6 +993,351 @@ enum StripOpsTests {
         let before = reb2.screenFrame
         reb2.rebindStripDisplay(to: before)
         check("rebind: same-frame rebind is stable", reb2.screenFrame == before)
+
+        // --- StripDisplayResolver: hotplug strip-migration policy ------------
+        // Pure decision for "which display does the strip bind to after a
+        // monitor plug/unplug?". AX top-left plane; mirrors the user's real rig:
+        // built-in primary at AX (0,0,1470x956); external above-left at
+        // (-225,-1440,2560x1440).
+        let rBuiltin = CGRect(x: 0, y: 0, width: 1470, height: 956)
+        let rExternal = CGRect(x: -225, y: -1440, width: 2560, height: 1440)
+
+        // Strip on the built-in, both displays present -> stay on the built-in
+        // (its display is still here; bind to its current visible frame).
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin, rExternal])
+            check("resolver: strip display present -> same display",
+                  d.frame == rBuiltin && d.displayIndex == 0 && !d.migrated)
+        }
+
+        // Strip on the EXTERNAL, then the external is UNPLUGGED (only built-in
+        // survives) -> MIGRATE the strip to the built-in so its windows are
+        // rescued instead of orphaned off-screen. This is the catastrophic case.
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [rBuiltin])
+            check("resolver: strip display gone -> migrate to survivor",
+                  d.frame == rBuiltin && d.displayIndex == 0 && d.migrated)
+        }
+
+        // Strip display gone with SEVERAL survivors -> pick the largest by area
+        // (most room for the strip), deterministically.
+        do {
+            let small = CGRect(x: 0, y: 0, width: 1000, height: 800)
+            let big   = CGRect(x: 2000, y: 0, width: 2560, height: 1440)
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rExternal, displays: [small, big])
+            check("resolver: migrate picks the largest survivor",
+                  d.frame == big && d.displayIndex == 1 && d.migrated)
+        }
+
+        // Strip display merely RESIZED (same origin region, dropped resolution)
+        // -> recognized as the same screen and followed onto the new frame, NOT
+        // treated as gone (no spurious migration).
+        do {
+            let resized = CGRect(x: 0, y: 0, width: 1280, height: 720)
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [resized, rExternal])
+            check("resolver: resized strip display is followed, not migrated",
+                  d.frame == resized && d.displayIndex == 0 && !d.migrated)
+        }
+
+        // A display being ADDED back: strip is on the built-in, the external
+        // reappears -> strip stays put (the new display is just a candidate).
+        do {
+            let d = StripDisplayResolver.resolve(
+                stripFrame: rBuiltin, displays: [rBuiltin, rExternal])
+            check("resolver: re-added display leaves the strip put",
+                  d.frame == rBuiltin && !d.migrated)
+        }
+
+        // No displays at all (all monitors asleep): keep the last frame and
+        // report no choice so the caller leaves the strip untouched.
+        do {
+            let d = StripDisplayResolver.resolve(stripFrame: rBuiltin, displays: [])
+            check("resolver: no displays -> keep last frame, no index",
+                  d.frame == rBuiltin && d.displayIndex == nil && !d.migrated)
+        }
+
+        // A strip stranded entirely off every display (its monitor vanished and
+        // the survivor does not overlap at all) migrates to that survivor.
+        do {
+            let orphanStrip = CGRect(x: 9000, y: 9000, width: 1470, height: 956)
+            let d = StripDisplayResolver.resolve(
+                stripFrame: orphanStrip, displays: [rBuiltin])
+            check("resolver: fully-orphaned strip migrates to the survivor",
+                  d.frame == rBuiltin && d.migrated)
+        }
+
+        // Just below the overlap threshold counts as gone (migrate); just above
+        // counts as present (follow). Use a 20% default: a survivor overlapping
+        // 10% of the strip is "gone", one overlapping 30% is "present".
+        do {
+            let strip = CGRect(x: 0, y: 0, width: 1000, height: 1000) // area 1e6
+            // Display overlaps a 100x1000 = 1e5 = 10% sliver -> gone.
+            let sliver = CGRect(x: 900, y: 0, width: 1000, height: 1000)
+            let dGone = StripDisplayResolver.resolve(stripFrame: strip, displays: [sliver])
+            check("resolver: 10% overlap is below threshold -> migrate", dGone.migrated)
+            // Display overlaps a 300x1000 = 3e5 = 30% region -> present.
+            let chunk = CGRect(x: 700, y: 0, width: 1000, height: 1000)
+            let dHere = StripDisplayResolver.resolve(stripFrame: strip, displays: [chunk])
+            check("resolver: 30% overlap is above threshold -> follow", !dHere.migrated)
+        }
+
+        // --- Display-safe RESTORE: monitor unplugged before Release ----------
+        // A window's originalFrame / crash-recovery frame can point at a display
+        // that has since been unplugged. Restore must pull it onto a surviving
+        // display instead of stranding it fully off-screen — but must NOT perturb
+        // a window whose saved frame is still mostly visible.
+        let builtin = builtinAX                                   // (0,0,1470,956)
+        let external = extAX                                      // (-225,-1440,2560,1440)
+        let bothDisplays = [builtin, external]
+        let builtinOnly = [builtin]                              // external unplugged
+
+        // restoreFrame: a frame on the surviving display is untouched.
+        let onBuiltin = CGRect(x: 100, y: 100, width: 600, height: 400)
+        check("restore: keeps a frame on a surviving display",
+              TeleportEngine.restoreFrame(original: onBuiltin, displays: builtinOnly) == onBuiltin)
+        // restoreFrame: a frame on the now-gone external is rescued onto the
+        // built-in (mostly visible there) and never larger than it.
+        let onExternal = CGRect(x: -100, y: -1200, width: 800, height: 600)
+        let rescuedFrame = TeleportEngine.restoreFrame(original: onExternal, displays: builtinOnly)
+        check("restore: rescues an orphaned frame onto a surviving display",
+              DisplayGeometry.isMostlyVisible(rescuedFrame, on: builtinOnly))
+        check("restore: rescued frame fits the surviving display",
+              builtin.contains(rescuedFrame))
+        // With BOTH displays present the same external frame is left alone (no
+        // perturbation of the common case).
+        check("restore: leaves an external frame alone when its display is present",
+              TeleportEngine.restoreFrame(original: onExternal, displays: bothDisplays) == onExternal)
+        // Degenerate: no displays -> leave the frame as-is (caller has no screen).
+        check("restore: no displays leaves the frame unchanged",
+              TeleportEngine.restoreFrame(original: onExternal, displays: []) == onExternal)
+
+        // restorePlan: releaseAll's actual plan. Build an engine whose windows
+        // were originally on the external, then "unplug" it and confirm EVERY
+        // restore target lands on the surviving built-in display.
+        let rel = makeEngine(count: 3)
+        for i in rel.slots.indices {
+            // Re-home each window's originalFrame onto the external monitor.
+            let f = CGRect(x: -100 - CGFloat(i) * 50, y: -1200, width: 700, height: 500)
+            let old = rel.slots[i].window
+            rel.slots[i].window = TeleportEngine.ManagedWindowRef(
+                element: old.element, pid: old.pid, appName: old.appName,
+                title: old.title, originalFrame: f)
+        }
+        let plan = rel.restorePlan(displays: builtinOnly)
+        check("restore: plan covers every managed window", plan.count == 3)
+        check("restore: every planned target is visible after unplug",
+              plan.allSatisfy { DisplayGeometry.isMostlyVisible($0.target, on: builtinOnly) })
+        check("restore: every planned target fits the surviving display",
+              plan.allSatisfy { builtin.contains($0.target) })
+        // releaseAll consumes the plan (AX no-ops on synthetic elements) and
+        // still tears the strip down to a clean single workspace.
+        rel.releaseAll(displays: builtinOnly)
+        check("restore: releaseAll(displays:) resets to a single workspace",
+              rel.workspaceCount == 1 && rel.slots.isEmpty)
+
+        // RestoreStore.safeTarget: crash-recovery entry on a gone monitor is
+        // clamped onto a surviving display; an on-screen entry is untouched.
+        let goneEntry = RestoreStore.Entry(
+            pid: 1, appName: "App", title: "Win", x: -100, y: -1200, w: 800, h: 600)
+        let safeGone = RestoreStore.safeTarget(for: goneEntry, displays: builtinOnly)
+        check("restore: crash entry on a gone monitor is pulled on-screen",
+              DisplayGeometry.isMostlyVisible(safeGone, on: builtinOnly) && builtin.contains(safeGone))
+        let liveEntry = RestoreStore.Entry(
+            pid: 1, appName: "App", title: "Win", x: 100, y: 100, w: 600, h: 400)
+        check("restore: crash entry already on-screen is left untouched",
+              RestoreStore.safeTarget(for: liveEntry, displays: builtinOnly)
+                == CGRect(x: 100, y: 100, width: 600, height: 400))
+
+        // --- AdoptionScope: which displays' windows the strip adopts ----------
+        // Ground the policy in the user's REAL hardware so the test proves the
+        // multi-display "yank" fix: built-in primary 1470x956 at AX (0,0); the
+        // external Samsung 5K above-and-left at AX (-225,-1440,2560,1440).
+        let scopeStrip = CGRect(x: 0, y: 0, width: 1470, height: 956)            // built-in (strip)
+        let scopeExt   = CGRect(x: -225, y: -1440, width: 2560, height: 1440)    // external
+        // Two candidate windows: one squarely on the built-in, one on the
+        // external. AX frames (top-left global).
+        let scopeOnBuiltin  = CGRect(x: 200, y: 100, width: 900, height: 600)
+        let scopeOnExternal = CGRect(x: 100, y: -1200, width: 1200, height: 800)
+
+        // belongsToStripDisplay: built-in window stays, external window goes.
+        check("scope: built-in window belongs to the strip display",
+              AdoptionScope.belongsToStripDisplay(scopeOnBuiltin, stripDisplay: scopeStrip, others: [scopeExt]))
+        check("scope: external window does NOT belong to the strip display",
+              !AdoptionScope.belongsToStripDisplay(scopeOnExternal, stripDisplay: scopeStrip, others: [scopeExt]))
+
+        // filter(stripDisplay): keep ONLY the built-in window (index 0).
+        let scopeFrames = [scopeOnBuiltin, scopeOnExternal]
+        check("scope: stripDisplay keeps only the strip-display window",
+              AdoptionScope.filter(frames: scopeFrames, stripDisplay: scopeStrip,
+                                   others: [scopeExt], scope: .stripDisplay) == [0])
+        // filter(allDisplays): legacy behavior keeps BOTH windows.
+        check("scope: allDisplays keeps every window (legacy)",
+              AdoptionScope.filter(frames: scopeFrames, stripDisplay: scopeStrip,
+                                   others: [scopeExt], scope: .allDisplays) == [0, 1])
+
+        // Single-display setup (no `others`): nothing is ever dropped, even
+        // under stripDisplay, because every window is on the strip's display.
+        check("scope: single display keeps everything under stripDisplay",
+              AdoptionScope.filter(frames: scopeFrames, stripDisplay: scopeStrip,
+                                   others: [], scope: .stripDisplay) == [0, 1])
+
+        // Safety bias: a window overlapping NO display (e.g. parked far away) is
+        // KEPT rather than silently lost.
+        let orphan = CGRect(x: 9000, y: 9000, width: 400, height: 300)
+        check("scope: window overlapping no display is kept (never lose a window)",
+              AdoptionScope.belongsToStripDisplay(orphan, stripDisplay: scopeStrip, others: [scopeExt]))
+
+        // A window straddling the bezel goes to whichever display it covers more
+        // of; tilt it mostly onto the external and confirm it is dropped.
+        let mostlyExternal = CGRect(x: -200, y: -1100, width: 1000, height: 700)
+        check("scope: bezel-straddling window follows its majority display",
+              !AdoptionScope.belongsToStripDisplay(mostlyExternal, stripDisplay: scopeStrip, others: [scopeExt]))
+
+        // Scope string parsing is tolerant of case/aliases; unknown -> nil.
+        check("scope: parse 'stripDisplay'", AdoptionScope.Scope(configValue: "stripDisplay") == .stripDisplay)
+        check("scope: parse 'allDisplays'", AdoptionScope.Scope(configValue: "allDisplays") == .allDisplays)
+        check("scope: parse is case-insensitive", AdoptionScope.Scope(configValue: "ALLDISPLAYS") == .allDisplays)
+        check("scope: unknown scope -> nil", AdoptionScope.Scope(configValue: "moon") == nil)
+
+        // Config plumbing: the new key parses, defaults to stripDisplay, and
+        // round-trips through the documented default file.
+        check("scope: config default is stripDisplay",
+              ScrollWMConfig.default.layout.adoptScope == .stripDisplay)
+        do {
+            let parsedAll = try ScrollWMConfig.parse(jsonc: """
+            { "layout": { "adoptScope": "allDisplays" } }
+            """)
+            check("scope: config parses adoptScope override", parsedAll.layout.adoptScope == .allDisplays)
+            let parsedBad = try ScrollWMConfig.parse(jsonc: """
+            { "layout": { "adoptScope": "bogus" } }
+            """)
+            check("scope: bad adoptScope falls back to default",
+                  parsedBad.layout.adoptScope == .stripDisplay)
+        } catch {
+            check("scope: adoptScope config parses", false)
+        }
+
+        // The engine glue (`filterByAdoptScope`) applies the same rule using its
+        // own display geometry. Build an engine bound to the built-in with the
+        // external registered, feed it two MatchedWindow-like frames, and check
+        // both scopes. This is the EXACT path arrange/resync take.
+        func scopeEngine(_ scope: AdoptionScope.Scope) -> TeleportEngine {
+            let eng = TeleportEngine(screenFrame: scopeStrip)
+            eng.stripDisplayFrame = scopeStrip
+            eng.otherDisplayFrames = [scopeExt]
+            eng.adoptScope = scope
+            return eng
+        }
+        let frames = [scopeOnBuiltin, scopeOnExternal]
+        let keptStrip = scopeEngine(.stripDisplay).filterByAdoptScope(frames) { $0 }
+        check("scope-engine: stripDisplay keeps only the built-in frame",
+              keptStrip == [scopeOnBuiltin])
+        let keptAll = scopeEngine(.allDisplays).filterByAdoptScope(frames) { $0 }
+        check("scope-engine: allDisplays keeps both frames", keptAll == frames)
+        // With NO other displays registered, even stripDisplay keeps everything
+        // (degenerate single-monitor case): never drop a window.
+        let engNoOthers = TeleportEngine(screenFrame: scopeStrip)
+        engNoOthers.stripDisplayFrame = scopeStrip
+        engNoOthers.adoptScope = .stripDisplay
+        check("scope-engine: single display keeps everything",
+              engNoOthers.filterByAdoptScope(frames) { $0 } == frames)
+
+        // --- DisplaySelector: pure strip-display PICK policy ([md-select]) ----
+        // Model the user's REAL hardware in NSScreen.screens order: built-in
+        // primary 1470x956 at AppKit (0,0) (also `main`), and the bigger external
+        // 2560x1440 at AppKit (-225, 956). `largest` must pick the external.
+        let selBuiltin = DisplaySelector.DisplayInfo(
+            frame: CGRect(x: 0, y: 0, width: 1470, height: 956), isMain: true, isPrimary: true)
+        let selExternal = DisplaySelector.DisplayInfo(
+            frame: CGRect(x: -225, y: 956, width: 2560, height: 1440), isMain: false, isPrimary: false)
+        let twoDisplays = [selBuiltin, selExternal]
+
+        check("select: empty spec defaults to main (built-in @ 0)",
+              DisplaySelector.pick(spec: "", displays: twoDisplays) == 0)
+        check("select: 'main' picks the active display (built-in @ 0)",
+              DisplaySelector.pick(spec: "main", displays: twoDisplays) == 0)
+        check("select: 'MAIN' is case-insensitive",
+              DisplaySelector.pick(spec: "MAIN", displays: twoDisplays) == 0)
+        check("select: ' largest ' trims whitespace",
+              DisplaySelector.pick(spec: " largest ", displays: twoDisplays) == 1)
+        check("select: 'primary' picks the AppKit-origin display (built-in @ 0)",
+              DisplaySelector.pick(spec: "primary", displays: twoDisplays) == 0)
+        check("select: 'largest' picks the EXTERNAL (bigger area, @ 1)",
+              DisplaySelector.pick(spec: "largest", displays: twoDisplays) == 1)
+        check("select: index '2' picks the second display (1-based)",
+              DisplaySelector.pick(spec: "2", displays: twoDisplays) == 1)
+        check("select: index '1' picks the first display",
+              DisplaySelector.pick(spec: "1", displays: twoDisplays) == 0)
+        check("select: out-of-range index '3' -> nil",
+              DisplaySelector.pick(spec: "3", displays: twoDisplays) == nil)
+        check("select: index '0' (not 1-based) -> nil",
+              DisplaySelector.pick(spec: "0", displays: twoDisplays) == nil)
+        check("select: garbage spec -> nil",
+              DisplaySelector.pick(spec: "banana", displays: twoDisplays) == nil)
+        check("select: empty display list -> nil",
+              DisplaySelector.pick(spec: "main", displays: []) == nil)
+
+        // 'next' cycles through NSScreen order, wrapping, anchored on `current`.
+        check("select: 'next' from 0 -> 1",
+              DisplaySelector.pick(spec: "next", displays: twoDisplays, current: 0) == 1)
+        check("select: 'next' from 1 wraps -> 0",
+              DisplaySelector.pick(spec: "next", displays: twoDisplays, current: 1) == 0)
+        check("select: 'next' with no current starts from main, -> 1",
+              DisplaySelector.pick(spec: "next", displays: twoDisplays, current: nil) == 1)
+
+        // When `main` is the EXTERNAL (user dragged the menu bar there), 'main'
+        // and 'primary' diverge: primary stays the AppKit-origin built-in.
+        let extIsMain = [
+            DisplaySelector.DisplayInfo(frame: CGRect(x: 0, y: 0, width: 1470, height: 956),
+                                        isMain: false, isPrimary: true),
+            DisplaySelector.DisplayInfo(frame: CGRect(x: -225, y: 956, width: 2560, height: 1440),
+                                        isMain: true, isPrimary: false),
+        ]
+        check("select: 'main' follows the active display (external @ 1)",
+              DisplaySelector.pick(spec: "main", displays: extIsMain) == 1)
+        check("select: 'primary' stays the AppKit-origin display (@ 0)",
+              DisplaySelector.pick(spec: "primary", displays: extIsMain) == 0)
+
+        // Single-display fallbacks: every spec resolves to the only screen.
+        let one = [selBuiltin]
+        check("select: single display, 'largest' -> 0",
+              DisplaySelector.pick(spec: "largest", displays: one) == 0)
+        check("select: single display, 'next' wraps to itself -> 0",
+              DisplaySelector.pick(spec: "next", displays: one, current: 0) == 0)
+        // --- testWindowTiles: multi-display spawn placement (pure) -----------
+        // Primary display (origin 0,0): layout is unchanged from the original
+        // single-display tiling, so existing callers spawn identically.
+        let tilePrimary = CGRect(x: 0, y: 0, width: 1470, height: 956)
+        let pTiles = testWindowTiles(count: 4, displayFrame: tilePrimary)
+        check("tiles: count matches request", pTiles.count == 4)
+        check("tiles: first window at the historical (40, top) origin",
+              pTiles[0].x == 40 && pTiles[0].y == 956 - 120 - 240)
+        check("tiles: columns step by width+20",
+              pTiles[1].x == 40 + 320 + 20 && pTiles[1].y == pTiles[0].y)
+        // A monitor placed ABOVE-and-LEFT of the primary (negative AppKit origin,
+        // like the real external Samsung at (-225, 956)): every tile must be
+        // anchored to THAT display's origin so windows land on it, not on (0,0).
+        let tileExternal = CGRect(x: -225, y: 956, width: 2560, height: 1440)
+        let eTiles = testWindowTiles(count: 4, displayFrame: tileExternal)
+        check("tiles: external tiles carry the display's negative X origin",
+              eTiles[0].x == -225 + 40)
+        check("tiles: external tiles sit on the external's Y band",
+              eTiles[0].y == 956 + 1440 - 120 - 240)
+        check("tiles: every external tile lies within the external AppKit frame",
+              eTiles.allSatisfy { t in
+                  t.x >= tileExternal.minX && t.x + t.width <= tileExternal.maxX
+                      && t.y >= tileExternal.minY && t.y + t.height <= tileExternal.maxY
+              })
+        // Grid wraps to a new row after `cols` windows (default 4).
+        let wrap = testWindowTiles(count: 5, displayFrame: tilePrimary)
+        check("tiles: 5th window wraps to a new (lower) row",
+              wrap[4].x == wrap[0].x && wrap[4].y < wrap[0].y)
+        check("tiles: zero count yields no tiles",
+              testWindowTiles(count: 0, displayFrame: tilePrimary).isEmpty)
 
         print("\n[unittest] \(passed) passed, \(failed) failed")
         return failed == 0
