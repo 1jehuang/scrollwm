@@ -163,6 +163,32 @@ enum MenuBarAnimationTests {
             span: 0, screenWidth: 0, pointsPerScreen: 30, minWidth: 30, maxWidth: 220)
         check("degenerate input -> min", degZero == 30)
 
+        // MARK: Key-hint keycap HUD lifecycle (view-level, no window needed)
+
+        let view = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 30, height: 22))
+        let t0 = 1000.0
+        check("no hint before any press", view.debugHintText == nil)
+
+        // A press shows the chord + action; the keycap pop is alive (so the
+        // display link keeps running) right after the press.
+        view.flashKeyHint(chord: "⌘L", action: "Focus →", now: t0)
+        check("press shows chord + action", view.debugHintText == "⌘L  Focus →")
+        view.advance(dt: 1.0 / 60.0, now: t0 + 1.0 / 60.0)
+        check("hint persists during hold", view.debugHintText == "⌘L  Focus →")
+
+        // A re-press of the SAME chord re-pops and keeps the HUD up.
+        view.flashKeyHint(chord: "⌘L", action: "Focus →", now: t0 + 0.1)
+        check("re-press keeps hint", view.debugHintText == "⌘L  Focus →")
+
+        // After the hold elapses the HUD eases out and clears itself.
+        var vt = t0 + 0.1
+        for _ in 0..<240 { vt += 1.0 / 60.0; view.advance(dt: 1.0 / 60.0, now: vt) }
+        check("hint clears after hold + fade", view.debugHintText == nil)
+
+        // An action with no chord shows just the action (no keycap text).
+        view.flashKeyHint(chord: "", action: "Toggle", now: vt)
+        check("chord-less hint shows action only", view.debugHintText == "Toggle")
+
         print("\n[animtest] \(passed) passed, \(failed) failed")
         return failed == 0
     }
