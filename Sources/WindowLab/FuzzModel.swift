@@ -103,6 +103,21 @@ private struct StripModel {
         }
     }
 
+    /// Replicates `TeleportEngine.stripContentWidth`: right edge of the last
+    /// active column plus the trailing `gap` margin (0 for an empty strip).
+    func stripContentWidth() -> CGFloat {
+        let cols = activeCols
+        guard let last = cols.last else { return 0 }
+        return canvasX(of: cols, at: cols.count - 1) + win[last]!.width + gap
+    }
+
+    /// Replicates `TeleportEngine.maxViewportX` / `clampViewportX`: the legal
+    /// viewport range is `[0, stripContentWidth - screenW]`, so the strip never
+    /// scrolls past its trailing margin into dead space.
+    func clampViewportX(_ x: CGFloat) -> CGFloat {
+        max(0, min(x, max(0, stripContentWidth() - screenW)))
+    }
+
     // MARK: navigation
 
     /// Replicate `TeleportEngine.focus(index:)`: clamp, set focus, re-fit the
@@ -114,8 +129,9 @@ private struct StripModel {
         workspaces[active].focusIndex = clamped
         let pid = activeCols[clamped]
         let cx = canvasX(of: activeCols, at: clamped)
-        workspaces[active].viewportX = viewportTarget(canvasX: cx, width: win[pid]!.width,
-                                                      currentViewportX: activeViewportX)
+        workspaces[active].viewportX = clampViewportX(
+            viewportTarget(canvasX: cx, width: win[pid]!.width,
+                           currentViewportX: activeViewportX))
         systemFocus = pid // raiseAndFocus -> AXFocused -> sim focus
     }
 

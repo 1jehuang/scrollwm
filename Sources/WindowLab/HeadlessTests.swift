@@ -410,6 +410,44 @@ func runHeadlessOpsTest() {
         world.setSystemFocus(engine.slots[engine.focusIndex].window.element)
     }
 
+    // --- ASPECT-LOCKED RESIZE: QuickTime-style windows need height + width ---
+    // QuickTime movie windows preserve the video's aspect ratio. A width grow
+    // request paired with the OLD short height can be clamped back to the old
+    // width, making "resize bigger" appear broken. In fill-height mode the width
+    // key must request full column height and target width in the SAME AX write.
+    do {
+        let qtEngine = TeleportEngine(screenFrame: Headless.defaultVisibleFrame)
+        qtEngine.peekInset = 48
+        qtEngine.fillHeight = true
+        let pid: pid_t = 5750
+        let ratio: CGFloat = 16.0 / 9.0
+        let qtEl = world.addWindow(pid: pid, title: "QuickTimeAspect",
+                                   frame: CGRect(x: 60, y: 80, width: 480, height: 270),
+                                   fixedAspectRatio: ratio,
+                                   appName: "QuickTime Player")
+        let matches = IdentityMatcher.match(
+            axWindows: AXSource.windows(forPID: pid),
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+        )
+        qtEngine.adopt(matched: matches)
+        guard qtEngine.slots.count == 1 else {
+            t.check("quicktime-aspect-resize: adopted one column", false); return
+        }
+        world.setSystemFocus(qtEngine.slots[0].window.element)
+        let want100 = qtEngine.width(forFraction: 1.0)
+        qtEngine.setFocusedWidth(fraction: 1.0)
+        Headless.pump(0.05)
+        let live = world.frame(of: qtEl)?.size ?? .zero
+        t.check("quicktime-aspect-resize: grew to requested wide column",
+                abs(live.width - want100) <= 2)
+        t.check("quicktime-aspect-resize: model width matches live width",
+                abs(qtEngine.slots[0].width - live.width) <= 2)
+        t.check("quicktime-aspect-resize: preserved aspect ratio",
+                live.height > 0 && abs((live.width / live.height) - ratio) <= 0.01)
+        world.destroyWindow(qtEl, notify: false)
+        world.setSystemFocus(engine.slots[engine.focusIndex].window.element)
+    }
+
     // --- CLOSE: close focused window, verify it disappears ---
     let closeTitle = engine.slots[engine.focusIndex].window.title
     world.setSystemFocus(engine.slots[engine.focusIndex].window.element)

@@ -40,6 +40,10 @@ final class SimWindowWorld: WindowBackend {
         var frame: CGRect
         /// Hard minimum the "app" enforces; `setSize` never shrinks below it.
         var minSize: CGSize
+        /// Optional fixed aspect ratio (width / height). Models apps like
+        /// QuickTime Player whose movie window refuses a width that cannot fit the
+        /// requested height while preserving the media aspect ratio.
+        var fixedAspectRatio: CGFloat?
         var minimized: Bool
         var fullscreen: Bool
         var hasCloseButton: Bool
@@ -53,6 +57,7 @@ final class SimWindowWorld: WindowBackend {
 
         init(id: Int, pid: pid_t, appName: String, title: String,
              role: String, subrole: String, frame: CGRect, minSize: CGSize,
+             fixedAspectRatio: CGFloat?,
              minimized: Bool, fullscreen: Bool, hasCloseButton: Bool) {
             self.id = id
             self.pid = pid
@@ -66,6 +71,7 @@ final class SimWindowWorld: WindowBackend {
             self.subrole = subrole
             self.frame = frame
             self.minSize = minSize
+            self.fixedAspectRatio = fixedAspectRatio
             self.minimized = minimized
             self.fullscreen = fullscreen
             self.hasCloseButton = hasCloseButton
@@ -114,6 +120,7 @@ final class SimWindowWorld: WindowBackend {
     @discardableResult
     func addWindow(pid: pid_t, title: String, frame: CGRect,
                    minSize: CGSize = .zero,
+                   fixedAspectRatio: CGFloat? = nil,
                    role: String = kAXWindowRole as String,
                    subrole: String = kAXStandardWindowSubrole as String,
                    minimized: Bool = false, fullscreen: Bool = false,
@@ -126,6 +133,7 @@ final class SimWindowWorld: WindowBackend {
         let win = Win(id: id, pid: pid, appName: appName ?? "Sim-\(pid)",
                       title: title, role: role, subrole: subrole,
                       frame: frame, minSize: minSize,
+                      fixedAspectRatio: fixedAspectRatio,
                       minimized: minimized, fullscreen: fullscreen,
                       hasCloseButton: hasCloseButton)
         if cgPublishDelay > 0 {
@@ -241,15 +249,44 @@ final class SimWindowWorld: WindowBackend {
     /// engine's `scheduleWidthReconcile` follow-up. Zero = synchronous (default).
     var asyncResizeDelay: TimeInterval = 0
 
+    /// When true, `setSize` is additionally CONSTRAINED so the window cannot
+    /// grow past the right/bottom edge of the display it currently sits on,
+    /// modeling macOS/AppKit's `constrainFrameRect`: a window anchored near a
+    /// display's right edge can only widen until its right edge reaches that
+    /// edge, NOT to an arbitrary requested width. This reproduces the real
+    /// "grow a right-side window to 100% and it only fills to the screen edge"
+    /// bug, so the engine must REPOSITION the window left (giving the full width
+    /// room) BEFORE resizing. Off by default (and requires `displays`) so suites
+    /// that don't exercise it - including the unconstrained async-resize test -
+    /// are unaffected. The min-size / aspect clamps still apply on top.
+    var constrainResizeToDisplay = false
+
     func setSize(_ element: AXUIElement, _ size: CGSize) -> AXError {
         lock.lock(); defer { lock.unlock() }
         guard let w = find(element) else { return .invalidUIElement }
         // Apps clamp to their own minimum while AX still reports success — the
         // central reason the engine always reads back the REAL frame.
-        let clamped = CGSize(
+        var clamped = CGSize(
             width: max(size.width, w.minSize.width),
             height: max(size.height, w.minSize.height)
         )
+        if let ratio = w.fixedAspectRatio, ratio > 0, clamped.height > 0 {
+            // Preserve aspect ratio inside the requested bounding size. This makes
+            // a width-only grow request fail/stay small when the paired height is
+            // too short, reproducing QuickTime-style behavior.
+            let boundedWidth = min(clamped.width, clamped.height * ratio)
+            clamped = CGSize(width: boundedWidth, height: boundedWidth / ratio)
+        }
+        // macOS keeps a window within its display's visible frame: from a fixed
+        // origin it can only grow until its right/bottom edge meets the display
+        // edge. Apply AFTER the min/aspect clamps (a window must still honor its
+        // hard minimum even if that overflows the edge).
+        if constrainResizeToDisplay, let d = displayContaining(w.frame.origin) {
+            let maxW = Swift.max(w.minSize.width, d.maxX - w.frame.origin.x)
+            let maxH = Swift.max(w.minSize.height, d.maxY - w.frame.origin.y)
+            clamped.width = Swift.min(clamped.width, maxW)
+            clamped.height = Swift.min(clamped.height, maxH)
+        }
         if asyncResizeDelay > 0 {
             // Apply LATER so the immediate readback is stale (real async resize).
             let el = w.element

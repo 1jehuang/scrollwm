@@ -293,7 +293,7 @@ final class TeleportEngine {
         focusIndex = clamped
 
         let slot = slots[clamped]
-        viewportX = viewportTarget(for: slot, mode: focusMode, currentViewportX: viewportX)
+        viewportX = clampViewportX(viewportTarget(for: slot, mode: focusMode, currentViewportX: viewportX))
 
         teleport()
         raiseAndFocus(slot.window)
@@ -309,7 +309,7 @@ final class TeleportEngine {
     func refitViewportToFocused() {
         guard slots.indices.contains(focusIndex) else { return }
         let slot = slots[focusIndex]
-        viewportX = viewportTarget(for: slot, mode: focusMode, currentViewportX: viewportX)
+        viewportX = clampViewportX(viewportTarget(for: slot, mode: focusMode, currentViewportX: viewportX))
         teleport()
         onLayoutChange?()
     }
@@ -538,6 +538,31 @@ final class TeleportEngine {
         guard count > 0 else { return minColumnWidth }
         return width(forFraction: 1.0 / CGFloat(count))
     }
+
+    /// Total width the packed strip occupies on the canvas: the right edge of
+    /// the last column plus the trailing `gap` margin (symmetric with the
+    /// leading margin `compactStrip` opens with). Zero for an empty strip.
+    var stripContentWidth: CGFloat {
+        guard let last = slots.last else { return 0 }
+        return last.canvasX + last.width + gap
+    }
+
+    /// Largest meaningful viewport offset: scrolling past this would reveal dead
+    /// space to the RIGHT of the strip's trailing margin. When the whole strip
+    /// fits within the viewport this is 0 (pin to the left). This is what lets
+    /// the viewport "pull in" after a column is closed or shrunk so a window
+    /// removal never strands the viewport over empty space - exactly the
+    /// "closing a window should sometimes scroll the viewport so it fills the
+    /// gap" behavior (PaperWM/niri never let you scroll past the strip's end).
+    var maxViewportX: CGFloat { max(0, stripContentWidth - contentWidth) }
+
+    /// Clamp a viewport offset into the legal `[0, maxViewportX]` range so the
+    /// strip never scrolls before its leading margin nor past its trailing one.
+    /// Applied wherever the live viewport is (re)committed (`focus`,
+    /// `refitViewportToFocused`, `rebindStripDisplay`) - NOT inside the pure
+    /// `viewportTarget` (which is unit-tested against synthetic off-strip slots
+    /// whose extent is not reflected in `slots`).
+    func clampViewportX(_ x: CGFloat) -> CGFloat { max(0, min(x, maxViewportX)) }
 
     /// Compute where the viewport's left edge should sit so that `slot` is
     /// shown according to `mode`. Pure function (no side effects) so it can be
@@ -805,8 +830,8 @@ final class TeleportEngine {
         }
         // Keep the focused column visible under the new viewport width.
         if slots.indices.contains(focusIndex) {
-            viewportX = viewportTarget(for: slots[focusIndex], mode: focusMode,
-                                       currentViewportX: viewportX)
+            viewportX = clampViewportX(viewportTarget(for: slots[focusIndex], mode: focusMode,
+                                       currentViewportX: viewportX))
         }
         let n = teleport()
         onLayoutChange?()

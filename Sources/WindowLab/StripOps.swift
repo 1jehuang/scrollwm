@@ -70,10 +70,16 @@ extension TeleportEngine {
             // periodic resync all pull the model back to the real frame, so any
             // optimism is short-lived.
             slots[focusIndex].width = requestedWidth
+            // Aspect-locked apps (notably QuickTime Player movie windows) may
+            // refuse a wider width if the paired height stays at the old short
+            // value. In fill-height mode, ask for the full column height at the
+            // SAME time as the width so the app has enough vertical room to
+            // preserve its aspect ratio while growing horizontally.
+            let requestedHeight = fillHeight ? screenFrame.height : slot.height
             _ = AXSource.setSize(
                 slot.window.element,
                 kAXSizeAttribute as String,
-                CGSize(width: requestedWidth, height: slot.height)
+                CGSize(width: requestedWidth, height: requestedHeight)
             )
             // Reconcile against the live frame: an app that clamps to its own
             // minimum reports success but keeps a larger size, and an app that

@@ -245,6 +245,44 @@ enum StripOpsTests {
         eg2.refitViewportToFocused()
         check("grow-refit: no scroll when grown column still fits", eg2.viewportX == 0)
 
+        // --- viewport "pulls in" so a close/shrink never strands it over dead
+        // space to the RIGHT of the strip. PaperWM/niri never let you scroll
+        // past the strip's trailing margin; here the clamp at `maxViewportX`
+        // makes a removed/shrunk column re-fill the gap instead of leaving the
+        // viewport parked over emptiness. ---
+        let ev = makeEngine(count: 5, width: 400, screenWidth: 1600)
+        ev.focusMode = .fit
+        ev.compactStrip() // pack with the leading gap margin
+        // canvasX: 12, 424, 836, 1248, 1660 -> stripContentWidth = 1660+400+12 = 2072
+        check("pull-in: stripContentWidth spans last column + trailing margin",
+              abs(ev.stripContentWidth - 2072) < 0.5)
+        check("pull-in: maxViewportX = content overhang (2072-1600)",
+              abs(ev.maxViewportX - 472) < 0.5)
+        // Jump to the rightmost column: the viewport scrolls to the strip's
+        // trailing edge, exactly maxViewportX, never one pixel past it.
+        ev.focus(index: 4)
+        check("pull-in: viewport rests at the strip's trailing edge",
+              abs(ev.viewportX - ev.maxViewportX) < 0.5)
+        // Now the strip shrinks (two columns closed) until the whole thing fits
+        // the viewport. The naive `fit` target would leave the viewport at 472
+        // (the focused column is already on-screen, so it "doesn't move"),
+        // stranding it over dead space; the clamp must pull it back to 0.
+        ev.slots.removeLast(2)
+        ev.compactStrip()
+        ev.focusIndex = min(ev.focusIndex, ev.slots.count - 1)
+        check("pull-in: maxViewportX collapses to 0 once the strip fits",
+              ev.maxViewportX == 0)
+        ev.refitViewportToFocused()
+        check("pull-in: viewport snaps back to 0, filling the gap",
+              ev.viewportX == 0)
+
+        // clampViewportX is a pure [0, maxViewportX] clamp.
+        check("clamp: negative -> 0", ev.clampViewportX(-50) == 0)
+        let evWide = makeEngine(count: 5, width: 400, screenWidth: 1600)
+        evWide.compactStrip()
+        check("clamp: above max -> max", abs(evWide.clampViewportX(99999) - evWide.maxViewportX) < 0.5)
+        check("clamp: in range -> unchanged", evWide.clampViewportX(200) == 200)
+
         // --- viewportTarget: centered mode always centers ---
         let ec = makeEngine(count: 5, width: 400, screenWidth: 1600)
         let slot2 = ec.slots[2] // canvasX = 2*(400+12) = 824
