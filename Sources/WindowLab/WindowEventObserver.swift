@@ -27,16 +27,25 @@ final class WindowEventObserver {
     /// One AXObserver per observed app PID.
     private var observers: [pid_t: AXObserver] = [:]
     private var workspaceObservers: [NSObjectProtocol] = []
-    /// Called with the set of PIDs that fired a window-created event since the
-    /// last delivery, so the monitor can do a SCOPED adoption (enumerate only
-    /// those apps) instead of a full all-apps sweep.
-    private let onWindowCreated: (Set<pid_t>) -> Void
+    /// Called with the PIDs that fired a window-created event since the last
+    /// delivery, IN FIRE ORDER (deduped), so the monitor can do a SCOPED
+    /// adoption (enumerate only those apps) instead of a full all-apps sweep.
+    /// Order matters: when several windows open inside one coalesce window (an
+    /// app launching with multiple windows, a session restore), they must be
+    /// adopted in the order they were created so they land as a contiguous,
+    /// in-order run right of the focus with the newest focused. A `Set` here
+    /// scrambled that order, landing a burst out of sequence and focusing the
+    /// wrong window.
+    private let onWindowCreated: ([pid_t]) -> Void
     /// Called (coalesced) when a UI element was destroyed, so the monitor can
     /// reconcile removals promptly instead of waiting for the poll.
     private let onWindowDestroyed: () -> Void
     private var coalesceScheduled = false
     private var destroyScheduled = false
-    private var pendingPIDs = Set<pid_t>()
+    /// Firing PIDs accumulated for the next coalesced delivery, kept in fire
+    /// order with duplicates collapsed (window counts per burst are tiny, so a
+    /// linear de-dup is cheaper than the ordering bugs a Set caused).
+    private var pendingPIDs: [pid_t] = []
 
     /// Small delay before reacting. Its ONLY remaining job is to coalesce the
     /// burst of notifications a single new window (or a multi-window restore)
@@ -64,7 +73,7 @@ final class WindowEventObserver {
     private var started = false
 
     init(coalesceDelay: TimeInterval = 0.008,
-         onWindowCreated: @escaping (Set<pid_t>) -> Void,
+         onWindowCreated: @escaping ([pid_t]) -> Void,
          onWindowDestroyed: @escaping () -> Void) {
         self.coalesceDelay = coalesceDelay
         self.onWindowCreated = onWindowCreated
@@ -84,7 +93,11 @@ final class WindowEventObserver {
                 created: { [weak self] pids in
                     guard let self else { return }
                     DispatchQueue.main.async {
-                        let allowed = self.pidFilter.map { pids.intersection($0) } ?? pids
+                        // Preserve the sim's fire order; only drop pids outside
+                        // an explicit filter (test/sandbox mode). The sim fires
+                        // one pid per created window, so each delivery is already
+                        // ordered; we just intersect with the filter when set.
+                        let allowed = self.pidFilter.map { f in pids.filter { f.contains($0) } } ?? Array(pids)
                         for pid in allowed { self.windowCreated(pid: pid) }
                     }
                 },
@@ -214,10 +227,11 @@ final class WindowEventObserver {
         }
     }
 
-    /// A window was created in `pid`. Record it and schedule one coalesced
-    /// delivery carrying every PID that fired in the window.
+    /// A window was created in `pid`. Record it (in fire order, de-duped) and
+    /// schedule one coalesced delivery carrying every PID that fired in the
+    /// window, in order, so a multi-window burst is adopted in sequence.
     private func windowCreated(pid: pid_t) {
-        pendingPIDs.insert(pid)
+        if !pendingPIDs.contains(pid) { pendingPIDs.append(pid) }
         if coalesceScheduled { return }
         coalesceScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + coalesceDelay) { [weak self] in

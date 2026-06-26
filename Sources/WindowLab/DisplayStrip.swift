@@ -33,4 +33,9 @@ final class DisplayStrip {
         self.engine = engine
         self.displayID = displayID
     }
+
+    /// True once this strip has adopted windows and is actively managing its
+    /// display (a lifecycle monitor is running). Set on arrange, cleared on
+    /// release. The controller is "managing" if ANY strip is.
+    var isManaging = false
 }

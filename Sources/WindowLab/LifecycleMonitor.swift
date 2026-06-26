@@ -318,14 +318,19 @@ final class LifecycleMonitor {
     /// the current Space AND the strip itself is currently on the current Space
     /// (so we never mix windows from different Spaces). If anything is
     /// ambiguous it simply does nothing and lets the poll converge.
-    private func fastAdopt(pids: Set<pid_t>, attempt: Int = 0) {
+    private func fastAdopt(pids: [pid_t], attempt: Int = 0) {
         guard Self.sessionIsActive() else { return }
+        if ProcessInfo.processInfo.environment["SCROLLWM_TRACE_ADOPT"] != nil {
+            FileHandle.standardError.write("[trace] fastAdopt ENTER pids=\(pids) attempt=\(attempt) enumerating=\(enumerating)\n".data(using: .utf8)!)
+        }
         // Respect an explicit pid filter (sandbox/test mode); the observer only
-        // watches filtered pids anyway, so this is usually a no-op.
-        let targets: Set<pid_t> = pidFilter.map { pids.intersection($0) } ?? pids
+        // watches filtered pids anyway, so this is usually a no-op. Preserve the
+        // FIRE ORDER so a multi-window burst is adopted left-to-right in creation
+        // order (a Set here scrambled the order, landing bursts out of sequence).
+        let targets: [pid_t] = pidFilter.map { f in pids.filter { f.contains($0) } } ?? pids
         guard !targets.isEmpty else { return }
 
-        // Enumerate ONLY the firing apps' standard windows.
+        // Enumerate ONLY the firing apps' standard windows, in fire order.
         let appWindows = targets.flatMap { pid -> [AXWindowInfo] in
             AXSource.windows(forPID: pid)
         }.filter {
@@ -340,6 +345,9 @@ final class LifecycleMonitor {
             // AX has not published the new window's element yet (it can lag the
             // `kAXWindowCreated` notification by a frame or two). Retry shortly
             // rather than waiting for the slow poll.
+            if ProcessInfo.processInfo.environment["SCROLLWM_TRACE_ADOPT"] != nil {
+                FileHandle.standardError.write("[trace] fastAdopt unmanaged EMPTY attempt=\(attempt) appWindows=\(appWindows.count) targets=\(targets)\n".data(using: .utf8)!)
+            }
             scheduleFastAdoptRetry(pids: pids, attempt: attempt)
             return
         }
@@ -356,6 +364,9 @@ final class LifecycleMonitor {
         // `arrange`/`applyResync` (`engine.filterByAdoptScope`).
         let onscreenNew = engine.filterByAdoptScope(onscreenMatches) { $0.frame }
         guard !onscreenNew.isEmpty else {
+            if ProcessInfo.processInfo.environment["SCROLLWM_TRACE_ADOPT"] != nil {
+                FileHandle.standardError.write("[trace] fastAdopt onscreenNew EMPTY attempt=\(attempt) unmanaged=\(unmanaged.count) onscreenMatches=\(onscreenMatches.count) cg=\(cg.count)\n".data(using: .utf8)!)
+            }
             // The window exists in AX but the WindowServer has not yet listed it
             // on-screen (the current-Space publish race), OR it is genuinely on
             // another display/Space. We cannot tell those apart from one sample,
@@ -368,7 +379,12 @@ final class LifecycleMonitor {
 
         // If we already manage windows but none are on the current Space, the
         // user is on another Space: defer to the poll (stay frozen).
-        if !engine.slots.isEmpty && !stripIsOnCurrentSpace(cg: cg) { return }
+        if !engine.slots.isEmpty && !stripIsOnCurrentSpace(cg: cg) {
+            if ProcessInfo.processInfo.environment["SCROLLWM_TRACE_ADOPT"] != nil {
+                FileHandle.standardError.write("[trace] fastAdopt BAIL stripIsOnCurrentSpace=false attempt=\(attempt) slots=\(engine.slots.count) viewportX=\(engine.viewportX) onscreenNew=\(onscreenNew.count)\n".data(using: .utf8)!)
+            }
+            return
+        }
 
         let start = Clock.nowAbsNs()
         var insertAt = engine.slots.isEmpty ? 0 : engine.focusIndex + 1
@@ -394,6 +410,21 @@ final class LifecycleMonitor {
         engine.focus(index: lastInsertedIndex)
         lastResyncMs = Double(Clock.nowAbsNs() &- start) / 1e6
         onChange?(onscreenNew.count, 0)
+
+        // Partial-burst publish race: some of the firing apps still have an
+        // unmanaged window that has not yet been published on-screen (we adopted
+        // the ones that were ready, but more are coming). Keep retrying for those
+        // pids so the rest of the burst lands fast too, instead of stranding them
+        // until the slow safety-net poll. A pid whose windows are all managed now
+        // simply finds nothing on the next pass and stops.
+        let pending = targets.filter { pid in
+            AXSource.windows(forPID: pid).contains {
+                $0.subrole == kAXStandardWindowSubrole as String
+                    && !$0.isMinimized && !$0.isFullscreen
+                    && !engine.isManaged($0.element)
+            }
+        }
+        if !pending.isEmpty { scheduleFastAdoptRetry(pids: pending, attempt: attempt) }
     }
 
     /// Re-run `fastAdopt` for the same firing pids after a short delay, up to
@@ -402,7 +433,7 @@ final class LifecycleMonitor {
     /// frames instead of waiting for the 2s safety-net poll. A window that keeps
     /// missing (genuinely on another Space / display) exhausts the retries
     /// harmlessly and is left to the poll, preserving the Space-freeze contract.
-    private func scheduleFastAdoptRetry(pids: Set<pid_t>, attempt: Int) {
+    private func scheduleFastAdoptRetry(pids: [pid_t], attempt: Int) {
         guard attempt < maxFastAdoptRetries else { return }
         // Progressive back-off: tight probes first (adopt the instant the window
         // is published, ~1-2 frames in the common case), widening toward a coarse

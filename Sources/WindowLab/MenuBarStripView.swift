@@ -302,12 +302,24 @@ final class MenuBarStripView: NSView {
 
     // MARK: - Key-hint HUD
 
-    /// Text currently flashing in the icon ("⌘L  Focus →"), or nil when idle.
-    /// Set by `flashKeyHint`; cross-fades over the mini-map then clears itself.
-    private var hintText: String?
+    /// Whether a hint is currently flashing. Set by `flashKeyHint`; the HUD
+    /// cross-fades over the mini-map then clears itself.
+    private var hintActive = false
+    /// The chord just pressed (e.g. "⌘L"), drawn inside a rounded keycap box.
+    /// nil when the fired action has no chord (then only the action shows).
+    private var hintChord: String?
+    /// The action label (e.g. "Focus →"), drawn after the keycap.
+    private var hintAction = ""
     /// HUD opacity: 0 hidden, 1 fully shown. Snappy in (no overshoot), held for
     /// `hintHold` seconds, then eased out so the mini-map returns.
     private var hintFade = Spring(0, response: 0.16, dampingFraction: 1.0)
+    /// Per-press size pop on the keycap box: kicked on every `flashKeyHint`, so
+    /// even repeated presses of the SAME chord visibly "punch" the keycap. The
+    /// box scales by `1 + value * hintPopScale` around its center; the reported
+    /// HUD width is unaffected so the status item never relayouts mid-pop.
+    private var hintPop = Spring(0, response: 0.28, dampingFraction: 0.55)
+    /// How much the keycap grows at the peak of a pop (fraction of its size).
+    private let hintPopScale: CGFloat = 0.22
     /// Media-clock time the HUD should START fading out (after the hold).
     private var hintHoldUntil: CFTimeInterval = 0
     /// How long the HUD stays fully visible before fading back to the mini-map.
@@ -315,24 +327,39 @@ final class MenuBarStripView: NSView {
     /// Base mini-map content width from the last `apply`, used so the HUD can
     /// grow the icon to fit the text and shrink back without re-deriving geometry.
     private var lastStripContentWidth: CGFloat = 30
-    /// Font for the HUD text + its width measurement (kept in sync).
-    private static let hintFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+    /// Bold chord font for the keycap glyphs.
+    private static let hintChordFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .bold)
+    /// Medium action-label font, drawn to the right of the keycap.
+    private static let hintActionFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
     /// Trailing padding after the HUD text before the icon's right edge (points).
     private let hudTrailingInset: CGFloat = 5
-    /// Gap between the mini-map and the HUD text drawn to its right (points).
+    /// Gap between the mini-map and the keycap box drawn to its right (points).
     private let hintGap: CGFloat = 6
+    /// Inner horizontal padding inside the keycap box around the chord (points).
+    private let keycapPadX: CGFloat = 5
+    /// Gap between the keycap box and the action label (points).
+    private let keycapGap: CGFloat = 5
     /// How much WIDER than `maxContentWidth` the icon may grow to fit the
     /// transient key-hint text appended to the right of the mini-map. The strip
     /// itself still self-limits to `maxContentWidth`; this only covers the HUD.
     static let maxHintExtraWidth: CGFloat = 220
 
     /// Flash a key-hint over the icon: the chord just pressed + the action it
-    /// triggered (e.g. "⌘L" / "Focus →"). The icon grows to fit, holds, then
-    /// fades back to the mini-map. Rapid presses just retarget the same HUD.
+    /// triggered (e.g. "⌘L" / "Focus →"). The chord rides a little rounded
+    /// keycap box that POPS (springs bigger then settles) on every press; the
+    /// icon grows to fit, holds, then fades back to the mini-map. Rapid presses
+    /// retarget the same HUD and re-pop the keycap.
     func flashKeyHint(chord: String, action: String, now: CFTimeInterval = CACurrentMediaTime()) {
-        hintText = chord.isEmpty ? action : "\(chord)  \(action)"
+        hintActive = true
+        hintChord = chord.isEmpty ? nil : chord
+        hintAction = action
         hintFade.target = 1
         hintHoldUntil = now + hintHold
+        // Re-pop the keycap on every press, even a repeat of the same chord.
+        hintPop.value = 0
+        hintPop.velocity = 0
+        hintPop.target = 0
+        hintPop.kick(9)
         // Recompute the icon's desired width right away so it starts growing
         // toward the text, then report it on every animated frame.
         reportDesiredWidthIfChanged()
@@ -341,7 +368,12 @@ final class MenuBarStripView: NSView {
     }
 
     /// The HUD text currently displayed (for headless tests + introspection).
-    var debugHintText: String? { hintText }
+    /// Mirrors the old combined "⌘L  Focus →" form so callers stay stable.
+    var debugHintText: String? {
+        guard hintActive else { return nil }
+        guard let hintChord else { return hintAction }
+        return "\(hintChord)  \(hintAction)"
+    }
 
     // Diff bookkeeping.
     private var lastState: TeleportEngine.StripState?
@@ -421,13 +453,41 @@ final class MenuBarStripView: NSView {
         needsDisplay = true
     }
 
-    /// Extra width (points) the HUD text needs to the RIGHT of the mini-map:
-    /// the gap, the measured text, and a trailing inset. Zero when no HUD is up.
-    /// The mini-map keeps its own width; this is appended, never substituted.
+    /// Measured size of the chord glyphs in the keycap font (zero if no chord).
+    private func chordTextSize() -> CGSize {
+        guard let hintChord else { return .zero }
+        return (hintChord as NSString).size(withAttributes: [.font: Self.hintChordFont])
+    }
+
+    /// Measured size of the action label in its font (zero if empty).
+    private func actionTextSize() -> CGSize {
+        guard !hintAction.isEmpty else { return .zero }
+        return (hintAction as NSString).size(withAttributes: [.font: Self.hintActionFont])
+    }
+
+    /// Width of the rounded keycap box that wraps the chord glyphs (padding on
+    /// both sides). Zero when the fired action carries no chord. This is the
+    /// box's RESTING width; the per-press pop only scales it visually, so the
+    /// reported HUD width — and thus the status item — never jitters mid-pop.
+    private func keycapWidth() -> CGFloat {
+        let cw = chordTextSize().width
+        guard cw > 0 else { return 0 }
+        return ceil(cw) + keycapPadX * 2
+    }
+
+    /// Extra width (points) the HUD needs to the RIGHT of the mini-map: the gap,
+    /// the keycap box, the gap to the action label, the label, and a trailing
+    /// inset. Zero when no HUD is up. The mini-map keeps its own width; this is
+    /// appended, never substituted.
     private func hintTrailingWidth() -> CGFloat {
-        guard let hintText else { return 0 }
-        let size = (hintText as NSString).size(withAttributes: [.font: Self.hintFont])
-        return min(hintGap + ceil(size.width) + hudTrailingInset, Self.maxHintExtraWidth)
+        guard hintActive else { return 0 }
+        let cap = keycapWidth()
+        let act = ceil(actionTextSize().width)
+        var w = hintGap
+        w += cap
+        if cap > 0 && act > 0 { w += keycapGap }
+        w += act + hudTrailingInset
+        return min(w, Self.maxHintExtraWidth)
     }
 
     /// Report the icon's desired CONTENT width to the host (status-item length).
@@ -437,7 +497,7 @@ final class MenuBarStripView: NSView {
     /// (relayout is not free).
     private func reportDesiredWidthIfChanged() {
         var desired = lastStripContentWidth
-        if hintText != nil { desired += hintTrailingWidth() }
+        if hintActive { desired += hintTrailingWidth() }
         if abs(desired - lastReportedContentWidth) >= 1 {
             lastReportedContentWidth = desired
             onDesiredContentWidthChange?(desired)
@@ -581,13 +641,17 @@ final class MenuBarStripView: NSView {
         for s in slots { s.step(dt, now: now) }
 
         // Key-hint HUD: once the hold window elapses, ease it out. When fully
-        // faded we clear the text and let the icon shrink back to the mini-map.
-        if hintText != nil {
+        // faded we clear the hint and let the icon shrink back to the mini-map.
+        if hintActive {
+            hintPop.step(dt)
             if hintFade.target > 0, now >= hintHoldUntil { hintFade.target = 0 }
             hintFade.step(dt)
             if hintFade.target == 0 && hintFade.value < 0.02 {
-                hintText = nil
+                hintActive = false
+                hintChord = nil
+                hintAction = ""
                 hintFade.reset(to: 0)
+                hintPop.reset(to: 0)
             }
             reportDesiredWidthIfChanged()
         }
@@ -601,7 +665,7 @@ final class MenuBarStripView: NSView {
     private func everythingSettled() -> Bool {
         modeFade.isSettled && viewportX.isSettled && viewportW.isSettled &&
         pageSlide.isSettled && pageSlideY.isSettled && focusGlow.isSettled &&
-        hintText == nil && slots.allSatisfy { $0.settled }
+        !hintActive && slots.allSatisfy { $0.settled }
     }
 
     // MARK: - Drawing
@@ -617,8 +681,8 @@ final class MenuBarStripView: NSView {
         // The key-hint is drawn to the RIGHT of the mini-map, never on top of
         // it: the windows graphic keeps its own region on the left at full
         // brightness, and the icon simply grows to make room for the HUD text.
-        let hud = hintText != nil ? CGFloat(hintFade.value) : 0
-        let trailing = hintTrailingWidth()  // 0 when no HUD text is set
+        let hud = hintActive ? CGFloat(hintFade.value) : 0
+        let trailing = hintTrailingWidth()  // 0 when no HUD is set
         // The mini-map keeps the same pixel width it has with no HUD: the icon
         // grew by exactly `trailing` to host the text, so the leftover is the
         // map's region. Clamp so a one-frame resize lag can't squish the map.
@@ -627,32 +691,84 @@ final class MenuBarStripView: NSView {
 
         if live > 0.01 { drawDormant(in: mapRect, alpha: live) }
         if managingWeight > 0.01 { drawStrip(in: mapRect, alpha: managingWeight) }
-        if hud > 0.01, let hintText {
+        if hud > 0.01, hintActive {
             let hintRect = NSRect(x: mapRect.maxX, y: bounds.minY,
                                   width: max(bounds.maxX - mapRect.maxX, 0),
                                   height: bounds.height)
-            drawKeyHint(hintText, in: hintRect, alpha: hud)
+            drawKeyHint(in: hintRect, alpha: hud)
         }
     }
 
-    /// Draw the key-hint HUD: the chord + action, left-aligned in `rect`, which
-    /// is the region appended to the RIGHT of the mini-map. The map is never
-    /// covered or dimmed; the icon grew to make room for this text.
-    private func drawKeyHint(_ text: String, in rect: NSRect, alpha: CGFloat) {
-        let para = NSMutableParagraphStyle()
-        para.alignment = .left
-        para.lineBreakMode = .byClipping
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: Self.hintFont,
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(alpha),
-            .paragraphStyle: para,
-        ]
-        let str = text as NSString
-        let size = str.size(withAttributes: [.font: Self.hintFont])
-        let textRect = NSRect(
-            x: rect.minX, y: rect.minY + (rect.height - size.height) / 2,
-            width: rect.width, height: size.height)
-        str.draw(in: textRect, withAttributes: attrs)
+    /// Draw the key-hint HUD: the chord inside a rounded keycap box that pops on
+    /// each press, then the action label to its right. `rect` is the region
+    /// appended to the RIGHT of the mini-map; the map is never covered or dimmed.
+    private func drawKeyHint(in rect: NSRect, alpha: CGFloat) {
+        var cursorX = rect.minX + hintGap
+
+        // 1. Keycap box (chord). Scales with the per-press pop around its center.
+        if let hintChord {
+            let cap = keycapWidth()
+            let capH = min(rect.height - 4, 18)
+            let capRect = NSRect(
+                x: cursorX, y: rect.minY + (rect.height - capH) / 2,
+                width: cap, height: capH)
+
+            // Pop: scale the box (and its glyphs) about its own center. Width
+            // stays reserved at rest so the status item never relayouts.
+            let pop = CGFloat(max(0, hintPop.value))
+            let scale = 1 + pop * hintPopScale
+            NSGraphicsContext.saveGraphicsState()
+            let ctx = NSGraphicsContext.current?.cgContext
+            ctx?.translateBy(x: capRect.midX, y: capRect.midY)
+            ctx?.scaleBy(x: scale, y: scale)
+            ctx?.translateBy(x: -capRect.midX, y: -capRect.midY)
+
+            // Rounded keycap: subtle filled body + hairline border, brighter at
+            // the pop peak so the press reads as a flash of light.
+            let glow = min(1, pop * 0.5)
+            let radius: CGFloat = 4
+            let box = NSBezierPath(roundedRect: capRect, xRadius: radius, yRadius: radius)
+            NSColor.labelColor.withAlphaComponent((0.10 + 0.12 * glow) * alpha).setFill()
+            box.fill()
+            box.lineWidth = 1
+            NSColor.labelColor.withAlphaComponent((0.45 + 0.4 * glow) * alpha).setStroke()
+            box.stroke()
+
+            // Chord glyphs centered in the keycap.
+            let para = NSMutableParagraphStyle()
+            para.alignment = .center
+            para.lineBreakMode = .byClipping
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: Self.hintChordFont,
+                .foregroundColor: NSColor.labelColor.withAlphaComponent(alpha),
+                .paragraphStyle: para,
+            ]
+            let cSize = chordTextSize()
+            let cRect = NSRect(
+                x: capRect.minX, y: capRect.minY + (capRect.height - cSize.height) / 2,
+                width: capRect.width, height: cSize.height)
+            (hintChord as NSString).draw(in: cRect, withAttributes: attrs)
+            NSGraphicsContext.restoreGraphicsState()
+
+            cursorX = capRect.maxX + keycapGap
+        }
+
+        // 2. Action label, vertically centered after the keycap.
+        if !hintAction.isEmpty {
+            let para = NSMutableParagraphStyle()
+            para.alignment = .left
+            para.lineBreakMode = .byClipping
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: Self.hintActionFont,
+                .foregroundColor: NSColor.labelColor.withAlphaComponent(alpha),
+                .paragraphStyle: para,
+            ]
+            let aSize = actionTextSize()
+            let aRect = NSRect(
+                x: cursorX, y: rect.minY + (rect.height - aSize.height) / 2,
+                width: max(rect.maxX - cursorX, 0), height: aSize.height)
+            (hintAction as NSString).draw(in: aRect, withAttributes: attrs)
+        }
     }
 
     private func drawDormant(in rect: NSRect, alpha: Double) {

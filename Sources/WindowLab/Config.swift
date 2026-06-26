@@ -54,6 +54,15 @@ struct ScrollWMConfig: Equatable {
         /// `allDisplays` is the legacy "one strip swallows every monitor"
         /// behavior. See `AdoptionScope`.
         var adoptScope: AdoptionScope.Scope = .stripDisplay
+        /// When true, ScrollWM runs an INDEPENDENT scrolling strip on EVERY
+        /// connected display (one engine + workspaces + viewport per monitor),
+        /// and navigation/width/move/workspace hotkeys act on whichever strip the
+        /// user's focus is currently on ("focus follows display"). When false
+        /// (default) a SINGLE strip lives on `stripDisplay` and `adoptScope`
+        /// governs whether it manages one monitor or swallows them all - the
+        /// historical behavior. Per-display strips imply `stripDisplay` scope for
+        /// each strip (a monitor only manages its own windows).
+        var multiDisplay: Bool = false
         // [md-select] Which monitor the strip binds to at launch. One of
         // "main" (default; the active display), "primary" (laptop panel),
         // "largest" (the external on a laptop+monitor setup), or a 1-based
@@ -181,6 +190,7 @@ struct ScrollWMConfig: Equatable {
                 // A configured fraction, or JSON null to preserve native size.
                 "spawnWidth": layout.spawnWidth.map { Double($0) } ?? NSNull(),
                 "fillHeight": layout.fillHeight,
+                "multiDisplay": layout.multiDisplay,
                 "adoptScope": layout.adoptScope.rawValue,
                 "stripDisplay": layout.stripDisplay,  // [md-select]
             ],
@@ -242,6 +252,7 @@ struct ScrollWMConfig: Equatable {
                 }
             }
             if let fh = layout["fillHeight"] as? Bool { config.layout.fillHeight = fh }
+            if let md = layout["multiDisplay"] as? Bool { config.layout.multiDisplay = md }
             if let s = layout["adoptScope"] as? String {
                 if let scope = AdoptionScope.Scope(configValue: s) {
                     config.layout.adoptScope = scope
@@ -388,6 +399,14 @@ struct ScrollWMConfig: Equatable {
         // minimum/fixed height keep it (we never force below what the app
         // allows), so this is best-effort and never corrupts the layout.
         "fillHeight": true,
+
+        // Run an INDEPENDENT scrolling strip on EVERY connected display, each
+        // with its own columns / vertical workspaces / viewport. Navigation,
+        // width, move, and workspace hotkeys act on whichever strip your focus
+        // is on ("focus follows display"). When false (default) a single strip
+        // lives on "stripDisplay" and "adoptScope" decides whether it manages
+        // one monitor or all of them.
+        "multiDisplay": false,
 
         // Which displays' windows the strip manages:
         //   "stripDisplay" = ONLY the monitor the strip lives on; windows on

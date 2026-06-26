@@ -236,10 +236,22 @@ final class TeleportEngine {
         // A fresh arrange starts from a single workspace.
         workspaces = [Workspace()]
         activeWorkspace = 0
+        // Snap every adopted column to the configured spawn width (e.g. 50%) so
+        // "Arrange Windows into Strip" lands the EXISTING windows at a tidy
+        // column just like a freshly opened one - the recurring "arrange did not
+        // resize my windows to the spawn width" complaint. No-op when no spawn
+        // width is configured; the read-back keeps the model honest if an app
+        // clamps to a larger minimum. Mirrors the lifecycle-monitor insert flow
+        // (`applySpawnWidth` then `applyFillHeight`).
+        for i in slots.indices { applySpawnWidth(toSlotAt: i) }
         // Stretch every column to fill the usable height (PaperWM-style) when
         // enabled. No-op otherwise; clamps are reconciled against the live AX
         // frame inside `applyFillHeight`.
         for i in slots.indices { applyFillHeight(toSlotAt: i) }
+        // Spawn-width resizes change column widths, so re-pack the canvas
+        // before committing positions (the inline `x += width + gap` above used
+        // the native widths).
+        compactStrip()
         commitAll()
     }
 

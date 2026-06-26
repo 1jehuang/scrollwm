@@ -28,9 +28,17 @@ enum RestoreStore {
     }
 
     static func save(engine: TeleportEngine) {
+        save(engines: [engine])
+    }
+
+    /// Persist the original frames of every window managed by ANY of the given
+    /// engines, so multi-display setups (one engine per monitor) survive a crash
+    /// just like the single-strip case. The single-engine `save(engine:)` is a
+    /// thin wrapper, so existing callers are unchanged.
+    static func save(engines: [TeleportEngine]) {
         // Persist EVERY workspace's windows (not just the visible strip) so a
         // crash restores windows parked in inactive vertical workspaces too.
-        let entries = engine.allManagedSlots.map { slot in
+        let entries = engines.flatMap { $0.allManagedSlots }.map { slot in
             Entry(
                 pid: slot.window.pid,
                 appName: slot.window.appName,

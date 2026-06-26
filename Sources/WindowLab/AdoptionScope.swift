@@ -89,4 +89,44 @@ enum AdoptionScope {
             }
         }
     }
+
+    /// PURE: partition candidate window frames across `displays`, assigning each
+    /// to EXACTLY ONE display so independent per-display strips never both adopt
+    /// the same window (which would teleport it to two places at once).
+    ///
+    /// Each window goes to the display it best overlaps (`DisplayGeometry`
+    /// keeps the FIRST maximum, so a window split evenly across a bezel lands on
+    /// the earlier display deterministically). A window that overlaps NO display
+    /// (a degenerate/off-screen frame) is assigned to `fallbackIndex` when given
+    /// - mirroring the single-strip "never lose a window" bias - otherwise it is
+    /// dropped from every display's list.
+    ///
+    /// - Parameters:
+    ///   - frames: candidate window frames (AX top-left global), in order.
+    ///   - displays: each managed display's full AX frame, parallel to the
+    ///               strips that own them.
+    ///   - fallbackIndex: display to receive windows that overlap none, or nil
+    ///                    to drop them.
+    /// - Returns: for each display index, the candidate indices assigned to it
+    ///            (ascending), so `result[d]` are the windows display `d` adopts.
+    static func partition(frames: [CGRect],
+                          displays: [CGRect],
+                          fallbackIndex: Int? = nil) -> [[Int]] {
+        var buckets = Array(repeating: [Int](), count: displays.count)
+        guard !displays.isEmpty else { return buckets }
+        for (i, frame) in frames.enumerated() {
+            var bestIdx = -1
+            var bestArea: CGFloat = 0
+            for (d, disp) in displays.enumerated() {
+                let area = DisplayGeometry.overlapArea(frame, disp)
+                if area > bestArea { bestArea = area; bestIdx = d }
+            }
+            if bestIdx >= 0 {
+                buckets[bestIdx].append(i)
+            } else if let fb = fallbackIndex, displays.indices.contains(fb) {
+                buckets[fb].append(i)
+            }
+        }
+        return buckets
+    }
 }

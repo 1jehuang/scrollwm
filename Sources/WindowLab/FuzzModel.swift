@@ -261,7 +261,18 @@ private struct StripModel {
     /// focus 0 WITHOUT raising (commitAll teleports only => systemFocus stays).
     mutating func adopt(order: [pid_t], widths: [pid_t: CGFloat], heights: [pid_t: CGFloat]) {
         win = [:]
-        for pid in order { win[pid] = Win(width: widths[pid]!, height: heights[pid]!) }
+        for pid in order {
+            var w = widths[pid]!
+            // Mirror the engine's adopt-time `applySpawnWidth` (minSize 0 in the
+            // sim => no snap-up): snap each adopted column to the configured
+            // spawn width, only resizing when it differs from the target by more
+            // than a point.
+            if let frac = spawnWidthFraction {
+                let target = width(forFraction: frac)
+                if abs(w - target) > 1 { w = target }
+            }
+            win[pid] = Win(width: w, height: heights[pid]!)
+        }
         workspaces = [WS(cols: order, focusIndex: 0, viewportX: 0)]
         active = 0
         // commitAll() is a teleport, not a focus: no raiseAndFocus, so the OS

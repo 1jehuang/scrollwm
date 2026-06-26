@@ -222,6 +222,11 @@ case "opstest":
     args.contains("--live") ? runStripOpsIntegrationTest() : runHeadlessOpsTest()
 case "spawnlatency":
     args.contains("--live") ? runSpawnLatencyTest() : runHeadlessSpawnLatencyTest()
+case "spawnvalidate":
+    // Headless property validator: EVERY spawn (across a named edge-case matrix
+    // + randomized fuzz) must land in the column right of focus, at its exact
+    // slot, via the fast path - never left floating, never poll-speed.
+    runSpawnValidate(args: Array(args))
 case "newwintest":
     runNewWindowAdoptTest()
 case "statusbench":
