@@ -45,7 +45,7 @@ extension ScrollWMController {
         case "release":
             if !isManaging { return "ok: already released (dormant)" }
             release()
-            return "ok: released, all windows restored"
+            return "ok: released, all windows placed"
 
         case "toggle":
             toggle()

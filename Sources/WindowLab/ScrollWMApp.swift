@@ -901,9 +901,9 @@ final class ScrollWMController: NSObject {
         RestoreStore.clear()
         menuBar.refresh()
         if failures > 0 {
-            Log.warn("released: all windows restored (\(failures) failures)", "release")
+            Log.warn("released: all windows placed (\(failures) failures)", "release")
         } else {
-            Log.info("released: all windows restored", "release")
+            Log.info("released: all windows placed", "release")
         }
     }
 

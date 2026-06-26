@@ -164,15 +164,22 @@ final class LifecycleMonitor {
             } else {
                 current = AXSource.allWindows()
             }
-            let standard = current.filter {
-                $0.subrole == kAXStandardWindowSubrole as String && !$0.isMinimized && !$0.isFullscreen
+            // Existence and adoptability are different questions. A managed
+            // minimized/fullscreen window still exists and must not be silently
+            // dropped from the strip; only newly-adopted windows need to be visible
+            // and manageable on the current Space.
+            let standardExisting = current.filter {
+                $0.subrole == kAXStandardWindowSubrole as String
             }
+            let standard = standardExisting.filter { !$0.isMinimized && !$0.isFullscreen }
             let cg = CGWindowSource.listWindows(onscreenOnly: true)
 
             // --- Main: cheap diff + apply against the live engine ---
             DispatchQueue.main.async {
                 self.enumerating = false
-                self.applyResync(standard: standard, cg: cg)
+                self.applyResync(standardExisting: standardExisting,
+                                 standardAdoptable: standard,
+                                 cg: cg)
                 // Floating list uses the FULL enumeration (dialogs/panels too),
                 // not just `standard`, and runs after `applyResync` so it sees
                 // the post-adoption strip. Reads `engine.slots` -> main thread.
@@ -183,7 +190,9 @@ final class LifecycleMonitor {
 
     /// Apply an enumerated snapshot to the engine. MUST run on the main thread
     /// (mutates engine state). Cheap: matching/diff over a handful of windows.
-    private func applyResync(standard: [AXWindowInfo], cg: [CGWindowInfo]) {
+    private func applyResync(standardExisting: [AXWindowInfo],
+                             standardAdoptable: [AXWindowInfo],
+                             cg: [CGWindowInfo]) {
         let start = Clock.nowAbsNs()
         resyncCount += 1
 
@@ -192,11 +201,11 @@ final class LifecycleMonitor {
         // fuse it with AX exactly as `arrange` does (PID+frame+title scoring).
         // A window we manage that sits on another Space still appears in `ax`
         // but NOT here, which is precisely what drives the Space-freeze rule.
-        let matched = IdentityMatcher.match(axWindows: standard, cgWindows: cg)
+        let matched = IdentityMatcher.match(axWindows: standardExisting, cgWindows: cg)
 
         // Map each window to an opaque token (= index into `standard`) so the
         // pure planner can reason without touching AXUIElements.
-        let axIDs = Array(standard.indices)
+        let axIDs = Array(standardExisting.indices)
         var currentSpaceIDs = Set<Int>()
         for (i, m) in matched.enumerated() where m.cg != nil { currentSpaceIDs.insert(i) }
 
@@ -208,7 +217,7 @@ final class LifecycleMonitor {
         // it shows up in the current-Space set) from being re-adopted into the
         // active workspace as if it were brand new.
         let stripIDs: [Int] = engine.allManagedSlots.enumerated().map { (s, slot) in
-            standard.firstIndex { CFEqual($0.element, slot.window.element) } ?? -(s + 1)
+            standardExisting.firstIndex { CFEqual($0.element, slot.window.element) } ?? -(s + 1)
         }
 
         let decision = ResyncPlanner.decide(
@@ -230,7 +239,7 @@ final class LifecycleMonitor {
         // underlying window, so a closed window simply stops matching. Windows
         // merely on another Space still exist in AX, so they are NOT removed.
         let removed = engine.removeSlots { slot in
-            !standard.contains { CFEqual($0.element, slot.window.element) }
+            !standardExisting.contains { CFEqual($0.element, slot.window.element) }
         }
 
         // Additions: new windows ON THE CURRENT SPACE (per the planner). Insert
@@ -242,7 +251,11 @@ final class LifecycleMonitor {
         // under the default `stripDisplay` scope so a window opened on the
         // external monitor is not yanked onto the strip. Same pure rule as
         // `arrange` (`engine.filterByAdoptScope`).
-        let newWindows = engine.filterByAdoptScope(addTokens.map { standard[$0] }) { $0.frame }
+        let addExisting = addTokens.map { standardExisting[$0] }
+        let addAdoptable = addExisting.filter { candidate in
+            standardAdoptable.contains { CFEqual($0.element, candidate.element) }
+        }
+        let newWindows = engine.filterByAdoptScope(addAdoptable) { $0.frame }
         var lastInsertedIndex: Int?
         var insertedIndices: [Int] = []
         if !newWindows.isEmpty {
@@ -272,7 +285,7 @@ final class LifecycleMonitor {
         // compacted columns overlap or leave gaps and the menu-bar mini-map
         // shows the wrong widths. This is the safety net that makes size
         // self-heal even when the per-resize read-back lied.
-        let sizeChanged = engine.reconcileSizes(from: standard)
+        let sizeChanged = engine.reconcileSizes(from: standardAdoptable)
 
         adoptedCount += newWindows.count
         removedCount += removed

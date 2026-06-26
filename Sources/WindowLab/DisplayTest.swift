@@ -251,14 +251,13 @@ func runDisplayTest() {
         check("after rebind, every window moved onto the \(targetLabel)", allMoved)
 
         // ================= Restore + cleanup =================
-        print("[displaytest] releasing (restores every window to its original frame)...")
+        print("[displaytest] releasing (places every window on-screen)...")
         DispatchQueue.main.sync { controller.release() }
         Thread.sleep(forTimeInterval: 0.5)
         check("controller stopped managing", !controller.isManaging)
         check("strip empty after release", controller.debugSlotCount == 0)
 
-        // Verify the spawned windows actually came back to their spawn frames
-        // (release restores originalFrame regardless of the strip's display).
+        // Verify the spawned windows are still present after release.
         var restored = 0
         for t in titles where liveFrame(title: t) != nil { restored += 1 }
         check("survivors restored to a real on-screen frame", restored == titles.count)

@@ -935,24 +935,57 @@ final class TeleportEngine {
         DisplayGeometry.ensureVisible(original, displays: displays)
     }
 
-    /// PURE restore plan consumed by `releaseAll`: every managed window paired
-    /// with the display-safe frame to restore it to, given the displays that are
-    /// available RIGHT NOW. Exposed so the "monitor unplugged" behavior is
-    /// unit-testable without AX (the same plan `releaseAll` actually applies).
+    /// PURE intentional-release placement: unlike crash recovery, a user-triggered
+    /// Release should not scatter windows back to old pre-ScrollWM positions. Put
+    /// every released window in a simple readable grid on the strip display so the
+    /// desktop is immediately usable after management stops.
+    static func releaseFrames(count: Int, display: CGRect, gap: CGFloat = 16) -> [CGRect] {
+        guard count > 0, display.width > 0, display.height > 0 else { return [] }
+        let cols = max(1, Int(ceil(sqrt(Double(count)))))
+        let rows = max(1, Int(ceil(Double(count) / Double(cols))))
+        let usableW = max(1, display.width - gap * CGFloat(cols + 1))
+        let usableH = max(1, display.height - gap * CGFloat(rows + 1))
+        let cellW = usableW / CGFloat(cols)
+        let cellH = usableH / CGFloat(rows)
+        return (0..<count).map { i in
+            let r = i / cols
+            let c = i % cols
+            return CGRect(x: display.minX + gap + CGFloat(c) * (cellW + gap),
+                          y: display.minY + gap + CGFloat(r) * (cellH + gap),
+                          width: cellW,
+                          height: cellH)
+        }
+    }
+
+    /// PURE restore plan for crash recovery / legacy display-safety tests: every
+    /// managed window paired with its saved pre-adoption frame, clamped to the
+    /// displays available RIGHT NOW.
     func restorePlan(displays: [CGRect]) -> [(window: ManagedWindowRef, target: CGRect)] {
         allManagedSlots.map { slot in
             (slot.window, Self.restoreFrame(original: slot.window.originalFrame, displays: displays))
         }
     }
 
-    /// Restore every managed window to its pre-adoption frame (position AND
-    /// size) and stop managing it. Returns the number of failures.
+    /// PURE plan consumed by intentional `releaseAll`: every managed window gets a
+    /// readable, non-overlapping frame on the strip display (or the first available
+    /// display if that display disappeared).
+    func releasePlan(displays: [CGRect]) -> [(window: ManagedWindowRef, target: CGRect)] {
+        let managed = allManagedSlots.map { $0.window }
+        guard !managed.isEmpty else { return [] }
+        let preferred = stripDisplayFrame ?? screenFrame
+        let targetDisplay = displays.first { DisplayGeometry.overlapArea($0, preferred) > 0 }
+            ?? displays.first
+            ?? preferred
+        let frames = Self.releaseFrames(count: managed.count, display: targetDisplay)
+        return zip(managed, frames).map { ($0.0, $0.1) }
+    }
+
+    /// Place every managed window in a readable on-screen grid and stop managing
+    /// it. Returns the number of failures.
     ///
-    /// Display-safe: each restore target is run through `restorePlan`, which
-    /// clamps a frame onto a currently-available display when its original
-    /// monitor is gone, so unplugging a monitor before Release can never leave a
-    /// window stranded off-screen. The clamp is a no-op for windows whose saved
-    /// frame is still mostly visible (the overwhelmingly common case).
+    /// Display-safe: each release target is chosen from a currently-available
+    /// display, so unplugging a monitor before Release can never leave a window
+    /// stranded off-screen.
     ///
     /// Failures are determined by READBACK, not AX error codes: some windows
     /// (e.g. fixed-size ones) return errors for no-op resizes while ending up
@@ -964,9 +997,10 @@ final class TeleportEngine {
     func releaseAll(displays: [CGRect]? = nil) -> Int {
         let displays = displays ?? DisplayGeometry.currentVisibleAXDisplays()
         var failures = 0
-        // Restore EVERY workspace's windows, not just the active strip, so a
-        // window parked in an inactive vertical workspace is also put back.
-        for (w, target) in restorePlan(displays: displays) {
+        // Release EVERY workspace's windows, not just the active strip, so a
+        // window parked in an inactive vertical workspace is also put back in a
+        // usable on-screen position.
+        for (w, target) in releasePlan(displays: displays) {
             _ = AXSource.setPoint(w.element, kAXPositionAttribute as String, target.origin)
             _ = AXSource.setSize(w.element, kAXSizeAttribute as String, target.size)
 

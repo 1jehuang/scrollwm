@@ -151,7 +151,7 @@ func runE2EKeybindingTest() {
         }.count
         check("Cmd+Q closed a real window", liveAfter == liveBefore - 1)
 
-        // --- Release: restores + tears down hotkeys ---
+        // --- Release: places windows nicely + tears down hotkeys ---
         print("[e2e] releasing...")
         DispatchQueue.main.sync { controller.release() }
         Thread.sleep(forTimeInterval: 0.5)

@@ -531,7 +531,7 @@ func runHeadlessE2ETest() {
     let liveAfter = pids.flatMap { AXSource.windows(forPID: $0) }.count
     t.check("Cmd+Q closed a real (sim) window", liveAfter == liveBefore - 1)
 
-    // --- Release: restores + tears down hotkeys ---
+    // --- Release: places windows nicely + tears down hotkeys ---
     controller.release()
     Headless.pump(0.1)
     t.check("controller stopped managing", !controller.isManaging)
@@ -575,6 +575,19 @@ func runHeadlessRevealTest() {
     Headless.pump(0.1)
     t.check("plain arrange adopts only visible windows (\(total - minimizeCount))",
             controller.debugSlotCount == total - minimizeCount)
+
+    // Regression: minimizing a window that ScrollWM already manages must NOT be
+    // interpreted as an implicit release/removal. Only close or explicit Release
+    // should remove it from the strip. The lifecycle poll used to diff against
+    // "visible standard" windows and silently dropped this column.
+    if let managedVisible = sorted.dropFirst(minimizeCount).first {
+        world.setMinimized(managedVisible, true)
+        Headless.pump(2.25) // wait for the 2s lifecycle safety-net poll
+        t.check("managed minimized window stays in strip until deliberate release/close",
+                controller.debugSlotCount == total - minimizeCount)
+        world.setMinimized(managedVisible, false)
+        Headless.pump(0.1)
+    }
 
     controller.release()
     Headless.pump(0.1)

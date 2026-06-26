@@ -1537,6 +1537,19 @@ enum StripOpsTests {
               plan.allSatisfy { DisplayGeometry.isMostlyVisible($0.target, on: builtinOnly) })
         check("restore: every planned target fits the surviving display",
               plan.allSatisfy { builtin.contains($0.target) })
+        let releasePlan = rel.releasePlan(displays: builtinOnly)
+        check("release: plan covers every managed window", releasePlan.count == 3)
+        check("release: every planned target fits the strip display",
+              releasePlan.allSatisfy { builtin.contains($0.target) })
+        var releaseOverlaps = false
+        for i in releasePlan.indices {
+            for j in releasePlan.indices where j > i {
+                if DisplayGeometry.overlapArea(releasePlan[i].target, releasePlan[j].target) > 0 {
+                    releaseOverlaps = true
+                }
+            }
+        }
+        check("release: planned targets do not overlap", !releaseOverlaps)
         // releaseAll consumes the plan (AX no-ops on synthetic elements) and
         // still tears the strip down to a clean single workspace.
         rel.releaseAll(displays: builtinOnly)
