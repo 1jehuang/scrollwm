@@ -25,8 +25,12 @@ extension ScrollWMController {
             return controlStatusJSON()
 
         case "arrange":
-            if isManaging { return "ok: already managing (\(debugSlotCount) windows)" }
+            // Idempotent: while managing, this reconciles the current Space's
+            // windows into the strip (same path as the menu-bar "Arrange
+            // Windows into Strip" item), so the command and the menu match.
+            let wasManaging = isManaging
             arrange()
+            if wasManaging { return "ok: re-arranged \(debugSlotCount) windows" }
             return isManaging
                 ? "ok: arranged \(debugSlotCount) windows"
                 : "error: nothing to arrange (no manageable windows on this Space)"
