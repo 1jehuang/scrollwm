@@ -34,6 +34,16 @@ struct ScrollWMConfig: Equatable {
     struct Layout: Equatable {
         var columnGap: CGFloat = 12
         var minColumnWidth: CGFloat = 200
+        /// Width (px) reserved at the LEFT and RIGHT screen edges as a "peek
+        /// lane". On-screen columns are laid out inside the screen inset by this
+        /// much on each side, so a neighbor column that scrolls off the viewport
+        /// (and gets parked as a ~40px sliver pinned to the edge by macOS) always
+        /// peeks through an uncovered lane instead of being hidden behind an
+        /// on-screen window. The result: the focused content sits in the middle
+        /// with a slice of the left and right neighbors visible as a navigation
+        /// hint. Defaults to 48 (≈ the macOS clamp sliver + a little breathing
+        /// room). Set 0 to disable (columns span edge-to-edge, old behavior).
+        var peekInset: CGFloat = 48
         var widthPresets: [CGFloat] = [0.25, 0.50, 0.75, 1.0]
         /// Width a newly opened window is snapped to, as a fraction of the usable
         /// strip width. Many native apps open at an oversized frame that ignores
@@ -186,6 +196,7 @@ struct ScrollWMConfig: Equatable {
             "layout": [
                 "columnGap": Double(layout.columnGap),
                 "minColumnWidth": Double(layout.minColumnWidth),
+                "peekInset": Double(layout.peekInset),
                 "widthPresets": layout.widthPresets.map { Double($0) },
                 // A configured fraction, or JSON null to preserve native size.
                 "spawnWidth": layout.spawnWidth.map { Double($0) } ?? NSNull(),
@@ -238,6 +249,9 @@ struct ScrollWMConfig: Equatable {
         if let layout = obj["layout"] as? [String: Any] {
             if let g = layout["columnGap"] as? NSNumber { config.layout.columnGap = CGFloat(g.doubleValue) }
             if let m = layout["minColumnWidth"] as? NSNumber { config.layout.minColumnWidth = CGFloat(m.doubleValue) }
+            // Peek lane (px) reserved at each screen edge. Clamped to >= 0 so a
+            // negative typo can never push content off the edge.
+            if let p = layout["peekInset"] as? NSNumber { config.layout.peekInset = max(0, CGFloat(p.doubleValue)) }
             if let presets = layout["widthPresets"] as? [NSNumber], !presets.isEmpty {
                 config.layout.widthPresets = presets.map { CGFloat($0.doubleValue) }
             }
@@ -383,6 +397,15 @@ struct ScrollWMConfig: Equatable {
       "layout": {
         "columnGap": 12,          // px between columns and screen edges
         "minColumnWidth": 200,    // px floor; a column never shrinks below this
+
+        // Px reserved at the LEFT and RIGHT screen edges as a "peek lane".
+        // On-screen columns lay out INSIDE the screen inset by this much on each
+        // side, so a neighbor column scrolled off the viewport (parked as a thin
+        // ~40px sliver pinned to the edge) always peeks through an uncovered lane
+        // as a navigation hint instead of being hidden behind a window. Set 0 to
+        // span edge-to-edge (no peek).
+        "peekInset": 48,
+
         "widthPresets": [0.25, 0.50, 0.75, 1.0],  // fractions for the width keys
 
         // Width a NEWLY opened window snaps to, as a fraction of the usable

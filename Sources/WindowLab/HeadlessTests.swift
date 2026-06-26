@@ -741,6 +741,40 @@ func runHeadlessDisplayTest() {
         t.check("parked window readback available", false)
     }
 
+    // --- Phase 2b: the peek lane is reserved, so the parked sliver is NOT
+    // covered by on-screen content. The production controller runs with the
+    // default config (`peekInset = 48`), which insets every on-screen column so
+    // a thin lane stays clear at each screen edge for a parked neighbor to peek
+    // through. Assert: (1) the inset is actually active, (2) the FOCUSED (full-
+    // width) on-screen window's right edge stops inside the content region (it
+    // does not bleed into the right lane), and (3) the parked sliver sits in the
+    // (uncovered) left lane, so the two never overlap horizontally. ---
+    t.check("peek lane active in production controller (peekInset > 0)",
+            controller.debugPeekInset > 0)
+    let region = controller.debugContentRegionX
+    let contentRight = region.origin + region.width        // right edge of content
+    let rightLaneLeft = contentRight                        // lane occupies [contentRight, stripFull.maxX]
+    let leftLaneRight = region.origin                       // left lane is [stripFull.minX, region.origin]
+    // The focused, full-width window (last column) must stay inside the content
+    // region: its right edge cannot extend into the reserved right peek lane.
+    let focusedTitle = controller.debugFocusedTitle
+    if let ff = liveFrame(title: focusedTitle) {
+        t.check("focused on-screen window's left edge is inside the content region",
+                ff.minX >= region.origin - 1)
+        t.check("focused on-screen window's right edge stays out of the right peek lane",
+                ff.maxX <= rightLaneLeft + 1)
+    } else {
+        t.check("focused window readback available", false)
+    }
+    // The parked neighbor's sliver lands in the LEFT peek lane (left of all
+    // content), so no on-screen window can be drawn over it: the window's full
+    // frame is shoved left until only the macOS clamp sliver shows at the very
+    // edge, so its right edge stays at or before the content region's left edge.
+    if let pf = liveFrame(title: parkedTitle) {
+        t.check("parked sliver stays left of the content region (uncovered lane)",
+                pf.maxX <= leftLaneRight + 1)
+    }
+
     // Reset widths small for the rebind.
     for i in 0..<controller.debugSlotCount {
         controller.focus(index: i); controller.setWidthFraction(0.25); Headless.pump(0.04)

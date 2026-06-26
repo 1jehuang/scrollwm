@@ -449,7 +449,7 @@ enum StripOpsTests {
         let jsonc = """
         {
           // a comment with a fake "key": value inside a string-ish // sequence
-          "layout": { "columnGap": 20, "minColumnWidth": 150,
+          "layout": { "columnGap": 20, "minColumnWidth": 150, "peekInset": 72,
                       "widthPresets": [0.3, 0.6, 0.9], "stripDisplay": "largest" },
           "focusMode": "centered",
           "arrangeOnFirstGrant": false,
@@ -463,6 +463,7 @@ enum StripOpsTests {
             let parsed = try ScrollWMConfig.parse(jsonc: jsonc)
             check("config columnGap parsed", parsed.layout.columnGap == 20)
             check("config minColumnWidth parsed", parsed.layout.minColumnWidth == 150)
+            check("config peekInset parsed", parsed.layout.peekInset == 72)
             check("config widthPresets parsed", parsed.layout.widthPresets == [0.3, 0.6, 0.9])
             check("config stripDisplay parsed", parsed.layout.stripDisplay == "largest")  // [md-select]
             check("config focusMode parsed", parsed.focusMode == .centered)
@@ -503,6 +504,18 @@ enum StripOpsTests {
             let pUnset = try ScrollWMConfig.parse(jsonc: #"{ "layout": { } }"#)
             check("config fillHeight defaults when unset", pUnset.layout.fillHeight == true)
         } catch { check("config fillHeight parses", false) }
+
+        // peekInset: defaults to 48 (reserve a side peek lane), parses an
+        // explicit override, clamps a negative typo to 0, and defaults when unset.
+        check("config peekInset defaults to 48", ScrollWMConfig.default.layout.peekInset == 48)
+        do {
+            let p = try ScrollWMConfig.parse(jsonc: #"{ "layout": { "peekInset": 0 } }"#)
+            check("config peekInset 0 parsed (disabled)", p.layout.peekInset == 0)
+            let pNeg = try ScrollWMConfig.parse(jsonc: #"{ "layout": { "peekInset": -10 } }"#)
+            check("config peekInset clamps negative to 0", pNeg.layout.peekInset == 0)
+            let pUnset = try ScrollWMConfig.parse(jsonc: #"{ "layout": { } }"#)
+            check("config peekInset defaults when unset", pUnset.layout.peekInset == 48)
+        } catch { check("config peekInset parses", false) }
 
         // menuBar.pinHighPriority: defaults on, parses an explicit override,
         // and round-trips through encode -> parse.
@@ -605,6 +618,68 @@ enum StripOpsTests {
         check("partially-visible column is not parked",
               ep.onScreenTarget(for: partial).x != ep.parkingX(prefer: .left)
                   && ep.onScreenTarget(for: partial).x != ep.parkingX(prefer: .right))
+
+        // --- Peek lane: on-screen content is inset so a parked sliver shows ----
+        // With `peekInset > 0` the usable content region is the screen inset by
+        // that much on each side, and ALL layout math (width / viewport target /
+        // on-screen placement / park boundary) reads the content region. A
+        // neighbor column parked off the side leaves a sliver pinned at the very
+        // screen edge; because no on-screen column is ever placed in that lane,
+        // the sliver always peeks through. These are pure-model assertions (no
+        // AX): the bare engine defaults `peekInset == 0`, so we opt in here.
+        do {
+            let pe = makeEngine(count: 3, width: 400, screenWidth: 1000)
+            // Baseline (inset 0): content == full screen.
+            check("peek off: contentWidth == screen width", pe.contentWidth == 1000)
+            check("peek off: contentOriginX == screen origin", pe.contentOriginX == pe.screenFrame.origin.x)
+
+            pe.peekInset = 60
+            // Content region shrinks by a lane on EACH side; origin shifts right.
+            check("peek on: contentWidth == screen - 2*inset", pe.contentWidth == 1000 - 120)
+            check("peek on: contentOriginX == origin + inset",
+                  pe.contentOriginX == pe.screenFrame.origin.x + 60)
+
+            // width(1.0) now fills the CONTENT region, not the screen: it is
+            // (contentWidth - 2*gap), strictly less than the old screen-based one.
+            let g = pe.gap
+            check("peek on: width(1.0) fills the content region",
+                  abs(pe.width(forFraction: 1.0) - (pe.contentWidth - 2 * g)) < 0.5)
+            check("peek on: width(1.0) leaves room for both peek lanes",
+                  pe.width(forFraction: 1.0) + 2 * pe.peekInset + 2 * g <= pe.screenFrame.width + 0.5)
+
+            // An on-screen column maps into the content region: at viewportX 0,
+            // a column at canvasX = gap lands at contentOriginX + gap, i.e. its
+            // left edge is at least `peekInset` from the screen's left edge, so
+            // it never covers the left peek lane.
+            pe.setViewportXForTest(0)
+            var onScreen = pe.slots[0]
+            onScreen.canvasX = pe.gap
+            onScreen.width = 200
+            let osTarget = pe.onScreenTarget(for: onScreen)
+            check("peek on: on-screen column placed inside the content region",
+                  osTarget.x >= pe.screenFrame.origin.x + pe.peekInset - 0.5)
+
+            // A parked sliver (off the right) sits in the RIGHT lane, strictly
+            // to the right of the rightmost on-screen content edge, so it is
+            // never covered. (parkingX is far past the edge; macOS clamps it to a
+            // sliver at the edge in reality - here we just assert the ordering of
+            // the reserved lane vs. the content region.)
+            let contentRightEdge = pe.contentOriginX + pe.contentWidth
+            check("peek on: right peek lane lies outside the content region",
+                  contentRightEdge <= pe.screenFrame.maxX - pe.peekInset + 0.5)
+
+            // The park boundary moved to the content region: a column whose left
+            // edge reaches the content width (not the full screen width) parks.
+            // Place a column so its left edge sits between contentWidth and
+            // screenWidth - it must be treated as OFF-screen (parked), proving the
+            // boundary follows the content region, not the raw screen.
+            var edgeCol = pe.slots[1]
+            edgeCol.canvasX = pe.contentWidth + 10   // just past the content edge
+            edgeCol.width = 200
+            pe.setViewportXForTest(0)
+            check("peek on: column past the content edge parks right",
+                  pe.onScreenTarget(for: edgeCol).x == pe.parkingX(prefer: .right))
+        }
 
         // --- Display-aware parking edge (multi-monitor "peeking" fix) ---------
         // macOS clamps a window to keep ~40px on screen, so a parked column

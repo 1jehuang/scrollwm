@@ -17,8 +17,10 @@ extension TeleportEngine {
     /// Width in points for a given fraction of the viewport.
     ///
     /// The strip lays columns out as `gap | col | gap | col | ... | gap`, i.e.
-    /// a `gap` margin on both outer edges and a `gap` between every column. For
-    /// a fraction `f = 1/N` we want exactly `N` columns to tile the viewport:
+    /// a `gap` margin on both outer edges and a `gap` between every column,
+    /// INSIDE the usable content region `V = contentWidth` (the screen minus a
+    /// `peekInset` peek lane on each side). For a fraction `f = 1/N` we want
+    /// exactly `N` columns to tile the content region:
     ///
     ///   leftMargin + N*w + (N-1)*gap + rightMargin = V,  margins == gap
     ///     => N*w = V - (N+1)*gap
@@ -26,11 +28,12 @@ extension TeleportEngine {
     ///
     /// So `width(0.5)` fits exactly two columns (both with a `gap` on the
     /// outside and a `gap` between them), `width(0.25)` fits four, and
-    /// `width(1.0) == V - 2*gap` fills the screen with a symmetric margin.
+    /// `width(1.0) == V - 2*gap` fills the content region with a symmetric
+    /// margin. With `peekInset == 0`, `V == screenFrame.width` (old behavior).
     /// Clamped to a sane minimum so a window can never collapse to nothing.
     func width(forFraction fraction: CGFloat) -> CGFloat {
         let clamped = max(0.05, min(1.0, fraction))
-        let w = clamped * (screenFrame.width - gap) - gap
+        let w = clamped * (contentWidth - gap) - gap
         return max(minColumnWidth, w.rounded())
     }
 

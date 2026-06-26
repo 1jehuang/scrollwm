@@ -115,6 +115,33 @@ final class TeleportEngine {
     /// Config-driven (`layout.minColumnWidth`); defaults to 200.
     var minColumnWidth: CGFloat = 200
 
+    /// Width reserved at the LEFT and RIGHT screen edges for the "peek lane".
+    /// When a neighbor column scrolls off the viewport it is parked off that
+    /// side, where macOS clamps it to a ~40px sliver pinned at the very edge.
+    /// Reserving this inset for on-screen content guarantees a column never
+    /// sits on top of (and hides) that peeking sliver, so you always see a
+    /// slice of the off-screen neighbor as a navigation hint - the focused
+    /// content sits in the middle with the left neighbor peeking from the left
+    /// and the right neighbor peeking from the right.
+    ///
+    /// The usable CONTENT region is the screen inset by `peekInset` on each
+    /// side; all width/viewport/parking math reads `contentWidth`/
+    /// `contentOriginX` instead of the raw screen frame. Defaults to 0 in the
+    /// bare engine (the old edge-to-edge behavior, so unit tests are
+    /// unaffected); the production controller sets it from config
+    /// (`layout.peekInset`, default 48 ≈ the macOS clamp sliver + a little
+    /// breathing room).
+    var peekInset: CGFloat = 0
+
+    /// Left edge (AX global x) of the usable content region: the screen's
+    /// origin shifted right by the left peek lane.
+    var contentOriginX: CGFloat { screenFrame.origin.x + peekInset }
+
+    /// Usable content width: the screen width minus a peek lane on each side.
+    /// Floored at `minColumnWidth` so an absurd inset can never collapse it to
+    /// nothing. With `peekInset == 0` this is exactly `screenFrame.width`.
+    var contentWidth: CGFloat { max(minColumnWidth, screenFrame.width - 2 * peekInset) }
+
     /// How the viewport follows the focused column.
     enum FocusMode: String, CaseIterable {
         /// Always center the focused column in the viewport (original behavior).
@@ -521,26 +548,30 @@ final class TeleportEngine {
     ///        offscreen, then scroll the minimum amount to fully reveal it,
     ///        aligning to whichever edge it overflowed.
     func viewportTarget(for slot: Slot, mode: FocusMode, currentViewportX: CGFloat) -> CGFloat {
+        // The viewport is the usable CONTENT region (screen minus a peek lane on
+        // each side), so all comparisons use `contentWidth`, not the raw screen
+        // width. With `peekInset == 0` this is identical to the old behavior.
+        let V = contentWidth
         switch mode {
         case .centered:
-            let target = slot.canvasX - (screenFrame.width - slot.width) / 2
-            // viewportX 0 maps the strip's leading `gap` margin to the screen
-            // edge, so 0 is the leftmost meaningful scroll position.
+            let target = slot.canvasX - (V - slot.width) / 2
+            // viewportX 0 maps the strip's leading `gap` margin to the content
+            // region's left edge, so 0 is the leftmost meaningful scroll position.
             return max(0, target)
 
         case .fit:
             let viewLeft = currentViewportX
-            let viewRight = currentViewportX + screenFrame.width
+            let viewRight = currentViewportX + V
             let slotLeft = slot.canvasX
             let slotRight = slot.canvasX + slot.width
 
-            if slot.width >= screenFrame.width {
-                // Wider than the screen: align its left edge (with a small gap)
-                // so the start of the window is visible. Clamp at 0 like the
-                // other branches: viewportX 0 already maps the strip's leading
-                // `gap` margin to the screen edge, so 0 is the leftmost
-                // meaningful scroll position and a negative offset would push
-                // the strip's start off the left of the screen.
+            if slot.width >= V {
+                // Wider than the content region: align its left edge (with a
+                // small gap) so the start of the window is visible. Clamp at 0
+                // like the other branches: viewportX 0 already maps the strip's
+                // leading `gap` margin to the content region's left edge, so 0 is
+                // the leftmost meaningful scroll position and a negative offset
+                // would push the strip's start off the left of the content area.
                 return max(0, slotLeft - gap)
             }
             if slotLeft < viewLeft {
@@ -551,7 +582,7 @@ final class TeleportEngine {
             }
             if slotRight > viewRight {
                 // Overflows right: bring its right edge to the viewport's right.
-                return slotRight - screenFrame.width + gap
+                return slotRight - V + gap
             }
             // Already fully visible: don't move.
             return currentViewportX
@@ -607,25 +638,28 @@ final class TeleportEngine {
     }
 
     /// Where a slot's window should actually be placed. If the column is at
-    /// least partly within the viewport, that is its natural strip position.
-    /// If it is fully off-screen, park it on the SIDE it scrolled off: columns
-    /// past the left edge collapse to a left-edge sliver, columns past the right
-    /// edge to a right-edge sliver (see `teleport` and `parkingX(prefer:)`). The
-    /// window keeps its natural vertical band (`slot.y`) and only slides off the
-    /// side, so the macOS clamp leaves a thin FULL-HEIGHT peek at that edge where
-    /// the content went, instead of a small nub in a corner.
+    /// least partly within the usable CONTENT region (the viewport inset by a
+    /// peek lane on each side), that is its natural strip position - mapped via
+    /// `contentOriginX` so on-screen content NEVER covers the side peek lanes.
+    /// If it is fully outside the content region, park it on the SIDE it
+    /// scrolled off: columns past the left edge collapse to a left-edge sliver,
+    /// columns past the right edge to a right-edge sliver (see `teleport` and
+    /// `parkingX(prefer:)`). The window keeps its natural vertical band
+    /// (`slot.y`) and only slides off the side, so the macOS clamp leaves a thin
+    /// FULL-HEIGHT peek at that edge where the content went, inside the reserved
+    /// lane (uncovered by on-screen columns), instead of a small nub in a corner.
     func onScreenTarget(for slot: Slot) -> CGPoint {
-        let left = slot.canvasX - viewportX           // viewport-relative left
+        let left = slot.canvasX - viewportX           // content-relative left
         let right = left + slot.width
         if right <= 0 {
-            // Scrolled fully off the LEFT: slide off the left edge, keep `y`.
+            // Scrolled fully off the LEFT of the content region: park left.
             return CGPoint(x: parkingX(prefer: .left), y: slot.y)
         }
-        if left >= screenFrame.width {
-            // Scrolled fully off the RIGHT: slide off the right edge, keep `y`.
+        if left >= contentWidth {
+            // Scrolled fully off the RIGHT of the content region: park right.
             return CGPoint(x: parkingX(prefer: .right), y: slot.y)
         }
-        return CGPoint(x: screenFrame.origin.x + slot.canvasX - viewportX, y: slot.y)
+        return CGPoint(x: contentOriginX + slot.canvasX - viewportX, y: slot.y)
     }
 
     /// Full AX-frame (top-left origin) of the display the strip lives on. Set by
@@ -790,7 +824,9 @@ final class TeleportEngine {
         for (i, slot) in slots.enumerated() where i != focusIndex {
             let left = slot.canvasX - viewportX
             let right = left + slot.width
-            if right > 0 && left < screenFrame.width {
+            // On-screen == at least partly within the usable content region
+            // (matches `onScreenTarget`'s parking boundary, `contentWidth`).
+            if right > 0 && left < contentWidth {
                 onscreen.append(i)
             } else {
                 offscreen.append(i)
@@ -828,7 +864,10 @@ final class TeleportEngine {
         StripState(
             slots: slots.map { ($0.window.id, $0.window.appName, $0.window.title, $0.canvasX, $0.width, $0.window.healthy) },
             viewportX: viewportX,
-            viewportWidth: screenFrame.width,
+            // Report the usable CONTENT width (screen minus the peek lanes), so
+            // the menu-bar mini-map's "in viewport" span matches what the strip
+            // actually shows. With `peekInset == 0` this is `screenFrame.width`.
+            viewportWidth: contentWidth,
             focusIndex: focusIndex,
             lastTeleportMs: lastTeleportMs,
             activeWorkspace: activeWorkspace,

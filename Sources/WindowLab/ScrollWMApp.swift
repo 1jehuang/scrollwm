@@ -158,6 +158,7 @@ final class ScrollWMController: NSObject {
             let engine = strip.engine
             engine.gap = config.layout.columnGap
             engine.minColumnWidth = config.layout.minColumnWidth
+            engine.peekInset = config.layout.peekInset
             engine.widthPresets = config.layout.widthPresets
             engine.spawnWidthFraction = config.layout.spawnWidth
             engine.fillHeight = config.layout.fillHeight
@@ -1059,6 +1060,13 @@ final class ScrollWMController: NSObject {
 
     /// The strip's current usable (visible) frame in AX global coords.
     var debugScreenFrame: CGRect { engine.screenFrame }
+    /// Peek lane (px) reserved at each screen edge for parked-window slivers.
+    var debugPeekInset: CGFloat { engine.peekInset }
+    /// The usable content region (screen inset by the peek lane on each side),
+    /// in AX global coords. On-screen columns are confined to this rect's x-span.
+    var debugContentRegionX: (origin: CGFloat, width: CGFloat) {
+        (engine.contentOriginX, engine.contentWidth)
+    }
     /// Full AX frame of the display the strip is bound to (parking reference).
     var debugStripDisplayFrame: CGRect? { engine.stripDisplayFrame }
     /// Full AX frames of every OTHER display (drives the parking-corner choice).
