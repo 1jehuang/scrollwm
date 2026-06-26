@@ -366,6 +366,15 @@ final class SimWindowWorld: WindowBackend {
         wins.first { CFEqual($0.element, element) }
     }
 
+    /// The configured display whose visible frame contains `origin` (the
+    /// window's top-left), or the one whose right edge is nearest when the
+    /// origin sits in a gap. Used by the resize-constraint model to know which
+    /// edge a window can grow toward. Nil only when no displays are configured.
+    private func displayContaining(_ origin: CGPoint) -> CGRect? {
+        if let hit = displays.first(where: { $0.contains(origin) }) { return hit }
+        return displays.min { abs($0.minX - origin.x) < abs($1.minX - origin.x) }
+    }
+
     /// Model the macOS clamp that keeps ~`clampMargin` px of a window on SOME
     /// display. A position far past a display edge is pulled back so a thin
     /// sliver of the window stays visible at the nearest display's edge (the

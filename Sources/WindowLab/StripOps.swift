@@ -76,6 +76,30 @@ extension TeleportEngine {
             // SAME time as the width so the app has enough vertical room to
             // preserve its aspect ratio while growing horizontally.
             let requestedHeight = fillHeight ? screenFrame.height : slot.height
+
+            // CRUCIAL ORDERING: move the window to where the (wider) column will
+            // sit BEFORE resizing it. macOS/AppKit curtails an in-place resize at
+            // the display's visible-frame edge (`constrainFrameRect`), so a window
+            // anchored near the RIGHT edge could otherwise only grow until its
+            // right edge met the screen edge - the reported "expand to 100% only
+            // fills to the viewport edge instead of resizing the window fully and
+            // scrolling to it" bug. Re-pack with the requested width, compute the
+            // focused column's scrolled (left-anchored) on-screen origin, and
+            // place the window there first, giving it room to the right to reach
+            // the full requested width. The viewport then follows it into view.
+            compactStrip()
+            let preViewportX = clampViewportX(
+                viewportTarget(for: slots[focusIndex], mode: focusMode, currentViewportX: viewportX))
+            let preTarget = CGPoint(x: contentOriginX + slots[focusIndex].canvasX - preViewportX,
+                                    y: slots[focusIndex].y)
+            let needsMove = slot.window.lastCommittedOrigin.map {
+                abs($0.x - preTarget.x) > 0.5 || abs($0.y - preTarget.y) > 0.5
+            } ?? true
+            if needsMove,
+               AXSource.setPoint(slot.window.element, kAXPositionAttribute as String, preTarget) == .success {
+                slot.window.lastCommittedOrigin = preTarget
+            }
+
             _ = AXSource.setSize(
                 slot.window.element,
                 kAXSizeAttribute as String,

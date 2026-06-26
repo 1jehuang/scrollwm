@@ -448,6 +448,116 @@ func runHeadlessOpsTest() {
         world.setSystemFocus(engine.slots[engine.focusIndex].window.element)
     }
 
+    // --- DISPLAY-CONSTRAINED RESIZE: a RIGHT-edge window must grow to FULL
+    // width, not just to the screen edge. The reported bug: with two 50%
+    // columns, focus the RIGHT one and hit 100%; macOS curtails an in-place
+    // resize at the display's right edge (`constrainFrameRect`), so the window
+    // could only fill the remaining viewport space. The engine must REPOSITION
+    // the window left (room to the right) BEFORE resizing, then scroll the
+    // viewport so the now-full-width window is fully visible. We turn on the
+    // sim's `constrainResizeToDisplay` to reproduce the real macOS curtailing. ---
+    do {
+        let display = Headless.defaultVisibleFrame
+        let cEngine = TeleportEngine(screenFrame: display)
+        cEngine.peekInset = 48
+        cEngine.stripDisplayFrame = Headless.defaultFullFrame
+        world.displays = [Headless.defaultFullFrame]
+        world.constrainResizeToDisplay = true
+        let basePID: pid_t = 5780
+        let lEl = world.addWindow(pid: basePID, title: "ConL",
+                                  frame: CGRect(x: 60, y: 80, width: 360, height: 500))
+        let rEl = world.addWindow(pid: basePID + 1, title: "ConR",
+                                  frame: CGRect(x: 460, y: 80, width: 360, height: 500))
+        let cm = IdentityMatcher.match(
+            axWindows: [basePID, basePID + 1].flatMap { AXSource.windows(forPID: $0) },
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+        ).filter { [basePID, basePID + 1].contains($0.ax.pid) }
+        cEngine.adopt(matched: cm)
+        guard cEngine.slots.count == 2 else {
+            t.check("constrained-resize: adopted two columns", false)
+            world.constrainResizeToDisplay = false; world.displays = []
+            return
+        }
+        // Make both 50%.
+        for i in 0..<2 {
+            cEngine.focusIndex = i
+            world.setSystemFocus(cEngine.slots[i].window.element)
+            cEngine.setFocusedWidth(fraction: 0.5)
+            Headless.pump(0.02)
+        }
+        // Focus the RIGHT column and grow to 100%.
+        cEngine.focusIndex = 1
+        world.setSystemFocus(cEngine.slots[1].window.element)
+        let want100 = cEngine.width(forFraction: 1.0)
+        cEngine.setFocusedWidth(fraction: 1.0)
+        Headless.pump(0.1)
+        let liveR = world.frame(of: rEl)?.width ?? 0
+        t.check("constrained-resize: right window grew to FULL width, not the screen edge (\(Int(want100)))",
+                abs(liveR - want100) <= 2)
+        t.check("constrained-resize: model width matches the live full width",
+                abs(cEngine.slots[1].width - liveR) <= 2)
+        let s = cEngine.slots[cEngine.focusIndex]
+        let visLeft = s.canvasX - cEngine.viewportX
+        let visRight = visLeft + s.width
+        t.check("constrained-resize: viewport scrolled so the full-width window is fully visible",
+                visLeft >= -1 && visRight <= cEngine.contentWidth + 1)
+        // Cleanup shared sim state.
+        world.constrainResizeToDisplay = false
+        world.displays = []
+        world.destroyWindow(lEl, notify: false)
+        world.destroyWindow(rEl, notify: false)
+        world.setSystemFocus(engine.slots[engine.focusIndex].window.element)
+    }
+
+    // --- CLOSE PULL-IN: closing a column that leaves the viewport parked over
+    // dead space to the RIGHT must scroll the strip back so the remaining
+    // windows fill the gap. The user's "closing a window should sometimes move
+    // the viewport" report: with the viewport scrolled to the strip's trailing
+    // edge, closing the focused (rightmost) column shrinks the strip; without a
+    // pull-in the viewport would hang over emptiness. ---
+    do {
+        let pEngine = TeleportEngine(screenFrame: Headless.defaultVisibleFrame)
+        pEngine.peekInset = 48
+        let basePID: pid_t = 5820
+        var els: [AXUIElement] = []
+        for i in 0..<4 {
+            els.append(world.addWindow(pid: basePID + pid_t(i), title: "Pull-\(i)",
+                                       frame: CGRect(x: 40 + CGFloat(i) * 420, y: 80,
+                                                     width: 700, height: 500)))
+        }
+        let pm = IdentityMatcher.match(
+            axWindows: (0..<4).flatMap { AXSource.windows(forPID: basePID + pid_t($0)) },
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+        ).filter { (basePID..<(basePID + 4)).contains($0.ax.pid) }
+        pEngine.adopt(matched: pm)
+        guard pEngine.slots.count == 4 else {
+            t.check("close-pull-in: adopted four columns", false); return
+        }
+        // Scroll to the rightmost column: the viewport sits at the strip's
+        // trailing edge (maxViewportX).
+        pEngine.focusIndex = 3
+        world.setSystemFocus(pEngine.slots[3].window.element)
+        pEngine.focus(index: 3)
+        t.check("close-pull-in: viewport at the strip's trailing edge before close",
+                abs(pEngine.viewportX - pEngine.maxViewportX) < 1 && pEngine.viewportX > 1)
+        // Close the focused rightmost column. The strip shrinks; the viewport
+        // must pull in so no dead space is left to the right.
+        _ = pEngine.closeFocused()
+        Headless.pump(0.05)
+        t.check("close-pull-in: a column was removed", pEngine.slots.count == 3)
+        t.check("close-pull-in: viewport never sits past the strip's trailing edge",
+                pEngine.viewportX <= pEngine.maxViewportX + 0.5)
+        // Right edge of the last column must not leave a gap wider than the
+        // peek lane on the right side of the content region.
+        if let last = pEngine.slots.last {
+            let lastRight = last.canvasX + last.width - pEngine.viewportX
+            t.check("close-pull-in: last column reaches the content region's right edge (no dead space)",
+                    lastRight >= pEngine.contentWidth - pEngine.gap - 1)
+        }
+        for el in els { world.destroyWindow(el, notify: false) }
+        world.setSystemFocus(engine.slots[engine.focusIndex].window.element)
+    }
+
     // --- CLOSE: close focused window, verify it disappears ---
     let closeTitle = engine.slots[engine.focusIndex].window.title
     world.setSystemFocus(engine.slots[engine.focusIndex].window.element)
