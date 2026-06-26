@@ -313,6 +313,7 @@ default:
       scrollwm focus-mode [fit|centered]
                                    get/set how the viewport follows focus
       scrollwm reload              re-read the config file live
+      scrollwm skills              report core keybindings you've stopped using
       scrollwm update [--install]  check GitHub for a newer release (and install it)
       scrollwm tutorial            open the in-app cheat sheet
       scrollwm quit                restore windows and quit the app

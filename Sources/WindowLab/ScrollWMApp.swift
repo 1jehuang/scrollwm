@@ -55,6 +55,15 @@ final class ScrollWMController: NSObject {
     /// sandbox/tests so they never phone home.
     private var updateCoordinator: UpdateCoordinator?
 
+    /// Per-action keybinding-proficiency history. Tracks whether the user drives
+    /// each core action by its keybinding or by the pointer (menu) fallback, so
+    /// we can detect when a once-mastered shortcut has been "unlearned" (reverted
+    /// to clicking the menu). Created ONLY by the production `run` path
+    /// (`startSkillTracking()`); nil in sandbox/headless/tests so they never
+    /// write the user's real history. All decisions live in the pure
+    /// `KeybindingProficiency`.
+    private var skillTracker: SkillTracker?
+
     /// Pending coalesced re-evaluation of a display change. macOS fires
     /// `didChangeScreenParameters` SEVERAL times in quick succession for a
     /// single hotplug / resolution change (each intermediate arrangement is its
@@ -543,11 +552,89 @@ final class ScrollWMController: NSObject {
     /// caller supply the exact chord that fired (e.g. the jump digit), otherwise
     /// the action's first configured chord is shown. No-op unless enabled.
     func flashKeybinding(_ action: KeyAction, chordOverride: String? = nil) {
+        // Skill tracking is independent of the visual hint: record EVERY
+        // keyboard-driven invocation (this is the single seam every hotkey
+        // handler funnels through) before the flash, so proficiency is measured
+        // even when the menu-bar key-hint HUD is turned off.
+        recordKeyboardUse(action)
         guard config.menuBar.showKeyHints else { return }
         let chord = chordOverride ?? (config.keybindings[action] ?? KeyAction.defaultChords[action] ?? [])
             .first.map(TutorialWindowController.pretty) ?? ""
         menuBar.flashKeyHint(chord: chord, action: action.displayName)
     }
+
+    // MARK: - Keybinding proficiency ("are you still using the shortcut?")
+
+    /// Construct the on-disk skill tracker. Called ONLY from the production
+    /// `run` path so sandbox/headless/tests (which never invoke it) leave the
+    /// user's real history untouched. Idempotent.
+    func startSkillTracking() {
+        guard skillTracker == nil, AXSource.backend == nil else { return }
+        skillTracker = SkillTracker()
+    }
+
+    /// Record that the user invoked `action` via its KEYBINDING. No-op until the
+    /// tracker is started (sandbox/tests), so the hot keypress path stays cheap.
+    private func recordKeyboardUse(_ action: KeyAction) {
+        skillTracker?.record(action, channel: .keyboard)
+    }
+
+    /// Record that the user invoked `action` via a POINTER fallback (the menu),
+    /// and gently nudge them about the keybinding the FIRST time an action slips
+    /// from "proficient" toward "unlearned" — never on a steady state, so it is
+    /// not nagging. Returns nothing; the nudge is a non-modal menu-bar flash.
+    /// Public so the menu-bar handlers (the pointer channel) can report the
+    /// menu-clicked equivalent of a keybinding.
+    func recordPointerUse(_ action: KeyAction) {
+        guard let regression = skillTracker?.record(action, channel: .pointer) else { return }
+        nudgeRustyKeybinding(regression)
+    }
+
+    /// Surface a rusty/unlearned keybinding as a brief, non-intrusive menu-bar
+    /// flash: the chord they used to press and a short "still works" hint. Uses
+    /// the same HUD as the key-hint flash so it costs nothing extra and never
+    /// steals focus or pops a modal.
+    private func nudgeRustyKeybinding(_ regression: SkillTracker.Regression) {
+        guard config.menuBar.showKeyHints else { return }
+        let chord = (config.keybindings[regression.action]
+                     ?? KeyAction.defaultChords[regression.action] ?? [])
+            .first.map(TutorialWindowController.pretty) ?? ""
+        guard !chord.isEmpty else { return }
+        let verb = regression.level == .unlearned ? "still works" : "tip"
+        menuBar.flashKeyHint(chord: chord, action: "\(regression.action.displayName) · \(verb)")
+    }
+
+    /// One-line, human-readable proficiency report for the `scrollwm skills`
+    /// CLI and tests. Lists the keybindings the user has stopped using (worst
+    /// first), or a friendly "all good" when nothing has regressed.
+    func skillReport() -> String {
+        guard let tracker = skillTracker else {
+            return "skill tracking not active (only the running app records usage)"
+        }
+        let regressed = tracker.regressedActions()
+        guard !regressed.isEmpty else {
+            return "ok: no rusty keybindings — you're driving every action by shortcut"
+        }
+        let lines = regressed.map { item -> String in
+            let chord = (config.keybindings[item.action]
+                         ?? KeyAction.defaultChords[item.action] ?? [])
+                .first.map(TutorialWindowController.pretty) ?? "?"
+            return "  \(item.level.rawValue.uppercased()): \(item.action.displayName) (\(chord))"
+        }
+        return "rusty keybindings (you've drifted back to the menu):\n" + lines.joined(separator: "\n")
+    }
+
+    /// A one-line menu hint for the single rustiest keybinding, or nil when the
+    /// user is keeping all their shortcuts sharp (or tracking is off). Drives the
+    /// optional "Tip: …" row in the menu so the nudge is glanceable, not modal.
+    var rustyKeybindingHint: String? {
+        guard let top = skillTracker?.regressedActions().first else { return nil }
+        let chord = (config.keybindings[top.action] ?? KeyAction.defaultChords[top.action] ?? [])
+            .first.map(TutorialWindowController.pretty) ?? "?"
+        let lead = top.level == .unlearned ? "Forgotten shortcut" : "Rusty shortcut"
+        return "\(lead): \(top.action.displayName) is \(chord)"
+    }
+
 
     // MARK: - Arrange / Release
 
@@ -849,6 +936,7 @@ final class ScrollWMController: NSObject {
 
     func quit() {
         stopControlServer()
+        skillTracker?.flush()
         release()
         // If a verified update is staged for on-quit application, launch the
         // detached swapper now: windows have just been restored by release(),
@@ -1682,6 +1770,15 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         help.isEnabled = false
         menu.addItem(help)
 
+        // Gentle, non-modal nudge: if the user has mastered a core shortcut and
+        // then drifted back to the menu for it, show the keybinding they've
+        // stopped using. Disabled (info-only) row; absent when all sharp.
+        if let rusty = controller.rustyKeybindingHint {
+            let tip = NSMenuItem(title: "💡 \(rusty)", action: nil, keyEquivalent: "")
+            tip.isEnabled = false
+            menu.addItem(tip)
+        }
+
         let tutorial = NSMenuItem(title: "How to Use ScrollWM…", action: #selector(showTutorial), keyEquivalent: "")
         tutorial.target = self
         menu.addItem(tutorial)
@@ -1711,7 +1808,11 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         menu.addItem(quitItem)
     }
 
-    @objc private func selectWindow(_ sender: NSMenuItem) { controller.focus(index: sender.tag) }
+    @objc private func selectWindow(_ sender: NSMenuItem) {
+        // Pointer equivalent of the jump-to-column keybinding (⌃⌥+digit).
+        controller.recordPointerUse(.jumpModifier)
+        controller.focus(index: sender.tag)
+    }
     @objc private func selectFloating(_ sender: NSMenuItem) {
         let floating = controller.floatingWindows
         guard floating.indices.contains(sender.tag) else { return }
@@ -1719,8 +1820,19 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         controller.tileFloating(floating[sender.tag])
     }
     @objc private func tileAllFloatingAction() { controller.tileAllFloating() }
-    @objc private func arrangeAction() { controller.arrange() }
-    @objc private func releaseAction() { controller.release() }
+    @objc private func arrangeAction() {
+        // Clicking "Arrange" from a dormant state is the pointer equivalent of
+        // the arrange/release toggle key; while already managing this item just
+        // re-syncs (no keybinding equivalent), so only the toggle counts.
+        let wasDormant = !controller.isManaging
+        controller.arrange()
+        if wasDormant, controller.isManaging { controller.recordPointerUse(.toggleArrange) }
+    }
+    @objc private func releaseAction() {
+        // Release is the pointer equivalent of the arrange/release toggle key.
+        controller.recordPointerUse(.toggleArrange)
+        controller.release()
+    }
     @objc private func showAllAction() { controller.showAllWindows() }
     @objc private func arrangeAllAction() { controller.arrangeAllWindows() }
     @objc private func setFocusModeAction(_ sender: NSMenuItem) {
@@ -1782,6 +1894,7 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         print("ScrollWM running (dormant). Use the menu bar item, the toggle key, or the `scrollwm` CLI to arrange.")
         controller.showTutorialOnFirstRunIfNeeded()
         controller.startUpdates()
+        controller.startSkillTracking()
         if selftest { runScrollWMSelftest(controller: controller) }
         if crashPhase == .crash { runCrashPhase(controller: controller) }
     }

@@ -131,6 +131,11 @@ extension ScrollWMController {
             showTutorial()
             return "ok: opened tutorial"
 
+        case "skills", "proficiency":
+            // Report keybindings the user has mastered then drifted away from
+            // (back to the menu). See `KeybindingProficiency`.
+            return skillReport()
+
         case "update", "update-check":
             // `scrollwm update` checks; `scrollwm update --install` applies it.
             let install = args.contains("--install") || args.contains("install")
@@ -142,7 +147,7 @@ extension ScrollWMController {
             return "ok: quitting (windows restored)"
 
         default:
-            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close display focus-mode reload update quit"
+            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close display focus-mode reload skills update quit"
         }
     }
 
