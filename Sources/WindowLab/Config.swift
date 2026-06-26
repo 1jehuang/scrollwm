@@ -76,6 +76,16 @@ struct ScrollWMConfig: Equatable {
         /// you learn the bindings as you use them. On by default; set false to
         /// keep the icon as a pure mini-map.
         var showKeyHints: Bool = true
+        /// Claim (and keep reclaiming) the highest-priority menu-bar slot: the
+        /// one nearest the system cluster (clock / Control Center). macOS hides
+        /// third-party status items left-to-right when the bar runs out of room,
+        /// so the rightmost third-party slot is the LAST to disappear. With this
+        /// on (the default), ScrollWM pins itself there and, if it ever gets
+        /// pushed out, re-seeds that same top slot instead of drifting left into
+        /// a lower-priority position. The effect: ScrollWM stays visible even on
+        /// a crowded bar where other status icons get hidden. Set false to let it
+        /// behave like an ordinary item (and to respect a manual drag elsewhere).
+        var pinHighPriority: Bool = true
     }
 
     /// In-app updater behavior. ScrollWM checks GitHub Releases for a newer
@@ -179,6 +189,7 @@ struct ScrollWMConfig: Equatable {
                 "minWidth": Double(menuBar.minWidth),
                 "maxWidth": Double(menuBar.maxWidth),
                 "showKeyHints": menuBar.showKeyHints,
+                "pinHighPriority": menuBar.pinHighPriority,
             ],
             "update": [
                 "enabled": update.enabled,
@@ -247,6 +258,7 @@ struct ScrollWMConfig: Equatable {
             if let n = mb["minWidth"] as? NSNumber { config.menuBar.minWidth = CGFloat(n.doubleValue) }
             if let x = mb["maxWidth"] as? NSNumber { config.menuBar.maxWidth = CGFloat(x.doubleValue) }
             if let h = mb["showKeyHints"] as? Bool { config.menuBar.showKeyHints = h }
+            if let pin = mb["pinHighPriority"] as? Bool { config.menuBar.pinHighPriority = pin }
             // Keep the clamps sane regardless of what's in the file.
             config.menuBar.pointsPerScreen = max(8, config.menuBar.pointsPerScreen)
             config.menuBar.minWidth = max(12, config.menuBar.minWidth)
@@ -397,13 +409,14 @@ struct ScrollWMConfig: Equatable {
       // Menu-bar mini-map sizing. The icon GROWS with the strip instead of
       // being a fixed width, so a 25%/50%/75%/100% column is always the same
       // size on the map no matter how many windows you have. As you open more
-      // windows the icon widens, until it reaches maxWidth — then the whole
+      // windows the icon widens, until it reaches maxWidth, then the whole
       // strip compresses to fit so it never takes over the menu bar.
       "menuBar": {
         "pointsPerScreen": 30,    // icon px that ONE full screen of strip maps to
         "minWidth": 30,           // px the icon never shrinks below (empty strip)
         "maxWidth": 220,          // px cap; past this the map compresses to fit
-        "showKeyHints": true      // flash the chord + action (e.g. "⌘L Focus →") on each keypress
+        "showKeyHints": true,     // flash the chord + action (e.g. "⌘L Focus →") to the RIGHT of the icon on each keypress
+        "pinHighPriority": true   // keep ScrollWM in the highest-priority menu-bar slot so it stays visible even when the bar is crowded
       },
 
       // In-app updates. ScrollWM checks GitHub Releases so you actually receive

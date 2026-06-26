@@ -504,6 +504,19 @@ enum StripOpsTests {
             check("config fillHeight defaults when unset", pUnset.layout.fillHeight == true)
         } catch { check("config fillHeight parses", false) }
 
+        // menuBar.pinHighPriority: defaults on, parses an explicit override,
+        // and round-trips through encode -> parse.
+        check("config menuBar.pinHighPriority defaults on",
+              ScrollWMConfig.default.menuBar.pinHighPriority == true)
+        check("config menuBar.showKeyHints defaults on",
+              ScrollWMConfig.default.menuBar.showKeyHints == true)
+        do {
+            let p = try ScrollWMConfig.parse(jsonc: #"{ "menuBar": { "pinHighPriority": false } }"#)
+            check("config menuBar.pinHighPriority false parsed", p.menuBar.pinHighPriority == false)
+            let pUnset = try ScrollWMConfig.parse(jsonc: #"{ "menuBar": { } }"#)
+            check("config menuBar.pinHighPriority defaults when unset", pUnset.menuBar.pinHighPriority == true)
+        } catch { check("config menuBar.pinHighPriority parses", false) }
+
         // Malformed JSON throws (caller falls back to defaults).
         var threw = false
         do { _ = try ScrollWMConfig.parse(jsonc: "{ not json ]") } catch { threw = true }

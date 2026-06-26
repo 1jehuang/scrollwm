@@ -317,8 +317,14 @@ final class MenuBarStripView: NSView {
     private var lastStripContentWidth: CGFloat = 30
     /// Font for the HUD text + its width measurement (kept in sync).
     private static let hintFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
-    /// Horizontal padding inside the icon around the HUD text (points, per side).
-    private let hudHInset: CGFloat = 5
+    /// Trailing padding after the HUD text before the icon's right edge (points).
+    private let hudTrailingInset: CGFloat = 5
+    /// Gap between the mini-map and the HUD text drawn to its right (points).
+    private let hintGap: CGFloat = 6
+    /// How much WIDER than `maxContentWidth` the icon may grow to fit the
+    /// transient key-hint text appended to the right of the mini-map. The strip
+    /// itself still self-limits to `maxContentWidth`; this only covers the HUD.
+    static let maxHintExtraWidth: CGFloat = 220
 
     /// Flash a key-hint over the icon: the chord just pressed + the action it
     /// triggered (e.g. "⌘L" / "Focus →"). The icon grows to fit, holds, then
@@ -415,21 +421,23 @@ final class MenuBarStripView: NSView {
         needsDisplay = true
     }
 
-    /// Width (points) the icon needs to show the current HUD text, clamped to
-    /// the configured max. Falls back to the strip width when no HUD is active.
-    private func hudContentWidth() -> CGFloat {
-        guard let hintText else { return lastStripContentWidth }
+    /// Extra width (points) the HUD text needs to the RIGHT of the mini-map:
+    /// the gap, the measured text, and a trailing inset. Zero when no HUD is up.
+    /// The mini-map keeps its own width; this is appended, never substituted.
+    private func hintTrailingWidth() -> CGFloat {
+        guard let hintText else { return 0 }
         let size = (hintText as NSString).size(withAttributes: [.font: Self.hintFont])
-        return min(ceil(size.width) + hudHInset * 2, maxContentWidth)
+        return min(hintGap + ceil(size.width) + hudTrailingInset, Self.maxHintExtraWidth)
     }
 
     /// Report the icon's desired CONTENT width to the host (status-item length).
-    /// The HUD, when active, can grow the icon past the strip width to fit its
-    /// text; otherwise the strip's own desired width drives it. Thresholded so
-    /// we only resize the status item on a real change (relayout is not free).
+    /// The HUD, when active, APPENDS its text to the right of the mini-map (the
+    /// strip keeps its full width); otherwise the strip's own desired width
+    /// drives it. Thresholded so we only resize the status item on a real change
+    /// (relayout is not free).
     private func reportDesiredWidthIfChanged() {
         var desired = lastStripContentWidth
-        if hintText != nil { desired = max(desired, hudContentWidth()) }
+        if hintText != nil { desired += hintTrailingWidth() }
         if abs(desired - lastReportedContentWidth) >= 1 {
             lastReportedContentWidth = desired
             onDesiredContentWidthChange?(desired)
@@ -606,21 +614,33 @@ final class MenuBarStripView: NSView {
         let live = 1 - modeFade.value      // dormant weight
         let managingWeight = modeFade.value
 
-        // The mini-map dims under the HUD so the text reads cleanly, then
-        // returns as the HUD fades. hintFade is 0 when no HUD is active.
+        // The key-hint is drawn to the RIGHT of the mini-map, never on top of
+        // it: the windows graphic keeps its own region on the left at full
+        // brightness, and the icon simply grows to make room for the HUD text.
         let hud = hintText != nil ? CGFloat(hintFade.value) : 0
-        let mapAlpha = 1 - hud
+        let trailing = hintTrailingWidth()  // 0 when no HUD text is set
+        // The mini-map keeps the same pixel width it has with no HUD: the icon
+        // grew by exactly `trailing` to host the text, so the leftover is the
+        // map's region. Clamp so a one-frame resize lag can't squish the map.
+        let mapW = trailing > 0 ? max(bounds.width - trailing, 0) : bounds.width
+        let mapRect = NSRect(x: bounds.minX, y: bounds.minY, width: mapW, height: bounds.height)
 
-        if live > 0.01 { drawDormant(alpha: live * mapAlpha) }
-        if managingWeight > 0.01 { drawStrip(alpha: managingWeight * mapAlpha) }
-        if hud > 0.01, let hintText { drawKeyHint(hintText, alpha: hud) }
+        if live > 0.01 { drawDormant(in: mapRect, alpha: live) }
+        if managingWeight > 0.01 { drawStrip(in: mapRect, alpha: managingWeight) }
+        if hud > 0.01, let hintText {
+            let hintRect = NSRect(x: mapRect.maxX, y: bounds.minY,
+                                  width: max(bounds.maxX - mapRect.maxX, 0),
+                                  height: bounds.height)
+            drawKeyHint(hintText, in: hintRect, alpha: hud)
+        }
     }
 
-    /// Draw the key-hint HUD: the chord + action centered over the icon. The
-    /// mini-map underneath is dimmed (see `draw`) so the label reads cleanly.
-    private func drawKeyHint(_ text: String, alpha: CGFloat) {
+    /// Draw the key-hint HUD: the chord + action, left-aligned in `rect`, which
+    /// is the region appended to the RIGHT of the mini-map. The map is never
+    /// covered or dimmed; the icon grew to make room for this text.
+    private func drawKeyHint(_ text: String, in rect: NSRect, alpha: CGFloat) {
         let para = NSMutableParagraphStyle()
-        para.alignment = .center
+        para.alignment = .left
         para.lineBreakMode = .byClipping
         let attrs: [NSAttributedString.Key: Any] = [
             .font: Self.hintFont,
@@ -630,18 +650,17 @@ final class MenuBarStripView: NSView {
         let str = text as NSString
         let size = str.size(withAttributes: [.font: Self.hintFont])
         let textRect = NSRect(
-            x: 0, y: (bounds.height - size.height) / 2,
-            width: bounds.width, height: size.height)
+            x: rect.minX, y: rect.minY + (rect.height - size.height) / 2,
+            width: rect.width, height: size.height)
         str.draw(in: textRect, withAttributes: attrs)
     }
 
-    private func drawDormant(alpha: Double) {
-        let rect = bounds
+    private func drawDormant(in rect: NSRect, alpha: Double) {
         let stroke = NSColor.secondaryLabelColor.withAlphaComponent(0.9 * alpha)
         stroke.setStroke()
         let colW: CGFloat = 7, gap: CGFloat = 2
         let totalW = colW * 2 + gap
-        let startX = (rect.width - totalW) / 2
+        let startX = rect.minX + (rect.width - totalW) / 2
         for i in 0..<2 {
             let r = NSRect(x: startX + CGFloat(i) * (colW + gap), y: vInset + 2,
                            width: colW, height: rect.height - (vInset + 2) * 2)
@@ -652,9 +671,9 @@ final class MenuBarStripView: NSView {
         }
     }
 
-    private func drawStrip(alpha: Double) {
+    private func drawStrip(in contentRect: NSRect, alpha: Double) {
         guard !slots.isEmpty else { return }
-        let rect = bounds.insetBy(dx: hInset, dy: 0)
+        let rect = contentRect.insetBy(dx: hInset, dy: 0)
 
         // Canvas range from the animated geometry (union of columns + viewport).
         var minX = viewportX.value
