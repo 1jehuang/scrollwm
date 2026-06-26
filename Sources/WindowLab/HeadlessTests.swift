@@ -280,6 +280,40 @@ func runHeadlessOpsTest() {
     t.check("focus-sync close: a real (sim) window actually closed",
             liveWindows().count == beforeFocusSyncClose - 1)
 
+    // --- FOCUS ON UNMANAGED WINDOW: Cmd+Q must NOT close a strip window ---
+    // Repro for "I was focused on Discord, pressed Cmd+Q, and it closed the
+    // right-hand strip window instead of quitting Discord." When the OS keyboard
+    // focus is on a window ScrollWM does NOT manage (clicked an unarranged app,
+    // or one on another Space), closeFocused must no-op so the keystroke reaches
+    // that app — never fall back to the stale focusIndex and close a strip window.
+    do {
+        let unmanaged = world.addWindow(
+            pid: 8888, title: "UnmanagedApp",
+            frame: CGRect(x: 4000, y: 4000, width: 800, height: 600),
+            appName: "UnmanagedApp")
+        let slotsBefore = engine.slots.count
+        let titlesBefore = Set(engine.slots.map { $0.window.title })
+        let liveBefore = liveWindows().count
+        // Point the engine at the rightmost column (the one wrongly closed by the
+        // bug) and move the OS focus onto the unmanaged window.
+        engine.focusIndex = engine.slots.count - 1
+        world.setSystemFocus(unmanaged)
+        let closed = engine.closeFocused()
+        t.check("unmanaged-focus close: reports it did nothing", closed == false)
+        t.check("unmanaged-focus close: no strip column was closed",
+                engine.slots.count == slotsBefore)
+        t.check("unmanaged-focus close: the same strip windows remain",
+                Set(engine.slots.map { $0.window.title }) == titlesBefore)
+        t.check("unmanaged-focus close: no real (sim) window was closed",
+                liveWindows().count == liveBefore)
+        t.check("unmanaged-focus close: the unmanaged window is untouched",
+                world.snapshot().contains { CFEqual($0.element, unmanaged) })
+        // Cleanup so later assertions keep a clean world/focus.
+        world.destroyWindow(unmanaged, notify: false)
+        engine.focusIndex = 0
+        world.setSystemFocus(engine.slots[0].window.element)
+    }
+
     // --- FOCUS SYNC: width keys honor the live OS focus, not a stale index ---
     // Repro for "resize the window on the right but the wrong column grows / the
     // viewport never scrolls to fit it." Mirrors the closeFocused fix: clicking

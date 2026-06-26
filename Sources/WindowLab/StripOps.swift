@@ -343,10 +343,38 @@ extension TeleportEngine {
     /// Returns true when the live focused window was found among our slots.
     @discardableResult
     func syncFocusToSystemFocusedWindow() -> Bool {
-        guard !slots.isEmpty, let focused = AXSource.systemFocusedWindow() else { return false }
-        guard let idx = slots.firstIndex(where: { CFEqual($0.window.element, focused) }) else { return false }
+        if case .managed = reconcileFocusToSystem() { return true }
+        return false
+    }
+
+    /// The relationship between the live OS keyboard focus and the strip, used
+    /// to decide whether a "focused-window" op (close/resize/move) should act.
+    enum FocusReconcile {
+        /// The OS-focused window is one of our slots; `focusIndex` was updated to it.
+        case managed
+        /// The OS focus resolved to a window we do NOT manage (e.g. the user
+        /// clicked an unarranged app, or one on another Space). Acting on
+        /// `focusIndex` now would hit a window the user is not even on.
+        case unmanaged
+        /// The OS focus could not be resolved at all (nil). No evidence either
+        /// way, so callers fall back to the current `focusIndex` (also the path
+        /// the pure unit tests take, where there is no GUI focus).
+        case unresolved
+    }
+
+    /// Reconcile `focusIndex` with the live system keyboard focus and classify
+    /// the result. Focus may have moved outside ScrollWM (mouse click, Cmd+Tab)
+    /// since our last navigation, so `focusIndex` can be stale; this is the
+    /// single place that decides what the user is REALLY on.
+    @discardableResult
+    func reconcileFocusToSystem() -> FocusReconcile {
+        guard let focused = AXSource.systemFocusedWindow() else { return .unresolved }
+        guard !slots.isEmpty,
+              let idx = slots.firstIndex(where: { CFEqual($0.window.element, focused) }) else {
+            return .unmanaged
+        }
         focusIndex = idx
-        return true
+        return .managed
     }
 
     /// The AX window element that currently holds keyboard focus, system-wide,
@@ -367,7 +395,14 @@ extension TeleportEngine {
         // Honor the window the user is REALLY on: focus may have moved outside
         // ScrollWM (mouse click, Cmd+Tab) since our last navigation, so reconcile
         // `focusIndex` with the live system focus before deciding what to close.
-        syncFocusToSystemFocusedWindow()
+        //
+        // CRUCIAL: if the OS focus is on a window we do NOT manage (e.g. the user
+        // clicked Discord, which is not arranged, or is on another Space), we must
+        // NOT close a strip window. The keystroke (Cmd+Q) belongs to that focused
+        // app; acting on the stale `focusIndex` here would close the wrong window
+        // (the user's "Cmd+Q closed the right-hand window instead of quitting
+        // Discord" bug). Bail so the app receives Cmd+Q itself.
+        if case .unmanaged = reconcileFocusToSystem() { return false }
         guard slots.indices.contains(focusIndex) else { return false }
         let slot = slots[focusIndex]
         let element = slot.window.element
