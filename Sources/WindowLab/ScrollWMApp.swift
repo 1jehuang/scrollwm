@@ -11,8 +11,37 @@ import AppKit
 ///   5. After a crash/kill -9, next launch offers recovery from the restore file.
 ///   6. Accessibility only. No capture, no input monitoring.
 final class ScrollWMController: NSObject {
-    private var engine: TeleportEngine
-    private var lifecycle: LifecycleMonitor?
+    /// One independent scrolling strip per managed display. Always has at least
+    /// one entry; a single-display setup uses exactly one, so behavior matches
+    /// the historical single-engine controller. The strips share configuration
+    /// but each owns its own engine, viewport, workspaces, and lifecycle.
+    private var strips: [DisplayStrip]
+
+    /// Index into `strips` of the strip the user's focus is currently on. Global
+    /// navigation/width/move/workspace actions route to this strip, so a hotkey
+    /// acts on the monitor the user is looking at ("focus follows display").
+    /// Always a valid index into `strips`.
+    private var activeStripIndex = 0
+
+    /// The strip that currently owns user actions. Convenience over
+    /// `strips[activeStripIndex]`, clamped so it can never be out of range.
+    private var activeStrip: DisplayStrip {
+        if strips.indices.contains(activeStripIndex) { return strips[activeStripIndex] }
+        return strips[0]
+    }
+
+    /// The active strip's engine. The vast majority of controller code drives a
+    /// single strip (the focused one), so this computed accessor lets every
+    /// existing per-strip call site stay unchanged while the array holds the
+    /// rest. Paths that must touch EVERY display (arrange/release/display
+    /// geometry) iterate `strips` explicitly instead of using this.
+    private var engine: TeleportEngine { activeStrip.engine }
+
+    /// The active strip's lifecycle monitor (nil while that strip is dormant).
+    private var lifecycle: LifecycleMonitor? {
+        get { activeStrip.lifecycle }
+        set { activeStrip.lifecycle = newValue }
+    }
     private var menuBar: ProductionMenuBar!
     private let hotkeys = HotkeyManager()
     /// CLI control plane (Unix socket). Started only by the production `run`
@@ -36,12 +65,15 @@ final class ScrollWMController: NSObject {
     /// hotplug burst, short enough to feel instant.
     private let displayChangeDebounceInterval: TimeInterval = 0.25
 
-    /// Stable `CGDirectDisplayID` of the display the strip is currently bound to.
-    /// Tracked alongside the strip's geometry so `applySettledDisplayChange` can
-    /// follow the strip's PHYSICAL display by identity across an arrangement swap
-    /// or a large resolution change - cases pure geometry overlap gets wrong.
+    /// Stable `CGDirectDisplayID` of the display the ACTIVE strip is bound to.
+    /// Tracked per strip (see `DisplayStrip.displayID`) so `applySettledDisplayChange`
+    /// can follow each strip's PHYSICAL display by identity across an arrangement
+    /// swap or a large resolution change - cases pure geometry overlap gets wrong.
     /// Updated on every bind (`refreshDisplayGeometry`, `bindStripToDisplay`).
-    private var stripDisplayID: CGDirectDisplayID?
+    private var stripDisplayID: CGDirectDisplayID? {
+        get { activeStrip.displayID }
+        set { activeStrip.displayID = newValue }
+    }
 
     /// Lazily-created tutorial window controller (config-driven cheat sheet).
     private lazy var tutorial = TutorialWindowController(configProvider: { [weak self] in
@@ -86,7 +118,9 @@ final class ScrollWMController: NSObject {
             return CGRect(x: vf.origin.x, y: screen.frame.height - vf.maxY,
                           width: vf.width, height: vf.height)
         }()
-        engine = TeleportEngine(screenFrame: axFrame)
+        // Start with a single strip on the configured display. Additional
+        // strips for other displays are created lazily as they are arranged.
+        strips = [DisplayStrip(engine: TeleportEngine(screenFrame: axFrame))]
         super.init()
 
         applyConfigToEngine()
@@ -113,15 +147,20 @@ final class ScrollWMController: NSObject {
         }
     }
 
-    /// Push layout/focus settings from the config into the live engine.
+    /// Push layout/focus settings from the config into EVERY strip's engine, so
+    /// all displays share one configuration (the config is global, not per
+    /// display). On a single-display setup this touches the one strip.
     private func applyConfigToEngine() {
-        engine.gap = config.layout.columnGap
-        engine.minColumnWidth = config.layout.minColumnWidth
-        engine.widthPresets = config.layout.widthPresets
-        engine.spawnWidthFraction = config.layout.spawnWidth
-        engine.fillHeight = config.layout.fillHeight
-        engine.focusMode = config.focusMode
-        engine.adoptScope = config.layout.adoptScope
+        for strip in strips {
+            let engine = strip.engine
+            engine.gap = config.layout.columnGap
+            engine.minColumnWidth = config.layout.minColumnWidth
+            engine.widthPresets = config.layout.widthPresets
+            engine.spawnWidthFraction = config.layout.spawnWidth
+            engine.fillHeight = config.layout.fillHeight
+            engine.focusMode = config.focusMode
+            engine.adoptScope = config.layout.adoptScope
+        }
     }
 
     /// Feed the multi-display layout (in AX top-left global coordinates) to the
@@ -496,9 +535,20 @@ final class ScrollWMController: NSObject {
     // MARK: - Arrange / Release
 
     func arrange(pidFilter: Set<pid_t>? = nil) {
-        guard !isManaging else { return }
         guard LifecycleMonitor.sessionIsActive() else {
             print("arrange: session locked/inactive, refusing")
+            return
+        }
+        // Idempotent verb: while ALREADY managing, "arrange" reconciles the
+        // current Space's windows into the strip (adopting any that appeared,
+        // dropping any that closed) rather than no-op'ing. This is what makes
+        // the menu-bar "Arrange Windows into Strip" item and `scrollwm arrange`
+        // share ONE behavior in every state instead of diverging. The heavy
+        // "reveal hidden + minimized, then equalize" flow is the separate
+        // "Arrange All Windows" action, deliberately kept distinct.
+        if isManaging {
+            lifecycle?.resync()
+            menuBar.refresh()
             return
         }
         // Sandbox lock takes precedence: if a sandbox PID set is configured, the
@@ -1085,10 +1135,16 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         // Center), which is the highest-priority slot because macOS hides the
         // LEFTMOST third-party items first when the bar gets crowded (e.g. an
         // app with a wide menu activates). Seeding a small value makes ScrollWM
-        // the last item to be hidden, so it stays "always showing." We only
-        // seed when unset, so a user's manual drag still wins.
+        // the last item to be hidden, so it stays "always showing."
+        //
+        // When `pinHighPriority` is on (the default) we FORCE that top slot on
+        // every launch so ScrollWM reliably wins it even if a prior drag (or a
+        // value AppKit persisted) parked us in a lower-priority position. With
+        // the pin off we only seed when unset, so a user's manual drag wins.
         let positionKey = "NSStatusItem Preferred Position \(Self.autosaveName)"
-        if UserDefaults.standard.object(forKey: positionKey) == nil {
+        if controller.config.menuBar.pinHighPriority {
+            UserDefaults.standard.set(Self.priorityPosition, forKey: positionKey)
+        } else if UserDefaults.standard.object(forKey: positionKey) == nil {
             UserDefaults.standard.set(Self.priorityPosition, forKey: positionKey)
         }
 
@@ -1190,7 +1246,12 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     /// `statusItem.length` resizes the button in place (no teardown), so the
     /// hosted view animates the new geometry smoothly.
     private func setContentWidth(_ width: CGFloat) {
-        let clamped = max(stripView.minContentWidth, min(width, stripView.maxContentWidth))
+        // The strip self-limits to maxContentWidth; the key-hint HUD may append
+        // text to its right and request a wider icon. Allow that extra room so
+        // the hint is never clipped, but still cap the total so a runaway width
+        // can't eat the menu bar.
+        let ceiling = stripView.maxContentWidth + MenuBarStripView.maxHintExtraWidth
+        let clamped = max(stripView.minContentWidth, min(width, ceiling))
         guard abs(clamped - contentWidth) >= 0.5 else { return }
         contentWidth = clamped
         if Self.profileStatusItem {
@@ -1219,8 +1280,22 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         }
         // Candidate preferred positions (points from the right edge area).
         // SMALL values sit nearest the system cluster, the highest-priority
-        // slots that stay visible longest; we walk outward from there.
-        let candidates: [Double] = [Self.priorityPosition, 24, 48, 80, 120, 180, 260, 360]
+        // slots that stay visible longest.
+        //
+        // When pinned (the default), we REASSERT the top-priority slot first,
+        // a few times: re-seeding the smallest position makes macOS keep
+        // ScrollWM and hide the LEFTMORE third-party items instead, which is
+        // exactly "stay visible even when the bar is crowded." Only if the bar
+        // is so full that even the top slot can't land do we walk outward as a
+        // last resort so the icon is at least reachable somewhere. With the pin
+        // off we walk outward from the start (ordinary item behavior).
+        let candidates: [Double]
+        if controller.config.menuBar.pinHighPriority {
+            candidates = [Self.priorityPosition, Self.priorityPosition, Self.priorityPosition,
+                          24, 48, 80, 120, 180, 260, 360]
+        } else {
+            candidates = [Self.priorityPosition, 24, 48, 80, 120, 180, 260, 360]
+        }
         guard healAttempt < candidates.count else {
             print("menubar: could not find visible slot (menu bar full). Use ⌃⌥esc to toggle; the app still works.")
             return
@@ -1270,6 +1345,20 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         stripView.maxContentWidth = mb.maxWidth
         // Re-clamp the current item to the new bounds immediately.
         setContentWidth(contentWidth)
+        // If the high-priority pin is ON, reclaim the top slot now (config
+        // reload is a deliberate, infrequent action). Re-seed the preference
+        // and recreate the item so the new preferred position takes effect (it
+        // is only read at creation time), then re-heal if the bar is crowded.
+        if mb.pinHighPriority, statusItem != nil {
+            UserDefaults.standard.set(Self.priorityPosition,
+                                      forKey: "NSStatusItem Preferred Position \(Self.autosaveName)")
+            NSStatusBar.system.removeStatusItem(statusItem)
+            createStatusItem()
+            healAttempt = 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.ensureVisible()
+            }
+        }
         refresh()
     }
 
@@ -1373,8 +1462,11 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             arrangeAllItem.target = self
             menu.addItem(arrangeAllItem)
 
-            let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip", action: nil, keyEquivalent: "")
-            arrangeItem.isEnabled = false // already managing
+            // Same verb as the `scrollwm arrange` CLI: re-adopt the current
+            // Space's windows into the strip (idempotent while managing). Kept
+            // enabled so the menu item and the command always do the same thing.
+            let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip", action: #selector(arrangeAction), keyEquivalent: "")
+            arrangeItem.target = self
             menu.addItem(arrangeItem)
         } else {
             let header = NSMenuItem(title: "ScrollWM — dormant (not touching any window)", action: nil, keyEquivalent: "")
