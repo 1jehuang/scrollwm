@@ -154,10 +154,10 @@ final class ScrollWMController: NSObject {
         // recover() retries with sleeps and must not block app startup.
         let pending = RestoreStore.pendingEntries()
         if !pending.isEmpty {
-            print("found restore file from previous session (\(pending.count) windows); recovering...")
+            Log.warn("found restore file from previous session (\(pending.count) windows); recovering...", "restore")
             DispatchQueue.global(qos: .userInitiated).async {
                 let result = RestoreStore.recover()
-                print("recovered \(result.restored)/\(result.total) windows from previous session")
+                Log.info("recovered \(result.restored)/\(result.total) windows from previous session", "restore")
             }
         }
     }
@@ -783,7 +783,7 @@ final class ScrollWMController: NSObject {
 
     func arrange(pidFilter: Set<pid_t>? = nil) {
         guard LifecycleMonitor.sessionIsActive() else {
-            print("arrange: session locked/inactive, refusing")
+            Log.warn("arrange: session locked/inactive, refusing", "arrange")
             return
         }
         // Idempotent verb: while ALREADY managing, "arrange" reconciles the
@@ -836,7 +836,7 @@ final class ScrollWMController: NSObject {
         let scoped = engine.filterByAdoptScope(onscreen) { $0.ax.frame }
         engine.adopt(matched: scoped)
         guard !engine.slots.isEmpty else {
-            print("arrange: no manageable windows found")
+            Log.warn("arrange: no manageable windows found", "arrange")
             return
         }
         RestoreStore.save(engine: engine)
@@ -847,7 +847,7 @@ final class ScrollWMController: NSObject {
         engine.focus(index: 0)
         registerManagementHotkeys()
         menuBar.refresh()
-        print("arranged \(engine.slots.count) windows into strip (\(String(format: "%.1f", engine.lastTeleportMs))ms)")
+        Log.info("arranged \(engine.slots.count) windows into strip (\(String(format: "%.1f", engine.lastTeleportMs))ms)", "arrange")
     }
 
     /// Multi-display arrange: one independent strip per monitor. Partitions the
@@ -900,7 +900,11 @@ final class ScrollWMController: NSObject {
         }
         RestoreStore.clear()
         menuBar.refresh()
-        print("released: all windows restored\(failures > 0 ? " (\(failures) failures)" : "")")
+        if failures > 0 {
+            Log.warn("released: all windows restored (\(failures) failures)", "release")
+        } else {
+            Log.info("released: all windows restored", "release")
+        }
     }
 
     func toggle() {
@@ -1366,7 +1370,8 @@ final class ScrollWMController: NSObject {
             signal(sig, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             source.setEventHandler { [weak self] in
-                print("\nsignal received: restoring windows and exiting")
+                Log.warn("signal received: restoring windows and exiting", "lifecycle")
+                Log.flush()
                 self?.release()
                 exit(0)
             }
@@ -1929,6 +1934,12 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
 
+    // Durable logging: capture uncaught exceptions + fatal signals (so a crash
+    // like the tutorial NSRangeException leaves a symbolicated trail), and mark
+    // the start of this session in the on-disk log. No-ops under a test backend.
+    Log.installCrashHandlers()
+    Log.info("ScrollWM \(AppVersion.currentString) starting (pid \(getpid()))", "lifecycle")
+
     // Before anything else: if we are running from a Gatekeeper-translocated
     // ghost path or a transient home (a download / mounted .dmg), the
     // Accessibility grant can never stick. Relocate to ~/Applications and
@@ -1957,7 +1968,7 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
     func onReady() {
         guard !readyDone else { return }
         readyDone = true
-        print("ScrollWM running (dormant). Use the menu bar item, the toggle key, or the `scrollwm` CLI to arrange.")
+        Log.info("ScrollWM running (dormant). Use the menu bar item, the toggle key, or the `scrollwm` CLI to arrange.", "lifecycle")
         controller.showTutorialOnFirstRunIfNeeded()
         controller.startUpdates()
         controller.startSkillTracking()

@@ -148,6 +148,13 @@ if command == "__update-selftest" {
     exit(runUpdateSelfTest(Array(args.dropFirst())))
 }
 
+// `scrollwm logs` is handled LOCALLY (no running app / socket needed): it prints
+// the log file path, or tails / follows it. Kept out of the socket verb set so
+// it works even when the app is dormant or stopped.
+if command == "logs" {
+    exit(runLogsCLI(Array(args.dropFirst())))
+}
+
 // CLI control verbs: talk to a RUNNING ScrollWM app over its control socket.
 // These are the user-facing `scrollwm <verb>` commands (see runControlCLI).
 let controlVerbs: Set<String> = [
@@ -317,6 +324,8 @@ default:
       scrollwm login [on|off]      start ScrollWM automatically at login (get/set)
       scrollwm update [--install]  check GitHub for a newer release (and install it)
       scrollwm tutorial            open the in-app cheat sheet
+      scrollwm logs [--tail N|--follow|--path|--clear]
+                                   show the app log (~/Library/Logs/ScrollWM/)
       scrollwm quit                restore windows and quit the app
 
     Lab / test harness (spawns its own processes; safe):

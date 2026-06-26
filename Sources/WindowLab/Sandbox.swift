@@ -30,9 +30,11 @@ func runSandbox(windowCount: Int, displayIndex: Int? = nil) {
         exit(2)
     }
 
-    // Isolate crash-recovery state from the real ScrollWM session.
+    // Isolate crash-recovery state AND logging from the real ScrollWM session,
+    // so the sandbox can never clobber/rotate the user's real restore file or log.
     RestoreStore.subdirectory = "ScrollWM-Sandbox"
     RestoreStore.clear()
+    Log.subdirectory = "ScrollWM-Sandbox"
 
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
