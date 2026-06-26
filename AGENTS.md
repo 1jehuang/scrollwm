@@ -147,6 +147,28 @@ swift build                       # debug, fast iteration
                                   # Accessibility grant persists across rebuilds
 ```
 
+### ALWAYS deploy after a change (so the user runs your fix)
+
+`swift build` only updates the debug binary; the user runs the installed
+`~/Applications/ScrollWM.app`, which is a SEPARATE release build. After you
+finish a change (committed + `make test` green), you MUST install the new
+release and relaunch the running app, or the user is still on the OLD binary
+and your fix has no effect on their desktop:
+
+```bash
+./scripts/install.sh                                  # build release -> ~/Applications/ScrollWM.app
+# gracefully quit the running instance (SIGTERM restores windows), then relaunch:
+pkill -TERM -f 'Applications/ScrollWM.app/Contents/MacOS/ScrollWM' || true
+sleep 2
+open ~/Applications/ScrollWM.app
+```
+
+Verify the new process is live (`pgrep -fl ScrollWM`). This is part of "done":
+a change is not delivered until the installed app is rebuilt and relaunched.
+Quitting via SIGTERM (not SIGKILL) restores the user's windows first, and
+relaunch re-adopts on the next Arrange; the stable self-signed identity keeps
+the Accessibility grant so no re-grant is needed.
+
 Signing identity is auto-detected by `scripts/signing-lib.sh`
 (**Developer ID > "ScrollWM Self-Signed" > ad-hoc**; override with
 `SCROLLWM_SIGN_ID`). With a Developer ID cert, `make-bundle.sh` adds the
