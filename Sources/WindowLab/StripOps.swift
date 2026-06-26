@@ -75,9 +75,15 @@ extension TeleportEngine {
                 kAXSizeAttribute as String,
                 CGSize(width: requestedWidth, height: slot.height)
             )
-            // Always reconcile against the live frame: an app that clamps to its
-            // own minimum reports success but keeps a larger size. Trusting the
-            // request here would corrupt the strip layout.
+            // Reconcile against the live frame: an app that clamps to its own
+            // minimum reports success but keeps a larger size, and an app that
+            // resizes ASYNCHRONOUSLY reports success while the new frame lands a
+            // few run-loop turns later (so this read can be the OLD size).
+            // Either way we store the REAL current width and never the request;
+            // `scheduleWidthReconcile` below keeps watching until the resize
+            // settles and follows the viewport to it, so a window growing toward
+            // 100% scrolls fully into view once it actually reaches its new size
+            // (rather than the stale-small read leaving it spilling off the edge).
             if let actual = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
                 slots[focusIndex].width = actual.width
                 slots[focusIndex].height = actual.height
@@ -104,7 +110,9 @@ extension TeleportEngine {
         // re-fit the viewport to the focused column. This is what makes the
         // viewport follow a grown window to full visibility.
         if slot.window.healthy {
-            scheduleWidthReconcile(for: slot.window)
+            scheduleWidthReconcile(for: slot.window,
+                                   targetWidth: requestedWidth,
+                                   startWidth: slots[focusIndex].width)
         }
         return true
     }
@@ -112,10 +120,30 @@ extension TeleportEngine {
     /// After an async resize, re-read the real size of `window` and, if it no
     /// longer matches the model, update the model, re-pack the strip, and (when
     /// the window is still focused) re-fit the viewport so it follows the new
-    /// size. Polls a few times because different apps settle at different rates.
+    /// size.
+    ///
+    /// Polling is ADAPTIVE rather than a fixed-length budget: apps settle at
+    /// wildly different rates (instant, a few frames, or a multi-hundred-ms
+    /// animation), and a fixed budget that expires before a slow app finishes
+    /// left the model stuck at the OLD width - so a focused window grown toward
+    /// 100% never scrolled into view and just spilled off the right edge (the
+    /// reported bug). Instead we keep following until either the live width
+    /// REACHES the requested `targetWidth` (when known), the size SETTLES (it has
+    /// moved away from `startWidth` and then held steady across two consecutive
+    /// polls -> the app finished resizing or clamped to its own minimum), or a
+    /// wall-clock safety `deadline` passes. Crucially we do NOT stop while the
+    /// width still equals `startWidth`: a slow app that has not yet BEGUN its
+    /// async resize looks deceptively "stable" at the old size, and an earlier
+    /// fixed-attempt loop gave up there - the exact stuck-viewport bug. Each poll
+    /// is a single cheap AX read, so even the bounded worst case is negligible.
     private func scheduleWidthReconcile(for window: ManagedWindowRef,
-                                        attemptsRemaining: Int = 4,
-                                        delay: TimeInterval = 0.08) {
+                                        targetWidth: CGFloat? = nil,
+                                        startWidth: CGFloat = .nan,
+                                        lastSeenWidth: CGFloat = -1,
+                                        stableCount: Int = 0,
+                                        deadline: Date? = nil,
+                                        delay: TimeInterval = 0.05) {
+        let deadline = deadline ?? Date().addingTimeInterval(1.6)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
             guard let self, let window, window.healthy else { return }
             guard let idx = self.slots.firstIndex(where: { $0.window === window }) else { return }
@@ -137,12 +165,23 @@ extension TeleportEngine {
                 }
             }
 
-            // Keep watching for the rest of the budget: animated/slow apps can
-            // still be mid-resize, and the size may even change between two
-            // polls, so we always run the full (short) window of attempts.
-            if attemptsRemaining > 1 {
+            // Stop once the resize has clearly finished: the live width reached
+            // the requested target (when known), OR it has MOVED off the starting
+            // width and then held steady across two consecutive polls (settled /
+            // clamped), OR the safety deadline elapsed. The "moved" guard is what
+            // stops us bailing out while a slow app is still sitting at its old
+            // width before it begins resizing.
+            let reachedTarget = targetWidth.map { abs(actual.width - $0) <= 1 } ?? false
+            let hasMoved = startWidth.isNaN || abs(actual.width - startWidth) > 1
+            let stable = lastSeenWidth >= 0 && abs(actual.width - lastSeenWidth) <= 1
+            let nextStableCount = (hasMoved && stable) ? stableCount + 1 : 0
+            if !reachedTarget && nextStableCount < 2 && Date() < deadline {
                 self.scheduleWidthReconcile(for: window,
-                                            attemptsRemaining: attemptsRemaining - 1,
+                                            targetWidth: targetWidth,
+                                            startWidth: startWidth,
+                                            lastSeenWidth: actual.width,
+                                            stableCount: nextStableCount,
+                                            deadline: deadline,
                                             delay: delay)
             }
         }

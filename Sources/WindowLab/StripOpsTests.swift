@@ -2008,6 +2008,11 @@ enum StripOpsTests {
         // built-in. See GeometryHardeningTests for the rationale per check.
         GeometryHardeningTests.run(check)
 
+        // --- Control-plane integration contract (version/capabilities) ------
+        // Fails loudly if the advertised handshake drifts from the real verb
+        // set. See ControlContractTests + docs/INTEGRATION.md.
+        ControlContractTests.run(check)
+
         // --- SemVer parse + ordering (in-app updater) -----------------------
         func sv(_ s: String) -> SemVer? { SemVer(s) }
         check("semver: parses plain", sv("1.2.3") == SemVer("1.2.3"))

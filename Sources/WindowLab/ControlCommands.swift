@@ -21,6 +21,13 @@ extension ScrollWMController {
         case "ping":
             return "pong"
 
+        case "version", "hello":
+            // Capability handshake for integrators (e.g. jcode). Reports the
+            // marketing version, a monotonic control-protocol revision, and the
+            // live verb list so clients can feature-detect without sniffing the
+            // app bundle. See docs/INTEGRATION.md.
+            return controlVersionJSON()
+
         case "status":
             return controlStatusJSON()
 
@@ -156,8 +163,44 @@ extension ScrollWMController {
             return "ok: quitting (windows restored)"
 
         default:
-            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close display focus-mode reload skills login update quit"
+            return "error: unknown command '\(verb)'. Try: version status arrange release toggle focus move workspace width close display focus-mode reload skills login update quit"
         }
+    }
+
+    /// Monotonic control-protocol revision. Bump ONLY on a breaking change to an
+    /// existing verb's arguments or the status/version JSON shape. Adding a new
+    /// verb or a new capability flag is non-breaking and must NOT bump this.
+    /// Integrators gate features on this integer (coarse) plus `capabilities`
+    /// (fine-grained). See docs/INTEGRATION.md.
+    static let controlProtocolRevision = 1
+
+    /// The capability flags advertised to integrators. Derived from the actual
+    /// verb set so the handshake never drifts from what the app really supports.
+    static var controlCapabilities: [String] {
+        [
+            "ping", "status", "version",
+            "arrange", "release", "toggle",
+            "focus", "move", "workspace", "width", "close",
+            "display", "focus-mode", "reload",
+        ]
+    }
+
+    /// Machine-readable capability handshake (the `version` verb).
+    func controlVersionJSON() -> String {
+        let obj: [String: Any] = [
+            "name": "ScrollWM",
+            "version": AppVersion.currentString,
+            "protocol": ScrollWMController.controlProtocolRevision,
+            "capabilities": ScrollWMController.controlCapabilities,
+            // Back-compat alias some clients read instead of `capabilities`.
+            "verbs": ScrollWMController.controlCapabilities,
+        ]
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: obj, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{\"error\":\"could not serialize version\"}"
+        }
+        return json
     }
 
     /// Accept "25"/"50"/"75"/"100" (percent) or "0.0".."1.0" (fraction).
@@ -174,6 +217,11 @@ extension ScrollWMController {
             "managing": isManaging,
             "focusMode": focusMode.rawValue,
             "windowCount": debugSlotCount,
+            // Handshake fields mirrored from `version` so a single `status`
+            // call gives integrators version + protocol without a second round
+            // trip. See docs/INTEGRATION.md.
+            "version": AppVersion.currentString,
+            "protocol": ScrollWMController.controlProtocolRevision,
         ]
         if isManaging {
             obj["focusedColumn"] = debugFocusIndex + 1

@@ -283,6 +283,17 @@ final class LifecycleMonitor {
             if let lastInsertedIndex {
                 // Focus + scroll the viewport to reveal the newly opened window.
                 engine.focus(index: lastInsertedIndex)
+            } else if sizeChanged {
+                // A managed window changed size out from under us (an app that
+                // settled its async resize slower than the fast-path follow-up's
+                // budget, a terminal snapping to character cells, the user
+                // dragging an edge, ...). Re-fit the viewport to the focused
+                // column so a focused window that GREW past the viewport edge
+                // scrolls fully into view here too - the 2s safety net behind the
+                // fast-path width-reconcile. In `fit` mode this is a no-op when
+                // the focused column is already fully visible, so an unrelated
+                // column resizing never yanks the viewport.
+                engine.refitViewportToFocused()
             } else {
                 engine.teleport()
             }

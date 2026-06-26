@@ -151,7 +151,7 @@ if command == "__update-selftest" {
 // CLI control verbs: talk to a RUNNING ScrollWM app over its control socket.
 // These are the user-facing `scrollwm <verb>` commands (see runControlCLI).
 let controlVerbs: Set<String> = [
-    "status", "arrange", "release", "toggle", "focus", "move", "width",
+    "status", "version", "hello", "arrange", "release", "toggle", "focus", "move", "width",
     "workspace", "ws", "close", "display", "focus-mode", "focusmode", "reload", "reload-config",
     "tutorial", "skills", "proficiency", "login", "launch-at-login", "update", "update-check", "ping", "quit",
 ]

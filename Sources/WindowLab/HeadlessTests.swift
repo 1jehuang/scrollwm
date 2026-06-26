@@ -351,6 +351,65 @@ func runHeadlessOpsTest() {
                 visLeft >= -1 && visRight <= engine.screenFrame.width + 1)
     }
 
+    // --- ASYNC RESIZE: viewport follows a window that GROWS to 100% SLOWLY ---
+    // Repro for "two 50% columns, focus the RIGHT one, hit cmd+4: it just fills
+    // the remaining space on the right instead of scrolling so the now-100%
+    // window is fully visible." Real apps resize ASYNCHRONOUSLY, so the immediate
+    // read-back after setSize is the OLD (small) width; if the model trusts that
+    // stale read, `fit` sees no overflow and never scrolls. The adaptive
+    // width-reconcile must keep following until the resize lands and then scroll
+    // the focused (grown) window fully into view. We make the resize settle
+    // SLOWER than any single poll to prove the follow-up is not a fixed budget.
+    do {
+        let asyncEngine = TeleportEngine(screenFrame: Headless.defaultVisibleFrame)
+        asyncEngine.peekInset = 48 // production-like content region
+        let asyncWorld = world
+        let basePID: pid_t = 5700
+        let lEl = asyncWorld.addWindow(pid: basePID, title: "AsyncL",
+                                       frame: CGRect(x: 60, y: 80, width: 360, height: 500))
+        let rEl = asyncWorld.addWindow(pid: basePID + 1, title: "AsyncR",
+                                       frame: CGRect(x: 460, y: 80, width: 360, height: 500))
+        let am = IdentityMatcher.match(
+            axWindows: [basePID, basePID + 1].flatMap { AXSource.windows(forPID: $0) },
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+        ).filter { [basePID, basePID + 1].contains($0.ax.pid) }
+        asyncEngine.adopt(matched: am)
+        guard asyncEngine.slots.count == 2 else {
+            t.check("async-resize: adopted two columns", false); return
+        }
+        // Make both columns 50%.
+        for i in 0..<2 {
+            asyncEngine.focusIndex = i
+            asyncWorld.setSystemFocus(asyncEngine.slots[i].window.element)
+            asyncEngine.setFocusedWidth(fraction: 0.5)
+            Headless.pump(0.05)
+        }
+        // Focus the RIGHT column and grow it to 100% with a SLOW async settle.
+        asyncEngine.focusIndex = 1
+        asyncWorld.setSystemFocus(asyncEngine.slots[1].window.element)
+        asyncWorld.asyncResizeDelay = 0.35 // longer than a single 50ms poll
+        let want100 = asyncEngine.width(forFraction: 1.0)
+        asyncEngine.setFocusedWidth(fraction: 1.0)
+        // Immediately after, the read-back is stale and the viewport has NOT yet
+        // scrolled - the adaptive follow-up has to do it once the resize lands.
+        Headless.pump(0.7) // past the 0.35s settle + a couple of follow-up polls
+        let liveR = asyncWorld.frame(of: rEl)?.width ?? 0
+        t.check("async-resize: real window reached 100% (\(Int(want100)))",
+                abs(liveR - want100) <= 2)
+        t.check("async-resize: model width caught up to the live 100% width",
+                abs(asyncEngine.slots[1].width - liveR) <= 2)
+        let s = asyncEngine.slots[asyncEngine.focusIndex]
+        let visLeft = s.canvasX - asyncEngine.viewportX
+        let visRight = visLeft + s.width
+        t.check("async-resize: viewport scrolled so the grown window is fully visible",
+                visLeft >= -1 && visRight <= asyncEngine.contentWidth + 1)
+        // Cleanup so later assertions keep a clean world/focus.
+        asyncWorld.asyncResizeDelay = 0
+        asyncWorld.destroyWindow(lEl, notify: false)
+        asyncWorld.destroyWindow(rEl, notify: false)
+        world.setSystemFocus(engine.slots[engine.focusIndex].window.element)
+    }
+
     // --- CLOSE: close focused window, verify it disappears ---
     let closeTitle = engine.slots[engine.focusIndex].window.title
     world.setSystemFocus(engine.slots[engine.focusIndex].window.element)

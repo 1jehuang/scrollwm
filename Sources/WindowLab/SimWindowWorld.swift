@@ -234,15 +234,32 @@ final class SimWindowWorld: WindowBackend {
         return .success
     }
 
+    /// When > 0, `setSize` does NOT apply immediately: AX returns `.success`
+    /// (as real apps do) but the new frame only lands after this many seconds,
+    /// modeling apps that resize ASYNCHRONOUSLY. The immediate readback then
+    /// reports the OLD size, exactly like production, so tests can exercise the
+    /// engine's `scheduleWidthReconcile` follow-up. Zero = synchronous (default).
+    var asyncResizeDelay: TimeInterval = 0
+
     func setSize(_ element: AXUIElement, _ size: CGSize) -> AXError {
         lock.lock(); defer { lock.unlock() }
         guard let w = find(element) else { return .invalidUIElement }
         // Apps clamp to their own minimum while AX still reports success — the
         // central reason the engine always reads back the REAL frame.
-        w.frame.size = CGSize(
+        let clamped = CGSize(
             width: max(size.width, w.minSize.width),
             height: max(size.height, w.minSize.height)
         )
+        if asyncResizeDelay > 0 {
+            // Apply LATER so the immediate readback is stale (real async resize).
+            let el = w.element
+            DispatchQueue.main.asyncAfter(deadline: .now() + asyncResizeDelay) { [weak self] in
+                guard let self else { return }
+                self.lock.lock(); self.find(el)?.frame.size = clamped; self.lock.unlock()
+            }
+        } else {
+            w.frame.size = clamped
+        }
         return .success
     }
 
