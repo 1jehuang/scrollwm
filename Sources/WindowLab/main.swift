@@ -153,7 +153,7 @@ if command == "__update-selftest" {
 let controlVerbs: Set<String> = [
     "status", "arrange", "release", "toggle", "focus", "move", "width",
     "workspace", "ws", "close", "display", "focus-mode", "focusmode", "reload", "reload-config",
-    "tutorial", "update", "update-check", "ping", "quit",
+    "tutorial", "skills", "proficiency", "login", "launch-at-login", "update", "update-check", "ping", "quit",
 ]
 if controlVerbs.contains(command) {
     exit(runControlCLI(Array(args)))
@@ -314,6 +314,7 @@ default:
                                    get/set how the viewport follows focus
       scrollwm reload              re-read the config file live
       scrollwm skills              report core keybindings you've stopped using
+      scrollwm login [on|off]      start ScrollWM automatically at login (get/set)
       scrollwm update [--install]  check GitHub for a newer release (and install it)
       scrollwm tutorial            open the in-app cheat sheet
       scrollwm quit                restore windows and quit the app

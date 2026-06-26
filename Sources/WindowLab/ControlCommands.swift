@@ -136,6 +136,15 @@ extension ScrollWMController {
             // (back to the menu). See `KeybindingProficiency`.
             return skillReport()
 
+        case "login", "launch-at-login", "loginitem":
+            // `scrollwm login` reports; `scrollwm login on|off` sets it.
+            guard let arg = args.first?.lowercased() else { return launchAtLoginStatus() }
+            switch arg {
+            case "on", "enable", "true", "yes":   return setLaunchAtLogin(true)
+            case "off", "disable", "false", "no": return setLaunchAtLogin(false)
+            default: return "error: usage: login <on|off>"
+            }
+
         case "update", "update-check":
             // `scrollwm update` checks; `scrollwm update --install` applies it.
             let install = args.contains("--install") || args.contains("install")
@@ -147,7 +156,7 @@ extension ScrollWMController {
             return "ok: quitting (windows restored)"
 
         default:
-            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close display focus-mode reload skills update quit"
+            return "error: unknown command '\(verb)'. Try: status arrange release toggle focus move workspace width close display focus-mode reload skills login update quit"
         }
     }
 

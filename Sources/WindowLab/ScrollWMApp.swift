@@ -85,9 +85,12 @@ final class ScrollWMController: NSObject {
     }
 
     /// Lazily-created tutorial window controller (config-driven cheat sheet).
-    private lazy var tutorial = TutorialWindowController(configProvider: { [weak self] in
-        self?.config ?? .default
-    })
+    private lazy var tutorial = TutorialWindowController(
+        configProvider: { [weak self] in self?.config ?? .default },
+        levelsProvider: { [weak self] in
+            self?.proficiencyLevels()
+                ?? Dictionary(uniqueKeysWithValues: KeyAction.allCases.map { ($0, .unknown) })
+        })
 
     /// True if ANY strip is actively managing its display. Aggregated over all
     /// strips so the menu bar / CLI report "managing" whenever at least one
@@ -464,6 +467,45 @@ final class ScrollWMController: NSObject {
     /// Whether the updater is live (used to gate the menu item).
     var updatesEnabled: Bool { updateCoordinator != nil }
 
+    // MARK: - Launch at login
+
+    /// Reconcile the macOS login item with the config's `launchAtLogin` setting.
+    /// Called once on launch (production `run` path) so a fresh install with the
+    /// default `launchAtLogin: true` registers itself the first time it runs,
+    /// and a later config edit is honored on the next launch. Safe + no-op on a
+    /// dev binary / headless backend (see `LaunchAtLoginManager.isSupported`).
+    func reconcileLaunchAtLogin() {
+        guard LaunchAtLoginManager.isSupported else { return }
+        LaunchAtLoginManager.apply(desired: config.launchAtLogin)
+    }
+
+    /// Whether ScrollWM is currently registered to launch at login (live read).
+    var launchAtLoginEnabled: Bool { LaunchAtLoginManager.isEnabled }
+
+    /// Whether the login-item feature is available in this context (installed
+    /// app, not a dev binary / headless test). Gates the menu item.
+    var launchAtLoginSupported: Bool { LaunchAtLoginManager.isSupported }
+
+    /// Flip launch-at-login on/off: persist the new desire to the config (single
+    /// source of truth) and register/unregister the login item to match. Driven
+    /// by the menu-bar toggle and the `scrollwm login` CLI.
+    @discardableResult
+    func setLaunchAtLogin(_ enabled: Bool) -> String {
+        config.launchAtLogin = enabled
+        config.save()
+        guard LaunchAtLoginManager.isSupported else {
+            return "error: launch-at-login unavailable (run the installed ScrollWM.app)"
+        }
+        LaunchAtLoginManager.apply(desired: enabled)
+        menuBar?.refresh()
+        return "ok: launch at login \(LaunchAtLoginManager.describe(desired: enabled))"
+    }
+
+    /// One-line launch-at-login status for the CLI (`scrollwm login`).
+    func launchAtLoginStatus() -> String {
+        "ok: launch at login \(LaunchAtLoginManager.describe(desired: config.launchAtLogin))"
+    }
+
     /// Live Accessibility-trust reading, for the updater's post-relaunch
     /// re-grant detection.
     var accessibilityIsTrusted: Bool { AccessibilityPermission.shared.isTrustedNow }
@@ -633,6 +675,16 @@ final class ScrollWMController: NSObject {
             .first.map(TutorialWindowController.pretty) ?? "?"
         let lead = top.level == .unlearned ? "Forgotten shortcut" : "Rusty shortcut"
         return "\(lead): \(top.action.displayName) is \(chord)"
+    }
+
+    /// Per-action proficiency levels for the tutorial's "learned vs not learned"
+    /// panel. When skill tracking is inactive (sandbox/headless/tests, or the
+    /// rare pre-`startSkillTracking` window) every action reads `.unknown`, so
+    /// the tutorial honestly shows the whole core set as "not learned yet"
+    /// rather than guessing.
+    func proficiencyLevels() -> [KeyAction: KeybindingProficiency.Level] {
+        skillTracker?.allLevels()
+            ?? Dictionary(uniqueKeysWithValues: KeyAction.allCases.map { ($0, .unknown) })
     }
 
 
@@ -1795,6 +1847,16 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         checkUpdates.target = self
         menu.addItem(checkUpdates)
 
+        // Launch at login: a checkbox toggle. Only meaningful for the installed
+        // ScrollWM.app, so it is disabled (info-only) on a dev binary. The check
+        // mark reflects the LIVE registration so the user sees the real state.
+        if controller.launchAtLoginSupported {
+            let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLoginAction), keyEquivalent: "")
+            login.target = self
+            login.state = controller.launchAtLoginEnabled ? .on : .off
+            menu.addItem(login)
+        }
+
         let axOK = AccessibilityPermission.shared.state.isGranted
         let perm = NSMenuItem(title: axOK ? "Accessibility: granted ✓" : "Accessibility: MISSING — click to open Settings",
                               action: axOK ? nil : #selector(openAXSettings), keyEquivalent: "")
@@ -1855,6 +1917,10 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     @objc private func openConfigFile() { controller.openConfigFile() }
     @objc private func reloadConfigAction() { controller.reloadConfig() }
     @objc private func checkForUpdatesAction() { controller.checkForUpdates() }
+    @objc private func toggleLaunchAtLoginAction() {
+        // Flip to the opposite of the live registration state.
+        _ = controller.setLaunchAtLogin(!controller.launchAtLoginEnabled)
+    }
 }
 
 // MARK: - Entry
@@ -1895,6 +1961,7 @@ func runScrollWM(selftest: Bool, crashPhase: CrashTestPhase = .none) {
         controller.showTutorialOnFirstRunIfNeeded()
         controller.startUpdates()
         controller.startSkillTracking()
+        controller.reconcileLaunchAtLogin()
         if selftest { runScrollWMSelftest(controller: controller) }
         if crashPhase == .crash { runCrashPhase(controller: controller) }
     }

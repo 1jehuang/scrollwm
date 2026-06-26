@@ -135,6 +135,15 @@ struct ScrollWMConfig: Equatable {
     var update = Update()
     var focusMode: TeleportEngine.FocusMode = .fit
 
+    /// Start ScrollWM automatically when you log in, so the strip is there after
+    /// a reboot without launching it by hand. Implemented with `SMAppService`
+    /// (macOS 13+) and only effective for the installed `ScrollWM.app` (a dev
+    /// `WindowLab` binary can't register a login item). The app still launches
+    /// DORMANT, so this never touches a window until you Arrange. On by default
+    /// so a fresh install persists across reboots; toggle it from the menu bar
+    /// ("Launch at Login") or set false here.
+    var launchAtLogin: Bool = true
+
     /// When the user grants Accessibility through first-run onboarding, arrange
     /// every current-Space window into the strip immediately, so the very first
     /// thing they see ScrollWM do is tidy their desktop (no extra click). Only
@@ -219,6 +228,7 @@ struct ScrollWMConfig: Equatable {
                 "allowPrerelease": update.allowPrerelease,
             ],
             "focusMode": focusMode.rawValue,
+            "launchAtLogin": launchAtLogin,
             "arrangeOnFirstGrant": arrangeOnFirstGrant,
             "keybindings": Dictionary(uniqueKeysWithValues: keybindings.map { ($0.key.rawValue, $0.value) }),
             "spawn": spawn,
@@ -302,6 +312,7 @@ struct ScrollWMConfig: Equatable {
             config.focusMode = mode
         }
         if let a = obj["arrangeOnFirstGrant"] as? Bool { config.arrangeOnFirstGrant = a }
+        if let l = obj["launchAtLogin"] as? Bool { config.launchAtLogin = l }
         if let kb = obj["keybindings"] as? [String: Any] {
             for (key, value) in kb {
                 guard let action = KeyAction(rawValue: key) else {
@@ -477,6 +488,13 @@ struct ScrollWMConfig: Equatable {
       //   "centered" = always center the focused column
       "focusMode": "fit",
 
+      // Start ScrollWM automatically when you log in, so the strip is back
+      // after a reboot without launching it by hand. Uses macOS's built-in
+      // login-item service (SMAppService) and only applies to the installed
+      // ScrollWM.app. It still launches DORMANT — nothing moves until you
+      // Arrange. Toggle it live from the menu bar ("Launch at Login").
+      "launchAtLogin": true,
+
       // When you grant Accessibility during first-run onboarding, immediately
       // arrange every current-Space window into the strip, so ScrollWM's first
       // visible act is to tidy your desktop (no extra click). Only fires on that
@@ -611,6 +629,26 @@ enum KeyAction: String, CaseIterable {
         .closeWindow:     ["cmd+q"],
         .spawnTerminal:   ["cmd+return"],
     ]
+
+    /// The CORE actions a ScrollWM user must internalize to drive the strip from
+    /// the keyboard: the vim-style focus/move/workspace bindings (h/l, j/k, with
+    /// shift to move), plus close-window and new-terminal. These are the ONLY
+    /// actions whose "learned vs not learned" status the tutorial tracks — the
+    /// width/jump/toggle keys are useful but secondary, so we don't grade them.
+    /// Ordered the way they're taught (navigate, move, workspaces, then the two
+    /// life-cycle verbs) so the tutorial renders them in a sensible progression.
+    static let coreActions: [KeyAction] = [
+        .focusLeft, .focusRight,
+        .moveColumnLeft, .moveColumnRight,
+        .workspaceDown, .workspaceUp,
+        .moveToWorkspaceDown, .moveToWorkspaceUp,
+        .closeWindow,
+        .spawnTerminal,
+    ]
+
+    /// Whether this action is one of the core, "graded" keybindings (see
+    /// `coreActions`).
+    var isCore: Bool { KeyAction.coreActions.contains(self) }
 }
 
 /// A parsed key chord: a virtual keycode plus modifier masks for both the

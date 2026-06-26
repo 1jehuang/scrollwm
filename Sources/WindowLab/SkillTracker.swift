@@ -83,6 +83,15 @@ final class SkillTracker {
         KeybindingProficiency.assess(skills[action] ?? .empty)
     }
 
+    /// The proficiency level of EVERY action, for the tutorial's learned/not-
+    /// learned panel. Missing entries read as `.unknown` so a fresh user shows
+    /// every shortcut unlearned.
+    func allLevels() -> [KeyAction: KeybindingProficiency.Level] {
+        var out: [KeyAction: KeybindingProficiency.Level] = [:]
+        for action in KeyAction.allCases { out[action] = level(action) }
+        return out
+    }
+
     /// The raw record (for reporting / tests).
     func skill(_ action: KeyAction) -> ActionSkill { skills[action] ?? .empty }
 

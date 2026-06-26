@@ -82,6 +82,27 @@ enum ChordFormatter {
         return out.isEmpty ? chord : out
     }
 
+    /// Split a chord into the individual symbols to render as separate KEYCAPS
+    /// (one rounded "physical key" per element), e.g. `"cmd+shift+h"` ->
+    /// `["⌘", "⇧", "H"]`. Modifiers keep their glyphs; the main key renders as
+    /// its glyph (arrows/escape/…) or an upper-cased literal. Total: degenerate
+    /// input yields an empty array (the caller falls back to the pretty string).
+    /// Modifiers are emitted first (in canonical ⌃⌥⇧⌘-ish input order they were
+    /// typed), then the single non-modifier key, mirroring how a chord reads.
+    static func keycaps(_ chord: String) -> [String] {
+        tokenize(chord).map(symbol(for:)).filter { !$0.isEmpty }
+    }
+
+    /// Keycaps for the FIRST chord bound to `action` in `config` (or the
+    /// built-in default), e.g. `[⌘, ⇧, H]`. The tutorial renders these as
+    /// individual keys; multi-chord actions (width via Opt+N or Cmd+N) are
+    /// documented in the keys text, but the keycap graphic shows the primary.
+    static func keycaps(_ config: ScrollWMConfig, _ action: KeyAction) -> [String] {
+        let chords = config.keybindings[action] ?? KeyAction.defaultChords[action] ?? []
+        guard let first = chords.first else { return [] }
+        return keycaps(first)
+    }
+
     /// The pretty, display-ready chord(s) bound to `action` in `config`,
     /// falling back to the built-in defaults when unset, joined with " or " when
     /// an action has multiple triggers. Pure: depends only on its inputs.
@@ -154,9 +175,14 @@ enum ChordFormatter {
 final class TutorialWindowController: NSObject {
     private var window: NSWindow?
     private let configProvider: () -> ScrollWMConfig
+    private let levelsProvider: () -> [KeyAction: KeybindingProficiency.Level]
 
-    init(configProvider: @escaping () -> ScrollWMConfig) {
+    init(configProvider: @escaping () -> ScrollWMConfig,
+         levelsProvider: @escaping () -> [KeyAction: KeybindingProficiency.Level] = {
+             Dictionary(uniqueKeysWithValues: KeyAction.allCases.map { ($0, .unknown) })
+         }) {
         self.configProvider = configProvider
+        self.levelsProvider = levelsProvider
     }
 
     func present() {
@@ -183,7 +209,7 @@ final class TutorialWindowController: NSObject {
 
     private func buildWindow() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 580),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -191,7 +217,7 @@ final class TutorialWindowController: NSObject {
         win.title = "How to use ScrollWM"
         win.isReleasedWhenClosed = false
         // Floor the size so content can never be squeezed into clipping.
-        win.minSize = NSSize(width: 440, height: 380)
+        win.minSize = NSSize(width: 480, height: 420)
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
@@ -232,6 +258,7 @@ final class TutorialWindowController: NSObject {
         guard let body = bodyStack else { return }
         body.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let config = configProvider()
+        let levels = levelsProvider()
 
         addArranged(heading("ScrollWM in 30 seconds"), to: body)
         addArranged(para(
@@ -247,13 +274,18 @@ final class TutorialWindowController: NSObject {
             + "everything back. Panic key: \(chordText(config, .toggleArrange)) "
             + "toggles arrange/release at any time."), to: body, wraps: true)
 
-        addArranged(heading("Getting started"), to: body)
-        addArranged(bullet("Click the menu bar icon → Arrange. Your current-Space windows snap into the strip."), to: body, wraps: true)
-        addArranged(bullet("Navigate with \(chordText(config, .focusPrevious)) / \(chordText(config, .focusNext)) or \(chordText(config, .focusLeft)) / \(chordText(config, .focusRight))."), to: body, wraps: true)
-        addArranged(bullet("Resize the focused column with the width keys below."), to: body, wraps: true)
-        addArranged(bullet("Done? Menu → Release restores every window exactly. ScrollWM goes dormant again."), to: body, wraps: true)
+        // Core keys + your progress: the heart of the tutorial. Each core
+        // shortcut is shown as keycap graphics with a learned/not-learned
+        // badge, plus a rolled-up "N of M" progress bar.
+        addArranged(heading("Core shortcuts — your progress"), to: body)
+        addArranged(progressPanel(config, levels), to: body, wraps: true)
+        addArranged(para(
+            "These are the vim-style keys (plus close & new-terminal) that drive "
+            + "the strip from the keyboard. Use a shortcut a few times and it "
+            + "flips to “Learned”. Drift back to the menu and it goes rusty — a "
+            + "nudge that you're leaving the keyboard."), to: body, wraps: true)
 
-        addArranged(heading("Keys (from your current config)"), to: body)
+        addArranged(heading("Other keys (from your config)"), to: body)
         addArranged(keyTable(config), to: body)
 
         addArranged(heading("Changing settings — config file only"), to: body)
@@ -294,17 +326,129 @@ final class TutorialWindowController: NSObject {
 
     // MARK: - Content rendering
 
+    /// The "other keys" reference table: every key-table row whose actions are
+    /// NOT in the core set (toggle, focus prev/next, jump, width). The core
+    /// shortcuts get the richer keycap + progress treatment above instead, so we
+    /// don't duplicate them here.
     private func keyTable(_ config: ScrollWMConfig) -> NSView {
         let grid = NSGridView()
         grid.rowSpacing = 6
         grid.columnSpacing = 18
         grid.translatesAutoresizingMaskIntoConstraints = false
-        for row in ChordFormatter.keyTableRows() {
+        for row in ChordFormatter.keyTableRows() where !row.covers.contains(where: { $0.isCore }) {
             let left = label14(row.label); left.textColor = .secondaryLabelColor
             let right = monoLabel(row.keys(config))
             grid.addRow(with: [left, right])
         }
         return grid
+    }
+
+    /// The core-shortcuts learning panel: a progress summary + bar, then one row
+    /// per core action with keycap graphics and a learned/not-learned badge.
+    private func progressPanel(_ config: ScrollWMConfig,
+                               _ levels: [KeyAction: KeybindingProficiency.Level]) -> NSView {
+        let panel = NSStackView()
+        panel.orientation = .vertical
+        panel.alignment = .leading
+        panel.spacing = 10
+        panel.translatesAutoresizingMaskIntoConstraints = false
+
+        // Headline + progress bar.
+        let summary = TutorialProgress.summary(levels: levels)
+        let headline = NSTextField(labelWithString: summary.headline)
+        headline.font = .systemFont(ofSize: 13, weight: .semibold)
+        panel.addArrangedSubview(headline)
+
+        let bar = NSProgressIndicator()
+        bar.isIndeterminate = false
+        bar.minValue = 0
+        bar.maxValue = 1
+        bar.doubleValue = summary.fraction
+        bar.controlSize = .small
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        panel.addArrangedSubview(bar)
+
+        // One row per core action: label · keycaps · status badge.
+        let grid = NSGridView()
+        grid.rowSpacing = 8
+        grid.columnSpacing = 16
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        for row in TutorialProgress.rows(levels: levels) {
+            let name = label14(row.action.displayName)
+            name.textColor = .labelColor
+            let caps = keycapRow(ChordFormatter.keycaps(config, row.action),
+                                 fallback: chordText(config, row.action))
+            let badge = statusBadge(row.state)
+            grid.addRow(with: [name, caps, badge])
+        }
+        // Left-align all three columns (safe only after rows exist, so the
+        // columns have been created).
+        if grid.numberOfColumns > 0 {
+            for c in 0..<grid.numberOfColumns { grid.column(at: c).xPlacement = .leading }
+        }
+        panel.addArrangedSubview(grid)
+        return panel
+    }
+
+    /// Render a chord's symbols as individual rounded "keycap" views in a row,
+    /// e.g. ⌘ ⇧ H. Falls back to a single keycap of the pretty chord text when
+    /// the chord can't be split (degenerate / modifier-only).
+    private func keycapRow(_ caps: [String], fallback: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 4
+        row.translatesAutoresizingMaskIntoConstraints = false
+        // Hug the caps tightly so the row reports its compact fitting width and
+        // the grid cell never stretches a single cap across the column.
+        row.setContentHuggingPriority(.required, for: .horizontal)
+        row.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let symbols = caps.isEmpty ? [fallback] : caps
+        for sym in symbols {
+            row.addArrangedSubview(keycap(sym))
+        }
+        return row
+    }
+
+    /// A single rounded keycap showing one symbol, styled like a physical key.
+    private func keycap(_ symbol: String) -> NSView {
+        let cap = KeycapView(symbol: symbol)
+        return cap
+    }
+
+    /// The learned/learning/rusty/not-started badge for a core action: a small
+    /// colored glyph + caption. Color carries the gist; the caption carries the
+    /// meaning so it survives color blindness.
+    private func statusBadge(_ state: TutorialProgress.LearnState) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 5
+        let color = Self.color(for: state)
+        let glyph = NSTextField(labelWithString: state.glyph)
+        glyph.font = .systemFont(ofSize: 13, weight: .bold)
+        glyph.textColor = color
+        let caption = NSTextField(labelWithString: state.caption)
+        caption.font = .systemFont(ofSize: 12, weight: .medium)
+        caption.textColor = color
+        row.addArrangedSubview(glyph)
+        row.addArrangedSubview(caption)
+        row.setAccessibilityElement(true)
+        row.setAccessibilityRole(.staticText)
+        row.setAccessibilityLabel(state.caption)
+        return row
+    }
+
+    /// Semantic color for a learn state (system colors so they read in light
+    /// and dark mode).
+    static func color(for state: TutorialProgress.LearnState) -> NSColor {
+        switch state {
+        case .learned:    return .systemGreen
+        case .rusty:      return .systemOrange
+        case .learning:   return .systemBlue
+        case .notStarted: return .tertiaryLabelColor
+        }
     }
 
     private func chordText(_ config: ScrollWMConfig, _ action: KeyAction) -> String {
@@ -361,6 +505,74 @@ final class TutorialWindowController: NSObject {
 /// top rather than the bottom.
 private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
+}
+
+/// A rounded "physical key" view that draws one symbol (e.g. ⌘, ⇧, H, ←) with a
+/// keycap-style border + subtle fill, so the tutorial's chords read as actual
+/// keys rather than plain text. Sizes itself to its content with a minimum
+/// square-ish footprint, and adapts to light/dark mode via system colors.
+final class KeycapView: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    init(symbol: String) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+        // Multi-char glyphs (Space, F12) get a slightly smaller font so they fit.
+        let size: CGFloat = symbol.count > 1 ? 11 : 14
+        label.stringValue = symbol
+        label.font = .systemFont(ofSize: size, weight: .semibold)
+        label.alignment = .center
+        label.textColor = .labelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setAccessibilityElement(false)
+        addSubview(label)
+
+        // Pad the symbol inside the cap and pin the cap to EXACTLY hug its
+        // content (with a key-like minimum width), so a grid cell never
+        // stretches a lone cap across its column. A `>=` minimum alone leaves
+        // the width unbounded above, which AppKit then stretches to fill.
+        let hPad: CGFloat = 8, vPad: CGFloat = 4
+        let exactWidth = widthAnchor.constraint(equalTo: label.widthAnchor, constant: hPad * 2)
+        exactWidth.priority = .defaultHigh   // yields to the 24pt floor for narrow glyphs
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            heightAnchor.constraint(greaterThanOrEqualTo: label.heightAnchor, constant: vPad * 2),
+            exactWidth,
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 24),
+            heightAnchor.constraint(equalToConstant: 24),
+        ])
+        // Don't let the cap stretch in the row.
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        // The whole cap is one a11y element that speaks the symbol.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel(symbol)
+
+        applyStyle()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    /// Re-apply the keycap style when the system appearance changes (light/dark).
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyStyle()
+    }
+
+    private func applyStyle() {
+        // Resolve CG colors against THIS view's effective appearance so the cap
+        // matches light/dark mode.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.cornerRadius = 5
+            layer?.borderWidth = 1
+            layer?.borderColor = NSColor.separatorColor.cgColor
+            layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.9).cgColor
+        }
+    }
 }
 
 extension ScrollWMConfig {
