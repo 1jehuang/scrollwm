@@ -10,9 +10,9 @@ import Foundation
 enum MultiMonitorTests {
     static func run() -> Bool {
         var ok = true
-        ok = IndicatorPlacementTests.run() && ok
-        ok = FocusFollowsDisplayTests.run() && ok
-        ok = AutoTilePolicyTests.run() && ok
+        ok = MultiMonitorPolicyTests.runIndicator() && ok
+        ok = MultiMonitorPolicyTests.runFocus() && ok
+        ok = MultiMonitorPolicyTests.runAutoTile() && ok
         print(ok ? "\n[mmtest] ALL PASSED" : "\n[mmtest] FAILURES")
         return ok
     }
