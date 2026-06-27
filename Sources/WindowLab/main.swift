@@ -276,6 +276,11 @@ case "extadopttest":
     // stripDisplay scope) adopts ONLY built-in windows and leaves the external
     // alone on arrange / fast-adopt / resync. Always headless.
     runHeadlessExternalAdoptTest()
+case "parktest":
+    // Headless external-monitor parking test: a parked column's clamp sliver
+    // stays on the strip's own display and never spills onto the external, for
+    // both the real above-left layout and a side-by-side rearrangement.
+    runHeadlessParkTest()
 case "displaybindcheck":
     runDisplayBindCheck()
 case "e2etest":
