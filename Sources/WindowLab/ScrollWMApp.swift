@@ -203,27 +203,56 @@ final class ScrollWMController: NSObject {
     /// reference is every screen EXCEPT this strip's own, so a parked column's
     /// sliver always lands on the strip's own monitor regardless of how many
     /// strips exist.
+    ///
+    /// Thin AppKit shim: snapshot the live `NSScreen` set, find this display's
+    /// index, and delegate to the pure snapshot core (`refreshDisplayGeometry(
+    /// for:displays:stripIndex:)`). Keeping the geometry math in the snapshot
+    /// core lets the settled-display-change / clamshell path be driven headlessly.
     private func refreshDisplayGeometry(for strip: DisplayStrip,
                                         stripDisplay: NSScreen,
                                         relayout: Bool = false) {
+        let displays = Self.snapshots(of: NSScreen.screens)
+        guard let idx = NSScreen.screens.firstIndex(of: stripDisplay) else {
+            // Degenerate: the chosen screen is not in the live set (never observed
+            // in practice). Build a one-display snapshot so the strip still binds.
+            let solo = [Self.snapshot(of: stripDisplay)]
+            refreshDisplayGeometry(for: strip, displays: solo, stripIndex: 0, relayout: relayout)
+            return
+        }
+        refreshDisplayGeometry(for: strip, displays: displays, stripIndex: idx, relayout: relayout)
+    }
+
+    /// PURE-input core of the display rebind: bind `strip` to `displays[stripIndex]`
+    /// using AX (top-left global) geometry flipped around the SETTLED primary
+    /// height. Every other display becomes the parking "others" set. Shared by the
+    /// production (`NSScreen`) path and the headless settled-change/clamshell test
+    /// (which injects synthetic `DisplaySnapshot`s), so both run identical logic.
+    ///
+    /// The primary height is recomputed from `displays` on EVERY call: when the
+    /// primary display itself changes (e.g. the laptop lid closes and an external
+    /// takes over the AppKit origin), the Y-flip anchor for the WHOLE AX plane
+    /// shifts, so a stale primary height would land the strip at the wrong AX Y.
+    private func refreshDisplayGeometry(for strip: DisplayStrip,
+                                        displays: [DisplaySnapshot],
+                                        stripIndex: Int,
+                                        relayout: Bool = false) {
+        guard displays.indices.contains(stripIndex) else { return }
         let engine = strip.engine
-        // The primary display is the one whose frame origin is (0,0) in AppKit.
-        // Its height defines the Y-flip used across the whole AX coordinate plane.
-        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
-                             ?? NSScreen.main ?? stripDisplay).frame.height
-        func axFull(_ s: NSScreen) -> CGRect {
-            DisplayGeometry.axFrame(appKitFrame: s.frame, primaryHeight: primaryHeight)
+        let primaryHeight = Self.primaryHeight(of: displays)
+        func axFull(_ d: DisplaySnapshot) -> CGRect {
+            DisplayGeometry.axFrame(appKitFrame: d.fullAppKit, primaryHeight: primaryHeight)
         }
-        func axVisible(_ s: NSScreen) -> CGRect {
-            DisplayGeometry.axFrame(appKitFrame: s.visibleFrame, primaryHeight: primaryHeight)
+        func axVisible(_ d: DisplaySnapshot) -> CGRect {
+            DisplayGeometry.axFrame(appKitFrame: d.visibleAppKit, primaryHeight: primaryHeight)
         }
+        let stripDisplay = displays[stripIndex]
         engine.stripDisplayFrame = axFull(stripDisplay)
-        engine.otherDisplayFrames = NSScreen.screens
-            .filter { $0 !== stripDisplay }
-            .map(axFull)
+        engine.otherDisplayFrames = displays.indices
+            .filter { $0 != stripIndex }
+            .map { axFull(displays[$0]) }
         // Remember which PHYSICAL display the strip is bound to, so a later
         // hotplug can follow it by stable id across arrangement/resolution change.
-        strip.displayID = stripDisplay.displayID
+        strip.displayID = stripDisplay.id
 
         // Re-bind the strip's own usable area to the live visible frame so a
         // resolution/scale change (or the strip moving displays) relays the
@@ -263,23 +292,36 @@ final class ScrollWMController: NSObject {
     /// survivor, rescuing windows that would otherwise be orphaned off-screen.
     /// A display being ADDED back is the same code path: it simply becomes a
     /// candidate the resolver may pick (or, more often, leaves the strip put).
+    ///
+    /// Thin AppKit shim: snapshot the live `NSScreen` set and delegate to the
+    /// pure snapshot core so the whole decision (including the clamshell case
+    /// where the laptop's built-in display turns off and an external becomes the
+    /// new primary) is driven identically in production and in headless tests.
     private func applySettledDisplayChange() {
-        let screens = NSScreen.screens
+        applySettledDisplayChange(displays: Self.snapshots(of: NSScreen.screens))
+    }
+
+    /// PURE-input core of the settled-display-change policy. Given the SETTLED
+    /// display set (already debounced), resolve where the strip should bind via
+    /// `StripDisplayResolver` (follow the strip's own display by stable id, else
+    /// migrate to a survivor) and relay the strip onto it. Both the production
+    /// `NSScreen` path and the headless clamshell/hotplug test funnel through
+    /// here, so they share one source of truth.
+    private func applySettledDisplayChange(displays: [DisplaySnapshot]) {
         // No screens at all (all monitors asleep/disconnected): keep the last
         // geometry untouched until one reappears (resolver case 3).
-        guard !screens.isEmpty else { return }
+        guard !displays.isEmpty else { return }
 
-        let primaryHeight = (screens.first { $0.frame.origin == .zero }
-                             ?? NSScreen.main ?? screens[0]).frame.height
-        // Visible AX frames of every available display, parallel to `screens`.
-        let visibleFrames = screens.map {
-            DisplayGeometry.axFrame(appKitFrame: $0.visibleFrame, primaryHeight: primaryHeight)
+        let primaryHeight = Self.primaryHeight(of: displays)
+        // Visible AX frames of every available display, parallel to `displays`.
+        let visibleFrames = displays.map {
+            DisplayGeometry.axFrame(appKitFrame: $0.visibleAppKit, primaryHeight: primaryHeight)
         }
-        // Parallel stable display ids (same order as `screens`/`visibleFrames`).
+        // Parallel stable display ids (same order as `displays`/`visibleFrames`).
         // Only pass them through when EVERY screen vended one, so the resolver's
         // well-formed-arrays guard either uses identity for all or none of them
         // (a partial id list would silently disable identity tracking anyway).
-        let ids = screens.map { $0.displayID }
+        let ids = displays.map { $0.id }
         let displayIDs: [CGDirectDisplayID]? = ids.allSatisfy { $0 != nil }
             ? ids.compactMap { $0 } : nil
 
@@ -294,9 +336,48 @@ final class ScrollWMController: NSObject {
 
         if decision.migrated {
             print("display change: strip's display gone; migrating strip to "
-                  + "\(screens[idx].localizedName)")
+                  + "\(displays[idx].name)")
         }
-        refreshDisplayGeometry(stripDisplay: screens[idx], relayout: true)
+        refreshDisplayGeometry(for: activeStrip, displays: displays,
+                               stripIndex: idx, relayout: true)
+    }
+
+    /// AppKit-free snapshot of one connected display, captured at a single point
+    /// in time. Decoupling the geometry from a live `NSScreen` lets the display-
+    /// change / clamshell policy run headlessly: a test injects synthetic
+    /// snapshots (e.g. "built-in display gone, two equal externals") and drives
+    /// the exact production resolve + rebind logic with no real monitors.
+    struct DisplaySnapshot {
+        /// AppKit full frame (bottom-left origin, primary at `(0,0)`). The
+        /// AppKit->AX flip around the SETTLED primary height happens downstream.
+        var fullAppKit: CGRect
+        /// AppKit visible frame (full minus the menu bar / Dock).
+        var visibleAppKit: CGRect
+        /// Stable `CGDirectDisplayID`, or nil if AppKit did not vend one.
+        var id: CGDirectDisplayID?
+        /// Human-readable name (for the migration log).
+        var name: String
+    }
+
+    /// Snapshot a live `NSScreen` into an AppKit-free `DisplaySnapshot`.
+    private static func snapshot(of s: NSScreen) -> DisplaySnapshot {
+        DisplaySnapshot(fullAppKit: s.frame, visibleAppKit: s.visibleFrame,
+                        id: s.displayID, name: s.localizedName)
+    }
+
+    /// Snapshot the live `NSScreen` set, preserving order (CLI/config indices).
+    private static func snapshots(of screens: [NSScreen]) -> [DisplaySnapshot] {
+        screens.map(snapshot(of:))
+    }
+
+    /// The Y-flip anchor for the AX coordinate plane: the height of the PRIMARY
+    /// display (AppKit origin `(0,0)`), falling back to the first display when no
+    /// snapshot sits exactly at the origin (e.g. mid-reconfiguration). Recomputed
+    /// from the SETTLED set so a primary-display change (clamshell) re-anchors the
+    /// whole plane instead of flipping around a vanished display's height.
+    private static func primaryHeight(of displays: [DisplaySnapshot]) -> CGFloat {
+        (displays.first { $0.fullAppKit.origin == .zero } ?? displays.first)?
+            .fullAppKit.height ?? 0
     }
 
     // MARK: - Strip display selection ([md-select])
@@ -1235,6 +1316,35 @@ final class ScrollWMController: NSObject {
         engine.stripDisplayFrame = stripFull
         engine.otherDisplayFrames = others
         return engine.rebindStripDisplay(to: visible)
+    }
+
+    /// Drive the REAL settled-display-change policy (`applySettledDisplayChange`)
+    /// from a headless test with an injected display set, bypassing only the live
+    /// `NSScreen` read + the debounce timer. Each tuple is one connected display
+    /// in AppKit coordinates (full frame, visible frame, stable id), in NSScreen
+    /// order. This exercises the exact production resolve + AppKit->AX re-flip +
+    /// rebind used when a monitor is plugged/unplugged or the laptop lid closes
+    /// (clamshell), so the clamshell/equal-display glitch is reproducible with no
+    /// real monitors.
+    func debugApplyDisplayChange(_ displays: [(full: CGRect, visible: CGRect, id: CGDirectDisplayID?)]) {
+        let snaps = displays.enumerated().map { (i, d) in
+            DisplaySnapshot(fullAppKit: d.full, visibleAppKit: d.visible, id: d.id,
+                            name: "SimDisplay-\(i)")
+        }
+        applySettledDisplayChange(displays: snaps)
+    }
+
+    /// Bind the active strip to an injected display set BEFORE arranging, for the
+    /// headless display-change test (the equivalent of launching on a given
+    /// monitor layout). Same snapshot core as production launch/move.
+    func debugBindStrip(to displays: [(full: CGRect, visible: CGRect, id: CGDirectDisplayID?)],
+                        stripIndex: Int) {
+        let snaps = displays.enumerated().map { (i, d) in
+            DisplaySnapshot(fullAppKit: d.full, visibleAppKit: d.visible, id: d.id,
+                            name: "SimDisplay-\(i)")
+        }
+        refreshDisplayGeometry(for: activeStrip, displays: snaps,
+                               stripIndex: stripIndex, relayout: true)
     }
 
     /// Jump directly to a 1-based workspace index (CLI `workspace N`).

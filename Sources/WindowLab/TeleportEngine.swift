@@ -786,6 +786,7 @@ final class TeleportEngine {
     /// (geometry unchanged) costs nothing because `teleport` skips unmoved windows.
     @discardableResult
     func rebindStripDisplay(to newScreenFrame: CGRect) -> Int {
+        let oldHeight = screenFrame.height
         screenFrame = newScreenFrame
         let topY = newScreenFrame.origin.y
         let maxH = newScreenFrame.height
@@ -803,28 +804,30 @@ final class TeleportEngine {
         }
         repin(&slots)
         for i in workspaces.indices { repin(&workspaces[i].slots) }
-        // In fill mode, push the new full height to the REAL windows. `force:
-        // true` is required: a window that was already at the OLD full height
-        // now has a model height (clamped above, or unchanged when growing) that
-        // can equal the new target's tolerance, so the normal early-return would
-        // skip the resize. Reconciled against the real frame so an app that
-        // clamps height never desyncs the model.
+        // In fill mode, push the new full height to the REAL windows. The forced
+        // resize is needed ONLY when the usable HEIGHT actually changed: `repin`
+        // may have clamped a window's model height to the new (shorter) display,
+        // so the normal early-return (`abs(slot.height - target) <= 1`) would
+        // wrongly skip the cross-process resize. Reconciled against the real
+        // frame so an app that clamps height never desyncs the model.
         //
-        // Both the ACTIVE strip AND the windows stashed in INACTIVE workspaces
-        // are resized: a parked window is only repositioned (not resized) when
-        // its workspace is later re-activated, so without resizing it here a
-        // resolution change would leave it stuck at the old height until the
-        // user happened to resize it. Parked windows keep their parked `y`
-        // (top-pin happens when re-placed); the active strip was top-pinned by
-        // `repin` above.
+        // When the height is UNCHANGED (a redundant settled display change -
+        // macOS fires `didChangeScreenParameters` repeatedly on multi-monitor /
+        // ProMotion setups, or the strip is re-bound to the same geometry), the
+        // windows are already at the right height, so we must NOT force: forcing
+        // would issue a storm of no-op `setSize` calls the user perceives as
+        // every window flickering/resizing ("glitching out"). The non-forced
+        // path still re-fills any window that genuinely differs (`abs > 1`), so
+        // dropping force here never leaves a window mis-sized.
+        let heightChanged = abs(newScreenFrame.height - oldHeight) > 1
         if fillHeight {
-            for i in slots.indices { applyFillHeight(toSlotAt: i, force: true) }
+            for i in slots.indices { applyFillHeight(toSlotAt: i, force: heightChanged) }
             // Inactive workspaces only: `workspaces[activeWorkspace]` is a STALE
             // placeholder (the live active slots are `slots`, handled above), so
             // resizing it would touch out-of-date / closed elements.
             for w in workspaces.indices where w != activeWorkspace {
                 for i in workspaces[w].slots.indices {
-                    fillSlotToUsableHeight(&workspaces[w].slots[i], force: true)
+                    fillSlotToUsableHeight(&workspaces[w].slots[i], force: heightChanged)
                 }
             }
         }

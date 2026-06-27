@@ -295,6 +295,14 @@ case "fullscreentest":
     // freeze split, the fullscreen-Space spurious-adopt seed, and that returning
     // re-converges. Always headless: never touches a real window/Space/keyboard.
     runHeadlessFullscreenTest()
+case "clamshelltest":
+    // Headless CLAMSHELL / equal-display repro: drives the REAL controller's
+    // settled-display-change path through a laptop-lid-close transition (built-in
+    // primary turns off, an external becomes the new AppKit-origin primary) with
+    // two EQUAL 1440p externals + a sleep/wake burst. Asserts the strip follows
+    // its own display by stable id, never oscillates, and keeps every window
+    // on-screen with finite geometry. Always headless: no real window/monitor.
+    runClamshellTest()
 case "headlesstest":
     // Run EVERY headless integration test in one child-process sweep, so a
     // single command verifies the whole suite without touching the desktop.
@@ -468,6 +476,15 @@ default:
                                strip rebind moves windows onto the other display.
                                HEADLESS by default (synthetic 2-display world);
                                --live runs against your real monitors.
+      WindowLab clamshelltest  CLAMSHELL / equal-display repro: drives the real
+                               controller through a laptop-lid-close transition
+                               (built-in primary turns off, an external becomes
+                               the new primary) with two equal 1440p externals + a
+                               sleep/wake burst. Asserts the strip follows its own
+                               display by stable id, never oscillates, keeps every
+                               window on-screen, and that a redundant display
+                               change issues NO window resizes (no "glitching").
+                               Always headless: no real window/monitor.
       WindowLab hotkeyprobe [secs]
                                register Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q globally
                                and report which key combos Carbon actually delivers.

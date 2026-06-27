@@ -333,9 +333,21 @@ final class SimWindowWorld: WindowBackend {
 
     // MARK: - WindowBackend (write)
 
+    /// Total real `setPosition` calls the engine issued (test introspection).
+    /// Counts cross-process AX position writes so a test can prove a redundant
+    /// display change does NOT re-move every window.
+    private(set) var setPositionCount = 0
+    /// Total real `setSize` calls the engine issued (test introspection).
+    private(set) var setSizeCount = 0
+    /// Reset both write counters to zero (call before a measured operation).
+    func resetWriteCounters() {
+        lock.lock(); setPositionCount = 0; setSizeCount = 0; lock.unlock()
+    }
+
     func setPosition(_ element: AXUIElement, _ point: CGPoint) -> AXError {
         lock.lock(); defer { lock.unlock() }
         guard let w = find(element) else { return .invalidUIElement }
+        setPositionCount += 1
         w.frame.origin = clamp(origin: point, size: w.frame.size)
         return .success
     }
@@ -362,6 +374,7 @@ final class SimWindowWorld: WindowBackend {
     func setSize(_ element: AXUIElement, _ size: CGSize) -> AXError {
         lock.lock(); defer { lock.unlock() }
         guard let w = find(element) else { return .invalidUIElement }
+        setSizeCount += 1
         // Apps clamp to their own minimum while AX still reports success — the
         // central reason the engine always reads back the REAL frame.
         var clamped = CGSize(
