@@ -30,11 +30,20 @@ import CoreGraphics
 ///   + moved AND resized              -> + 0 = 40  (< 50 DROP)
 ///
 /// minimumScore = 50, so ANY position discrepancy > 8px between the AX snapshot
-/// and the CG snapshot (taken in separate syscalls, a frame or more apart) drops
-/// a real, current-Space window. This is exactly what happens during window
-/// CHURN: while the engine is actively parking/teleporting Ghostty windows to
-/// off-screen strip X (the live data showed x=-854, x=1880), AX reads one X and
-/// the WindowServer reports another -> > 8px -> score <= 48 -> UNMATCHED.
+/// and the CG snapshot (taken in separate syscalls, a frame or more apart) would
+/// drop a real, current-Space window AT THE SCORE LEVEL. This is exactly what
+/// happens during window CHURN: while the engine is actively parking/teleporting
+/// Ghostty windows to off-screen strip X (the live data showed x=-854, x=1880),
+/// AX reads one X and the WindowServer reports another -> > 8px -> score <= 48.
+///
+/// THE FIX (`IdentityMatcher.match` pass 2): the binary "on the current Space?"
+/// question must NOT hinge on that same-instant frame agreement. After the
+/// high-confidence frame pass, a motion-invariant per-PID fallback gives every
+/// still-unmatched AX window its app's nearest unconsumed same-PID CG row,
+/// regardless of the score threshold. A CG row only exists for a CURRENT-Space
+/// window, so this rescues a moved-but-present window without ever fabricating
+/// Space membership. These tests assert BOTH the score math (unchanged) and the
+/// match-level rescue (the flipped `// FIX:` checks).
 enum IdentityMatcherFusionTests {
 
     // MARK: - synthetic builders
@@ -121,30 +130,43 @@ enum IdentityMatcherFusionTests {
               movedWithTitle >= IdentityMatcher.minimumScore && movedSameSize < IdentityMatcher.minimumScore)
 
         // ============================================================
-        // FAILURE MODE C (P0): a single churned window is UNMATCHED -> cg==nil.
-        // This is the Ghostty-parking case: AX frame and CG frame disagree by
-        // > 8px while the engine is mid-teleport. The window is real and on the
-        // current Space, yet match() returns cg == nil.
+        // FIXED MODE C (P0): a single churned window is now MATCHED via the
+        // motion-invariant per-PID fallback (pass 2). This is the Ghostty-parking
+        // case: AX frame and CG frame disagree by > 8px while the engine is
+        // mid-teleport, so pass 1's frame score is only 48 (< 50). The fallback
+        // sees the app's one unconsumed same-PID CG row and claims it regardless
+        // of the threshold, so the real, current-Space window fuses (cg != nil)
+        // instead of being dropped as off-Space.
         // ============================================================
         let churnMatched = IdentityMatcher.match(
             axWindows: [ax(pid: pid, frame: base, title: "~")],
             cgWindows: [cg(pid: pid, bounds: base.offsetBy(dx: 40, dy: 0))]) // production: no title
-        check("BUG: churned same-size move -> UNMATCHED (cg == nil), dropped as off-Space",
-              churnMatched.count == 1 && churnMatched[0].cg == nil)
+        check("FIX: churned same-size move -> MATCHED via per-PID fallback (cg != nil)",
+              churnMatched.count == 1 && churnMatched[0].cg != nil)
 
-        // Positive control: when the snapshots agree (<= 8px), it DOES match, so
-        // the drop is specifically a churn/race artifact, not a blanket failure.
+        // Positive control: when the snapshots agree (<= 8px), it DOES match via
+        // pass 1 (high-confidence frame), so the fallback only ever RESCUES a
+        // window pass 1 already missed; it never overrides a confident match.
         let calmMatched = IdentityMatcher.match(
             axWindows: [ax(pid: pid, frame: base, title: "~")],
             cgWindows: [cg(pid: pid, bounds: base.offsetBy(dx: 6, dy: 0))])
-        check("control: settled window (<=8px) DOES match (cg != nil)",
+        check("control: settled window (<=8px) matches via pass 1 (cg != nil)",
               calmMatched.count == 1 && calmMatched[0].cg != nil)
 
+        // Negative control: the fallback is per-PID, so a DIFFERENT-PID CG row
+        // never rescues an AX window. A window whose app has NO current-Space CG
+        // row at all is still correctly read as off-Space (cg == nil).
+        let offSpace = IdentityMatcher.match(
+            axWindows: [ax(pid: pid, frame: base, title: "~")],
+            cgWindows: [cg(pid: pid + 1, bounds: base)]) // some OTHER app's window
+        check("control: no same-PID CG row -> still off-Space (cg == nil)",
+              offSpace.count == 1 && offSpace[0].cg == nil)
+
         // ============================================================
-        // FAILURE MODE F (P0 amplifier): a fusion-dropped window is NOT even
-        // surfaced as floating. `FloatingWindows.compute` gates on cg != nil, so
-        // the churned window is invisible to BOTH the strip and the floating
-        // menu -- the manager loses it entirely.
+        // FIXED MODE F (P0 amplifier): a churn-fused window is now ALSO surfaced
+        // (here: adopted) correctly. `FloatingWindows.compute` gates on
+        // cg != nil, and the fallback now provides that, so the window is no
+        // longer invisible to BOTH the strip and the floating menu.
         // ============================================================
         let churnAX = ax(pid: pid, frame: base, title: "~")
         let floating = FloatingWindows.compute(
@@ -152,8 +174,8 @@ enum IdentityMatcherFusionTests {
             cgWindows: [cg(pid: pid, bounds: base.offsetBy(dx: 40, dy: 0))],
             managed: [],
             selfPID: 1)
-        check("BUG: fusion-dropped window is ALSO absent from the floating list (invisible)",
-              floating.isEmpty)
+        check("FIX: churn-fused window is now visible as floating (reachable)",
+              floating.count == 1)
 
         // ============================================================
         // FAILURE MODE E (P1): greedy "each CG used once" strands a real window

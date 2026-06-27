@@ -150,6 +150,50 @@ enum ResyncFreezeTests {
                   frozen == .frozenDifferentSpace)
         }
 
+        // ============================================================
+        // FIX (GATE-C, the prime cause): a CHURNING managed column whose CG row
+        // drifts > 8px from its AX frame is STILL recognized as on the current
+        // Space (the motion-invariant per-PID fusion fallback), so resync does
+        // NOT false-freeze and the new tileable window is adopted. This is the
+        // exact production failure (Ghostty windows mid-park) reproduced through
+        // the real sim + engine + IdentityMatcher, now flipped to the fixed
+        // behavior. Unlike the native-Space block above, the managed window stays
+        // on the CURRENT Space; only its AX-vs-CG snapshots disagree.
+        // ============================================================
+        do {
+            let world = Headless.install()
+            defer { Headless.uninstall() }
+            let engine = TeleportEngine(screenFrame: Headless.defaultVisibleFrame)
+            engine.stripDisplayFrame = Headless.defaultFullFrame
+
+            let (pids, els) = Headless.seedWindows(world, count: 1, startPID: 6200)
+            Headless.arrangeCurrentSpace(engine, pids: pids)
+            check("fix setup: 1 column adopted", engine.slots.count == 1)
+
+            // A new standard, current-Space window the user wants tiled.
+            let (pids2, _) = Headless.seedWindows(
+                world, count: 1, startPID: 6300,
+                within: CGRect(x: 800, y: 72, width: 360, height: 420))
+            let allPids = pids + pids2
+
+            // Make the MANAGED column churn: its WindowServer (CG) row lags its AX
+            // frame by 40px - exactly the snapshot divergence GATE-C proved drops
+            // a window. Pre-fix, fusion scored it 48 (< 50) -> the column fell out
+            // of currentSpaceIDs -> frozenDifferentSpace. Post-fix the per-PID
+            // fallback re-fuses it, so the strip is correctly seen as on-Space.
+            world.setCGFrameOffset(els[0], CGRect(x: 40, y: 0, width: 0, height: 0))
+
+            let decision = Headless.resyncDecision(engine, pids: allPids)
+            check("FIX(F1 e2e): churning managed column STILL on current-Space -> not frozen",
+                  decision != .frozenDifferentSpace)
+            if case .apply(_, let add) = decision {
+                check("FIX(F1 e2e): the brand-new tileable window IS adopted (not floating)",
+                      !add.isEmpty)
+            } else {
+                check("FIX(F1 e2e): expected .apply for a churning-but-present strip", false)
+            }
+        }
+
         print("[resyncfreeze] GATE-F: \(passed) passed, \(failed) failed")
         return failed == 0
     }
