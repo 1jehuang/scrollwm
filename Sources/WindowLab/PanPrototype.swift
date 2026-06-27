@@ -1,6 +1,79 @@
 import Foundation
 import ApplicationServices
 import AppKit
+import simd
+
+/// Canvas viewport with inertial panning. Shared by the AX pan prototype.
+struct ViewportPhysics {
+    var origin = SIMD2<Double>(0, 0)
+    var velocity = SIMD2<Double>(0, 0) // points/sec
+
+    private var lastSampleTimeNs: UInt64 = 0
+
+    mutating func apply(samples: [ScrollSample], nowNs: UInt64) {
+        guard !samples.isEmpty else { return }
+        var total = SIMD2<Double>(0, 0)
+        for s in samples {
+            total.x += s.deltaX
+            total.y += s.deltaY
+        }
+        // Natural scrolling: content follows fingers; viewport moves opposite.
+        origin -= total
+
+        // Velocity estimate from this batch.
+        let dtNs = nowNs &- (lastSampleTimeNs == 0 ? nowNs : lastSampleTimeNs)
+        let dt = max(Double(dtNs) / 1e9, 1.0 / 240.0)
+        velocity = -total / dt
+        lastSampleTimeNs = nowNs
+    }
+
+    /// Inertia when no input is arriving.
+    mutating func coast(dt: Double, nowNs: UInt64) {
+        let idleNs = nowNs &- lastSampleTimeNs
+        guard lastSampleTimeNs != 0, idleNs > 30_000_000 else { return } // 30 ms grace
+        let speed = simd_length(velocity)
+        guard speed > 5 else { velocity = .zero; return }
+        origin += velocity * dt
+        velocity *= exp(-dt / 0.55) // friction time constant
+    }
+}
+
+/// Posts ctrl+opt scroll events so latency can be measured with no human input.
+/// Our own tap suppresses them, so user apps never see these events.
+final class SelfTestScroller {
+    private var thread: Thread?
+    private(set) var posted = 0
+
+    func start(durationSeconds: Double) {
+        let thread = Thread { [weak self] in
+            let endTime = Date().addingTimeInterval(durationSeconds)
+            var phase = 0.0
+            while Date() < endTime {
+                // Sinusoidal velocity envelope, like a human pan gesture.
+                phase += 0.008
+                let dy = sin(phase) * 18.0
+                if let event = CGEvent(
+                    scrollWheelEvent2Source: nil,
+                    units: .pixel,
+                    wheelCount: 2,
+                    wheel1: Int32(dy),
+                    wheel2: Int32(cos(phase * 0.7) * 9.0),
+                    wheel3: 0
+                ) {
+                    event.flags = ScrollEventTap.requiredFlags
+                    event.timestamp = Clock.nowAbsNs()
+                    event.post(tap: .cghidEventTap)
+                    self?.posted += 1
+                }
+                Thread.sleep(forTimeInterval: 1.0 / 120.0) // 120 events/sec
+            }
+        }
+        thread.name = "scrollwm.selftest"
+        thread.qualityOfService = .userInteractive
+        thread.start()
+        self.thread = thread
+    }
+}
 
 /// Milestone 5: the v1 vertical slice.
 ///

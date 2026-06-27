@@ -185,9 +185,6 @@ case "bench":
 case "watch":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 10
     runWatch(seconds: seconds)
-case "overlay":
-    let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 15
-    runOverlay(seconds: seconds, selftest: args.contains("--selftest"))
 case "scrollbench":
     let numbers = args.dropFirst().compactMap { Int($0) }
     runScrollBench(
@@ -390,9 +387,6 @@ default:
       WindowLab probe [-v]     enumerate CG+AX windows, match, report latency
       WindowLab bench          AX move/resize benchmark (windows restored after)
       WindowLab watch [secs]   repeated full resync loop with timing
-      WindowLab overlay [secs] [--selftest]
-                               Metal overlay; ctrl+opt+scroll pans fake canvas.
-                               --selftest posts synthetic scrolls and reports latency.
       WindowLab scrollbench [n] [hz]
                                animate n disposable test windows via AX moves,
                                measure jank. Headless: always spawns its own
