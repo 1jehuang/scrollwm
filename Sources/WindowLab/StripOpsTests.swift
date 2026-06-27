@@ -2238,6 +2238,7 @@ enum StripOpsTests {
         lanesOK = LaunchAtLoginTests.run() && lanesOK
         lanesOK = TutorialProgressTests.run() && lanesOK
         lanesOK = LogTests.run() && lanesOK
+        lanesOK = IdentityMatcherFusionTests.run() && lanesOK
 
         let allOK = failed == 0 && lanesOK
         print("\n[unittest] overall: \(allOK ? "PASS" : "FAIL")")
