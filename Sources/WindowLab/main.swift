@@ -155,6 +155,17 @@ if command == "logs" {
     exit(runLogsCLI(Array(args.dropFirst())))
 }
 
+// `scrollwm --version` / `-V` prints the running binary's marketing version and
+// exits, WITHOUT contacting a running app over the control socket. This works
+// even when ScrollWM is dormant, stopped, or not installed - the version is
+// baked into the bundle's Info.plist by scripts/make-bundle.sh (from VERSION),
+// so a bare CLI binary reports the dev sentinel. (The `version` verb below is a
+// separate, JSON capability handshake that DOES require a running app.)
+if command == "--version" || command == "-V" {
+    print("ScrollWM \(AppVersion.currentString)")
+    exit(0)
+}
+
 // CLI control verbs: talk to a RUNNING ScrollWM app over its control socket.
 // These are the user-facing `scrollwm <verb>` commands (see runControlCLI).
 let controlVerbs: Set<String> = [
@@ -326,6 +337,7 @@ default:
       scrollwm tutorial            open the in-app cheat sheet
       scrollwm logs [--tail N|--follow|--path|--clear]
                                    show the app log (~/Library/Logs/ScrollWM/)
+      scrollwm --version           print the installed ScrollWM version
       scrollwm quit                restore windows and quit the app
 
     Lab / test harness (spawns its own processes; safe):

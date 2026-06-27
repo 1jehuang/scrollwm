@@ -1852,6 +1852,14 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         checkUpdates.target = self
         menu.addItem(checkUpdates)
 
+        // Info-only row: the running app's version, so users can confirm what
+        // they're on (mirrors `scrollwm --version`). Click copies it to the
+        // clipboard for easy bug reports.
+        let version = NSMenuItem(title: "Version \(AppVersion.currentString)", action: #selector(copyVersionAction), keyEquivalent: "")
+        version.target = self
+        version.toolTip = "Click to copy the version"
+        menu.addItem(version)
+
         // Launch at login: a checkbox toggle. Only meaningful for the installed
         // ScrollWM.app, so it is disabled (info-only) on a dev binary. The check
         // mark reflects the LIVE registration so the user sees the real state.
@@ -1922,6 +1930,13 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     @objc private func openConfigFile() { controller.openConfigFile() }
     @objc private func reloadConfigAction() { controller.reloadConfig() }
     @objc private func checkForUpdatesAction() { controller.checkForUpdates() }
+    @objc private func copyVersionAction() {
+        // Copy the bare version string (e.g. "0.1.5") so it pastes cleanly into
+        // a bug report. Uses the same source as the menu title / `scrollwm --version`.
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(AppVersion.currentString, forType: .string)
+    }
     @objc private func toggleLaunchAtLoginAction() {
         // Flip to the opposite of the live registration state.
         _ = controller.setLaunchAtLogin(!controller.launchAtLoginEnabled)

@@ -28,15 +28,48 @@ enum AppVersion {
     /// The running app's version. Prefers the bundle's
     /// `CFBundleShortVersionString` (set by `scripts/make-bundle.sh` from the
     /// `VERSION` file); falls back to a dev sentinel for the bare CLI binary.
+    ///
+    /// When launched through a SYMLINK to the bundle's executable (e.g. the
+    /// Homebrew `scrollwm` shim at `/opt/homebrew/bin/scrollwm`), `Bundle.main`
+    /// resolves to the symlink's directory, NOT the `.app`, so its
+    /// `infoDictionary` is empty. In that case we resolve the executable's real
+    /// path, find the enclosing `.app`, and read its Info.plist directly - so
+    /// `scrollwm --version` reports the real version no matter how it was run.
     static var currentString: String {
         if let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
            !v.isEmpty {
+            return v
+        }
+        if let v = versionFromResolvedBundle(), !v.isEmpty {
             return v
         }
         return "0.0.0-dev"
     }
 
     static var current: SemVer { SemVer(currentString) ?? SemVer("0.0.0-dev")! }
+
+    /// Resolve the real executable (following symlinks), walk up to the
+    /// enclosing `*.app`, and return its `CFBundleShortVersionString`, if any.
+    private static func versionFromResolvedBundle() -> String? {
+        let rawPath = Bundle.main.executableURL?.path
+            ?? Bundle.main.executablePath
+            ?? CommandLine.arguments.first
+        guard let rawPath, !rawPath.isEmpty else { return nil }
+
+        // Follow symlinks so a `/opt/homebrew/bin/scrollwm` shim lands inside
+        // `…/ScrollWM.app/Contents/MacOS/ScrollWM`.
+        let resolved = (rawPath as NSString).resolvingSymlinksInPath
+        var url = URL(fileURLWithPath: resolved)
+
+        // Walk up from the executable looking for the `.app` bundle root.
+        while url.pathComponents.count > 1 {
+            if url.pathExtension == "app" {
+                return Bundle(url: url)?.infoDictionary?["CFBundleShortVersionString"] as? String
+            }
+            url.deleteLastPathComponent()
+        }
+        return nil
+    }
 }
 
 /// One published release, distilled to what the updater needs.
