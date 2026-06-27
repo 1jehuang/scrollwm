@@ -301,6 +301,13 @@ case "spacefocustest":
     // teleport the user across Spaces). Always headless: never touches a real
     // window/Space/keyboard.
     runHeadlessSpaceFocusGuardTest()
+case "displaymovetest":
+    // Headless MULTI-DISPLAY focus/move test: the new Ctrl+Opt+Cmd+J/K (focus
+    // the next/prev monitor's strip) and Ctrl+Opt+Cmd+Shift+J/K (send the
+    // focused window to another monitor + follow) verbs. Drives the REAL
+    // controller's per-display strips against the sim. Never touches a real
+    // window/monitor/keyboard.
+    runHeadlessDisplayMoveTest()
 case "clamshelltest":
     // Headless CLAMSHELL / equal-display repro: drives the REAL controller's
     // settled-display-change path through a laptop-lid-close transition (built-in

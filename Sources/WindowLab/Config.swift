@@ -529,6 +529,14 @@ struct ScrollWMConfig: Equatable {
         "moveToWorkspaceDown": "cmd+shift+j",   // (tap) send focused window down + follow
         "moveToWorkspaceUp":   "cmd+shift+k",   // (tap) send focused window up + follow
 
+        // Multi-display: move keyboard focus between monitors, and send the
+        // focused window to another monitor's strip (and follow it there). Only
+        // meaningful with more than one display; no-op on a single monitor.
+        "focusDisplayNext":      "ctrl+opt+cmd+j",        // focus the next monitor's strip
+        "focusDisplayPrevious":  "ctrl+opt+cmd+k",        // focus the previous monitor's strip
+        "moveToDisplayNext":     "ctrl+opt+cmd+shift+j",  // send focused window to the next monitor
+        "moveToDisplayPrevious": "ctrl+opt+cmd+shift+k",  // send focused window to the previous monitor
+
         "width25":  ["opt+1", "cmd+1"],
         "width50":  ["opt+2", "cmd+2"],
         "width75":  ["opt+3", "cmd+3"],
@@ -576,6 +584,10 @@ enum KeyAction: String, CaseIterable {
     case workspaceUp
     case moveToWorkspaceDown
     case moveToWorkspaceUp
+    case focusDisplayNext    // move keyboard focus to the next monitor's strip
+    case focusDisplayPrevious
+    case moveToDisplayNext   // send focused window to the next monitor's strip + follow
+    case moveToDisplayPrevious
     case width25
     case width50
     case width75
@@ -600,6 +612,10 @@ enum KeyAction: String, CaseIterable {
         case .workspaceUp:        return "Workspace ↑"
         case .moveToWorkspaceDown: return "Send ↓"
         case .moveToWorkspaceUp:   return "Send ↑"
+        case .focusDisplayNext:        return "Display →"
+        case .focusDisplayPrevious:    return "Display ←"
+        case .moveToDisplayNext:       return "Send to display →"
+        case .moveToDisplayPrevious:   return "Send to display ←"
         case .width25:            return "Width 25%"
         case .width50:            return "Width 50%"
         case .width75:            return "Width 75%"
@@ -622,6 +638,10 @@ enum KeyAction: String, CaseIterable {
         .workspaceUp:         ["cmd+k"],
         .moveToWorkspaceDown: ["cmd+shift+j"],
         .moveToWorkspaceUp:   ["cmd+shift+k"],
+        .focusDisplayNext:        ["ctrl+opt+cmd+j"],
+        .focusDisplayPrevious:    ["ctrl+opt+cmd+k"],
+        .moveToDisplayNext:       ["ctrl+opt+cmd+shift+j"],
+        .moveToDisplayPrevious:   ["ctrl+opt+cmd+shift+k"],
         .width25:         ["opt+1", "cmd+1"],
         .width50:         ["opt+2", "cmd+2"],
         .width75:         ["opt+3", "cmd+3"],

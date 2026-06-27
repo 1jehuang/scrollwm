@@ -151,6 +151,12 @@ enum ChordFormatter {
             KeyTableRow("Send window to workspace down / up", [.moveToWorkspaceDown, .moveToWorkspaceUp]) {
                 "\(chordText($0, .moveToWorkspaceDown)) / \(chordText($0, .moveToWorkspaceUp))"
             },
+            KeyTableRow("Focus next / previous display", [.focusDisplayNext, .focusDisplayPrevious]) {
+                "\(chordText($0, .focusDisplayNext)) / \(chordText($0, .focusDisplayPrevious))"
+            },
+            KeyTableRow("Send window to next / previous display", [.moveToDisplayNext, .moveToDisplayPrevious]) {
+                "\(chordText($0, .moveToDisplayNext)) / \(chordText($0, .moveToDisplayPrevious))"
+            },
             KeyTableRow("Width 25% / 50% / 75% / 100%", [.width25, .width50, .width75, .width100]) { c in
                 [KeyAction.width25, .width50, .width75, .width100]
                     .map { chordText(c, $0) }.joined(separator: "  ")

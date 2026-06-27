@@ -593,6 +593,41 @@ extension TeleportEngine {
         insert(window: info, at: slots.count)
     }
 
+    /// Detach the focused column from the active workspace and return its slot,
+    /// so a caller can re-home it on ANOTHER display's engine (the cross-display
+    /// "send window to next monitor" verb). Unlike `removeSlots`, this does NOT
+    /// release the window (no AX restore) - the slot keeps its identity/size and
+    /// is handed off intact. Re-packs the remaining columns and keeps focus on a
+    /// neighbor. Returns nil when there is nothing focused.
+    func detachFocusedSlot() -> Slot? {
+        guard slots.indices.contains(focusIndex) else { return nil }
+        let detached = slots.remove(at: focusIndex)
+        focusIndex = max(0, min(focusIndex, slots.count - 1))
+        compactStrip()
+        // Reveal the gap-fill on the source display and reset the moved window's
+        // committed-origin cache so the destination engine always re-places it.
+        detached.window.lastCommittedOrigin = nil
+        if !slots.isEmpty { refitViewportToFocused() }
+        onLayoutChange?()
+        return detached
+    }
+
+    /// Adopt a slot detached from another display's engine at array index `at`,
+    /// preserving its window identity and size. The caller re-packs/focuses; this
+    /// only splices it into the active workspace. Pairs with `detachFocusedSlot`.
+    func adoptDetachedSlot(_ slot: Slot, at index: Int) {
+        var s = slot
+        // Re-anchor onto this display's vertical band; `compactStrip`/`focus`
+        // recompute canvasX + the on-screen origin, and the nil committed-origin
+        // forces a fresh placement on the new monitor.
+        s.y = screenFrame.origin.y
+        s.window.lastCommittedOrigin = nil
+        let clamped = max(0, min(index, slots.count))
+        slots.insert(s, at: clamped)
+        compactStrip()
+        onLayoutChange?()
+    }
+
     /// Remove slots matching the predicate. Returns count removed.
     /// Keeps focus on the same window when possible.
     func removeSlots(where predicate: (Slot) -> Bool) -> Int {

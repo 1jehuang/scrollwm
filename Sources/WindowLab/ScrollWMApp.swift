@@ -921,7 +921,7 @@ final class ScrollWMController: NSObject {
         // surprise the user later.
         let onscreen = matched.filter { $0.cg != nil }
 
-        if config.layout.multiDisplay && NSScreen.screens.count > 1 {
+        if config.layout.multiDisplay && managedDisplays().count > 1 {
             arrangeMultiDisplay(onscreen: onscreen, filter: effectiveFilter)
             return
         }
@@ -1199,6 +1199,71 @@ final class ScrollWMController: NSObject {
         menuBar.refresh()
     }
 
+    // MARK: - Multi-display focus / move
+
+    /// Indices of strips that are currently MANAGING a display, in `strips`
+    /// (display) order. These are the targets the cross-display focus/move
+    /// hotkeys cycle through; a dormant strip (no windows yet) is skipped.
+    private var managingStripIndices: [Int] {
+        strips.indices.filter { strips[$0].isManaging }
+    }
+
+    /// Move keyboard focus to the next/previous MONITOR's strip
+    /// (Ctrl+Opt+Cmd+J / K). Focus-follows-display means hotkeys act on whichever
+    /// strip is active, so this just advances `activeStripIndex` to the next
+    /// managing strip and focuses that strip's focused column (raising its app so
+    /// the keyboard follows). No-op with fewer than two managing displays.
+    func focusDisplay(by delta: Int) {
+        guard isManaging else { return }
+        let managing = managingStripIndices
+        guard managing.count > 1 else { return }
+        // Where does the active strip sit within the managing set? Default to the
+        // first if the active strip is somehow dormant.
+        let here = managing.firstIndex(of: activeStripIndex) ?? 0
+        let next = managing[((here + delta) % managing.count + managing.count) % managing.count]
+        guard next != activeStripIndex else { return }
+        activeStripIndex = next
+        // Focus the destination strip's current column so keyboard input lands
+        // there (engine.focus raises + activates the app, moving the OS focus to
+        // that monitor). Re-fit if the strip is empty (nothing to focus).
+        let dest = strips[next].engine
+        if !dest.slots.isEmpty {
+            dest.focus(index: dest.focusIndex)
+        }
+        menuBar.refresh()
+    }
+
+    /// Send the focused window to the next/previous MONITOR's strip and follow it
+    /// there (Ctrl+Opt+Cmd+Shift+J / K). The window is detached from the current
+    /// display's engine and inserted just right of the destination strip's focus,
+    /// then physically teleported onto that monitor. No-op with fewer than two
+    /// managing displays or nothing focused.
+    func moveFocusedToDisplay(by delta: Int) {
+        guard isManaging else { return }
+        let managing = managingStripIndices
+        guard managing.count > 1 else { return }
+        let here = managing.firstIndex(of: activeStripIndex) ?? 0
+        let destIndex = managing[((here + delta) % managing.count + managing.count) % managing.count]
+        guard destIndex != activeStripIndex else { return }
+
+        let source = activeStrip.engine
+        source.syncFocusToSystemFocusedWindow()
+        guard let moved = source.detachFocusedSlot() else { return }
+
+        let dest = strips[destIndex].engine
+        // Insert just right of the destination's focused column (PaperWM-style),
+        // adopting the slot's existing identity/size so the window keeps its
+        // dimensions, then re-pack + focus it so it teleports onto the new
+        // monitor and the viewport reveals it.
+        let insertAt = dest.slots.isEmpty ? 0 : dest.focusIndex + 1
+        dest.adoptDetachedSlot(moved, at: insertAt)
+        activeStripIndex = destIndex
+        dest.focus(index: insertAt)
+
+        RestoreStore.save(engines: strips.map { $0.engine })
+        menuBar.refresh()
+    }
+
     /// Resize the focused column to an arbitrary fraction of the strip width
     /// (CLI `width` verb; the preset keys use `setWidthPreset`).
     func setWidthFraction(_ fraction: CGFloat) {
@@ -1262,6 +1327,28 @@ final class ScrollWMController: NSObject {
     var debugSlotCount: Int { engine.slots.count }
     var debugSlotTitles: [String] { engine.slots.map { $0.window.title } }
     var debugFocusIndex: Int { engine.focusIndex }
+    /// Per-strip slot titles (display order), for the multi-display focus/move
+    /// integration test. Reads the SAME engines production drives.
+    var debugStripTitles: [[String]] { strips.map { $0.engine.slots.map { $0.window.title } } }
+    /// Index of the strip global hotkeys currently act on (focus-follows-display).
+    var debugActiveStripIndex: Int { activeStripIndex }
+    /// Drive the cross-display focus verb (Ctrl+Opt+Cmd+J/K) in a headless test.
+    func debugFocusDisplay(by delta: Int) { focusDisplay(by: delta) }
+    /// Drive the cross-display move verb (Ctrl+Opt+Cmd+Shift+J/K) in a test.
+    func debugMoveFocusedToDisplay(by delta: Int) { moveFocusedToDisplay(by: delta) }
+
+    /// Headless seam: turn on the multi-display arrange path and inject a
+    /// synthetic set of displays, so the per-monitor strip routing (and the
+    /// cross-display focus/move verbs) can be exercised on a single-display CI
+    /// against the sim. Call BEFORE `arrange()`. `displays` are AX (top-left
+    /// global) frames; the first is treated as primary/main.
+    func debugEnableMultiDisplay(_ displays: [(full: CGRect, visible: CGRect)]) {
+        config.layout.multiDisplay = true
+        debugManagedDisplaysOverride = displays.enumerated().map { (i, d) in
+            ManagedDisplay(visible: d.visible, full: d.full,
+                           id: CGDirectDisplayID(1000 + i), isMain: i == 0)
+        }
+    }
     var debugFocusedTitle: String {
         engine.slots.indices.contains(engine.focusIndex) ? engine.slots[engine.focusIndex].window.title : ""
     }
@@ -1475,6 +1562,10 @@ final class ScrollWMController: NSObject {
         bind(.workspaceUp) { [weak self] in self?.switchWorkspace(by: -1) }
         bind(.moveToWorkspaceDown) { [weak self] in self?.moveFocusedToWorkspace(by: 1) }
         bind(.moveToWorkspaceUp) { [weak self] in self?.moveFocusedToWorkspace(by: -1) }
+        bind(.focusDisplayNext) { [weak self] in self?.focusDisplay(by: 1) }
+        bind(.focusDisplayPrevious) { [weak self] in self?.focusDisplay(by: -1) }
+        bind(.moveToDisplayNext) { [weak self] in self?.moveFocusedToDisplay(by: 1) }
+        bind(.moveToDisplayPrevious) { [weak self] in self?.moveFocusedToDisplay(by: -1) }
         bind(.spawnTerminal) { TerminalLauncher.launchBest() }
 
         if tap.start() {
