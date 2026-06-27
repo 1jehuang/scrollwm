@@ -133,6 +133,39 @@ func runHeadlessDisplayMoveTest() {
         t.check("returned window B0 located", false)
     }
 
+    // === 6. Focus-follows-display: activating a window on the OTHER monitor
+    // switches the active strip WITHOUT any move/raise (mirrors a user clicking a
+    // window on display 1). We set the sim's system focus to display 1's window
+    // and fire the same sync the app-activation observer would. ===
+    t.check("pre-sync active strip is display 0", controller.debugActiveStripIndex == 0)
+    if let c1 = controller.debugStripWindowElement(strip: 1, title: "C1") {
+        world.setSystemFocus(c1)
+        controller.debugSyncActiveStripToFocus()
+        Headless.pump(0.05)
+        t.check("focus-follows: clicking display 1's window made it active",
+                controller.debugActiveStripIndex == 1)
+    } else {
+        t.check("display 1 window C1 located for focus-follows", false)
+    }
+    // Activating a window back on display 0 switches back.
+    if let a0 = controller.debugStripWindowElement(strip: 0, title: "A0") {
+        world.setSystemFocus(a0)
+        controller.debugSyncActiveStripToFocus()
+        Headless.pump(0.05)
+        t.check("focus-follows: clicking display 0's window switched back",
+                controller.debugActiveStripIndex == 0)
+    } else {
+        t.check("display 0 window A0 located for focus-follows", false)
+    }
+    // Re-firing with focus already on the active strip is a stable no-op.
+    if let a0 = controller.debugStripWindowElement(strip: 0, title: "A0") {
+        world.setSystemFocus(a0)
+        controller.debugSyncActiveStripToFocus()
+        Headless.pump(0.05)
+        t.check("focus-follows: no spurious switch when already active",
+                controller.debugActiveStripIndex == 0)
+    }
+
     controller.release()
     Headless.pump(0.1)
 

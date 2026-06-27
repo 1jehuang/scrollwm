@@ -74,6 +74,12 @@ final class ScrollWMController: NSObject {
     /// hotplug burst, short enough to feel instant.
     private let displayChangeDebounceInterval: TimeInterval = 0.25
 
+    /// Observer for app-activation, used to drive focus-follows-display: when the
+    /// user activates an app on another monitor, the active strip switches so
+    /// hotkeys act on that monitor. Removed on deinit. nil in tests that never
+    /// install it.
+    private var focusFollowObserver: NSObjectProtocol?
+
     /// Stable `CGDirectDisplayID` of the display the ACTIVE strip is bound to.
     /// Tracked per strip (see `DisplayStrip.displayID`) so `applySettledDisplayChange`
     /// can follow each strip's PHYSICAL display by identity across an arrangement
@@ -145,6 +151,22 @@ final class ScrollWMController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(screenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+
+        // Focus-follows-display: when the user activates an app (clicks a window,
+        // Cmd-Tabs) on a DIFFERENT monitor, route subsequent navigation/width/
+        // move/workspace hotkeys to THAT monitor's strip. We observe app
+        // activation (the public, permission-free edge) and resolve the focused
+        // window's display via the pure `FocusFollowsDisplay` policy. Only
+        // meaningful with >1 managing strip; a no-op otherwise. A short delay
+        // lets the focused-window AX frame settle after activation.
+        focusFollowObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.syncActiveStripToFocus()
+            }
+        }
 
         menuBar = ProductionMenuBar(controller: self, engine: engine)
         installHotkeys()
@@ -1347,6 +1369,33 @@ final class ScrollWMController: NSObject {
         menuBar.refresh()
     }
 
+    /// Focus-follows-display: read the OS-focused window's AX frame and, if it
+    /// maps to a DIFFERENT managing strip than the current active one, switch the
+    /// active strip so subsequent navigation/width/move/workspace hotkeys act on
+    /// that monitor. Pure decision in `FocusFollowsDisplay.resolveActiveStrip`.
+    /// Does NOT move/raise any window (the user already focused it); it only
+    /// re-routes hotkeys + refreshes the menu/indicator highlight. No-op with
+    /// fewer than two managing strips or when the focused window is one we cannot
+    /// place on a managing display.
+    func syncActiveStripToFocus() {
+        guard isManaging else { return }
+        let inputs = strips.map {
+            FocusFollowsDisplay.StripInput(
+                displayAXFrame: $0.engine.stripDisplayFrame ?? $0.engine.screenFrame,
+                isManaging: $0.isManaging,
+                id: $0.displayID)
+        }
+        guard let focused = AXSource.systemFocusedWindow(),
+              let origin = AXSource.copyPoint(focused, kAXPositionAttribute as String),
+              let size = AXSource.copySize(focused, kAXSizeAttribute as String) else { return }
+        let frame = CGRect(origin: origin, size: size)
+        guard let next = FocusFollowsDisplay.resolveActiveStrip(
+            focusedWindowAXFrame: frame, strips: inputs, currentActive: activeStripIndex),
+              strips.indices.contains(next) else { return }
+        activeStripIndex = next
+        menuBar.refresh()
+    }
+
     /// Send the focused window to the next/previous MONITOR's strip and follow it
     /// there (Ctrl+Opt+Cmd+Shift+J / K). The window is detached from the current
     /// display's engine and inserted just right of the destination strip's focus,
@@ -1493,6 +1542,15 @@ final class ScrollWMController: NSObject {
     func debugFocusDisplay(by delta: Int) { focusDisplay(by: delta) }
     /// Drive the cross-display move verb (Ctrl+Opt+Cmd+Shift+J/K) in a test.
     func debugMoveFocusedToDisplay(by delta: Int) { moveFocusedToDisplay(by: delta) }
+    /// Drive the focus-follows-display sync (normally fired by app-activation) in
+    /// a headless test, after the test sets the sim's system focus to a window.
+    func debugSyncActiveStripToFocus() { syncActiveStripToFocus() }
+    /// The AX element of the strip-`s` column titled `title` (headless test seam
+    /// for setting the sim's system focus to a window on a given monitor's strip).
+    func debugStripWindowElement(strip s: Int, title: String) -> AXUIElement? {
+        guard strips.indices.contains(s) else { return nil }
+        return strips[s].engine.slots.first { $0.window.title == title }?.window.element
+    }
 
     /// Headless seam: turn on the multi-display arrange path and inject a
     /// synthetic set of displays, so the per-monitor strip routing (and the
