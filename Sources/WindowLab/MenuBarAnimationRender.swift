@@ -38,6 +38,32 @@ enum MenuBarAnimationRender {
                                          viewportWidth: viewportWidth, focusIndex: focus, lastTeleportMs: 1.0)
     }
 
+    /// One vertical workspace's strip for the multi-workspace render states.
+    private static func wsStrip(_ ids: [UInt64], focus: Int, active: Bool,
+                                widths: [CGFloat]? = nil) -> TeleportEngine.StripState.WorkspaceStrip {
+        var x: CGFloat = 12
+        var slots: [(id: UInt64, appName: String, title: String, canvasX: CGFloat, width: CGFloat, healthy: Bool)] = []
+        for (i, id) in ids.enumerated() {
+            let w = widths?[i] ?? 360
+            let who = identity(id)
+            slots.append((id: id, appName: who.app, title: who.title, canvasX: x, width: w, healthy: true))
+            x += w + 12
+        }
+        return .init(slots: slots, viewportX: 0, viewportWidth: 1600, focusIndex: focus, isActive: active)
+    }
+
+    /// A multi-workspace state: `stack` is every workspace top-to-bottom, with
+    /// exactly one marked active. The flat fields mirror the active workspace so
+    /// single-strip callers keep working.
+    private static func multiState(_ stack: [TeleportEngine.StripState.WorkspaceStrip]) -> TeleportEngine.StripState {
+        let activeIdx = stack.firstIndex { $0.isActive } ?? 0
+        let active = stack[activeIdx]
+        return TeleportEngine.StripState(
+            slots: active.slots, viewportX: active.viewportX, viewportWidth: active.viewportWidth,
+            focusIndex: active.focusIndex, lastTeleportMs: 1.0,
+            activeWorkspace: activeIdx, workspaceCount: stack.count, workspaces: stack)
+    }
+
     private struct Step {
         let label: String
         let apply: (() -> Void)?
@@ -88,6 +114,37 @@ enum MenuBarAnimationRender {
             Step(label: "move #5<-", apply: { view.apply(state: state([1,2,3,5,4], focus: 3, widths: [360,360,360,760,360]), managing: true, now: vt) }, holdFrames: 18),
             Step(label: "close #3",  apply: { view.apply(state: state([1,2,5,4], focus: 2, widths: [360,360,760,360]), managing: true, now: vt) }, holdFrames: 20),
             Step(label: "workspace", apply: { view.animateWorkspaceSwitch(direction: 1) }, holdFrames: 24),
+            // Workspace-number badge: single-strip with a "2/3" gutter digit.
+            Step(label: "ws-badge", apply: {
+                view.showWorkspaceNumber = true; view.showAllWorkspaces = false
+                view.apply(state: multiState([
+                    wsStrip([1,2], focus: 0, active: false),
+                    wsStrip([3,4,5], focus: 1, active: true),
+                    wsStrip([6], focus: 0, active: false),
+                ]), managing: true, now: vt)
+            }, holdFrames: 22),
+            // All-workspaces overview: every workspace stacked, active highlighted.
+            Step(label: "ws-stack", apply: {
+                view.showAllWorkspaces = true
+                view.apply(state: multiState([
+                    wsStrip([1,2], focus: 0, active: false),
+                    wsStrip([3,4,5], focus: 1, active: true, widths: [360,720,360]),
+                    wsStrip([6], focus: 0, active: false),
+                    wsStrip([7,8,9,10], focus: 2, active: false),
+                ]), managing: true, now: vt)
+            }, holdFrames: 24),
+            Step(label: "ws-stack-2", apply: {
+                view.apply(state: multiState([
+                    wsStrip([1,2], focus: 1, active: true),
+                    wsStrip([3,4,5], focus: 1, active: false, widths: [360,720,360]),
+                    wsStrip([6], focus: 0, active: false),
+                    wsStrip([7,8,9,10], focus: 2, active: false),
+                ]), managing: true, now: vt)
+            }, holdFrames: 22),
+            Step(label: "single-strip", apply: {
+                view.showAllWorkspaces = false; view.showWorkspaceNumber = true
+                view.apply(state: state([1,2,3,4], focus: 1), managing: true, now: vt)
+            }, holdFrames: 18),
             Step(label: "release",   apply: { view.apply(state: state([], focus: 0), managing: false, now: vt) }, holdFrames: 18),
         ]
 

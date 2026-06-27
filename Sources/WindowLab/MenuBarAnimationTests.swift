@@ -189,6 +189,70 @@ enum MenuBarAnimationTests {
         view.flashKeyHint(chord: "", action: "Toggle", now: vt)
         check("chord-less hint shows action only", view.debugHintText == "Toggle")
 
+        // MARK: Workspace number badge + all-workspaces overview
+
+        // Build a multi-workspace StripState: 3 vertical workspaces, the 2nd
+        // active, each with a couple of columns.
+        func ws(_ ids: [UInt64], focus: Int, active: Bool, vw: CGFloat = 1600) -> TeleportEngine.StripState.WorkspaceStrip {
+            var x: CGFloat = 12
+            var s: [(id: UInt64, appName: String, title: String, canvasX: CGFloat, width: CGFloat, healthy: Bool)] = []
+            for id in ids { s.append((id: id, appName: "kitty", title: "w\(id)", canvasX: x, width: 360, healthy: true)); x += 372 }
+            return .init(slots: s, viewportX: 0, viewportWidth: vw, focusIndex: focus, isActive: active)
+        }
+        let stack = [ws([1, 2], focus: 0, active: false),
+                     ws([3, 4, 5], focus: 1, active: true),
+                     ws([6], focus: 0, active: false)]
+        var multi = state([3, 4, 5], focus: 1)
+        multi.activeWorkspace = 1
+        multi.workspaceCount = 3
+        multi.workspaces = stack
+
+        // Badge: on by default, shows the 1-based active index, only when >1 ws.
+        let badgeView = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 60, height: 22))
+        badgeView.showWorkspaceNumber = true
+        badgeView.showAllWorkspaces = false
+        badgeView.apply(state: multi, managing: true, now: vt)
+        check("badge shown with >1 workspace", badgeView.debugShowsBadge)
+        check("badge label is active index (2)", badgeView.debugBadgeLabel == "2")
+        check("single-strip mode when not stacking", !badgeView.debugStackedMode)
+
+        // Badge suppressed when there is only one workspace.
+        let single = state([1, 2, 3], focus: 0)   // workspaceCount defaults to 1
+        badgeView.apply(state: single, managing: true, now: vt)
+        check("no badge with a single workspace", !badgeView.debugShowsBadge)
+
+        // Badge respects the config toggle.
+        let noBadge = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 60, height: 22))
+        noBadge.showWorkspaceNumber = false
+        noBadge.apply(state: multi, managing: true, now: vt)
+        check("badge off when disabled", !noBadge.debugShowsBadge)
+
+        // All-workspaces overview: stacks every workspace when enabled and >1.
+        let stackView = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
+        stackView.showAllWorkspaces = true
+        stackView.apply(state: multi, managing: true, now: vt)
+        check("stacked mode on with >1 workspace", stackView.debugStackedMode)
+        check("stack holds every workspace row", stackView.debugWorkspaceRowCount == 3)
+
+        // Stacking falls back to single-strip for a lone workspace.
+        stackView.apply(state: single, managing: true, now: vt)
+        check("stacking falls back for single workspace", !stackView.debugStackedMode)
+
+        // Dormant (not managing) never badges or stacks.
+        stackView.apply(state: multi, managing: false, now: vt)
+        check("no stack/badge while dormant", !stackView.debugStackedMode && !stackView.debugShowsBadge)
+
+        // Width: the badge adds a fixed gutter; stacking sizes to the WIDEST
+        // workspace (here ws index 1 with 3 columns), never less than the
+        // active strip alone.
+        let plain = MenuBarStripView(frame: .zero)
+        plain.showWorkspaceNumber = false; plain.showAllWorkspaces = false
+        let wPlain = plain.debugDesiredContentWidth(for: multi, managing: true)
+        let withBadge = MenuBarStripView(frame: .zero)
+        withBadge.showWorkspaceNumber = true; withBadge.showAllWorkspaces = false
+        let wBadge = withBadge.debugDesiredContentWidth(for: multi, managing: true)
+        check("badge widens the icon by the gutter", wBadge > wPlain)
+
         print("\n[animtest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

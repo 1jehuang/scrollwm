@@ -1157,6 +1157,33 @@ enum StripOpsTests {
               ewMoveTop.moveFocusedToWorkspace(by: -1) == false)
         check("workspaces: failed move kept both columns", ewMoveTop.slots.count == 2)
 
+        // --- stripState.workspaces stack (menu-bar all-workspaces overview) ---
+        // The introspection snapshot must expose EVERY workspace's strip, not
+        // just the active one, so the menu-bar icon can draw the whole stack.
+        let ewStack = makeEngine(count: 3)
+        // Single workspace: the stack has exactly one entry, marked active.
+        let snap0 = ewStack.stripState
+        check("ws-stack: single workspace -> 1 row", snap0.workspaces.count == 1)
+        check("ws-stack: lone row is active", snap0.workspaces.first?.isActive == true)
+        check("ws-stack: lone row carries all columns", snap0.workspaces.first?.slots.count == 3)
+        // Move one column down to ws1, then look from ws1: BOTH workspaces show,
+        // with the right column counts and exactly one marked active.
+        ewStack.focusIndex = 0
+        let stackedTitle = ewStack.slots[0].window.title
+        _ = ewStack.moveFocusedToWorkspace(by: 1)
+        let snap1 = ewStack.stripState
+        check("ws-stack: two workspaces -> 2 rows", snap1.workspaces.count == 2)
+        check("ws-stack: exactly one active row",
+              snap1.workspaces.filter { $0.isActive }.count == 1)
+        check("ws-stack: active row is the current workspace",
+              snap1.workspaces.firstIndex(where: { $0.isActive }) == snap1.activeWorkspace)
+        check("ws-stack: top (source) row kept its 2 columns",
+              snap1.workspaces.first?.slots.count == 2)
+        check("ws-stack: active row has the moved column",
+              snap1.workspaces[snap1.activeWorkspace].slots.contains { $0.title == stackedTitle })
+        check("ws-stack: row count matches workspaceCount",
+              snap1.workspaces.count == snap1.workspaceCount)
+
         // --- REGRESSION (fuzz seed 12345): overshooting workspace switch/move ---
         // A jump of |delta| >= 2 past the last workspace used to append exactly
         // ONE trailing workspace but then index at `activeWorkspace + delta`,

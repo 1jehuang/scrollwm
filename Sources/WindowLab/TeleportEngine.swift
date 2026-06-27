@@ -924,6 +924,17 @@ final class TeleportEngine {
     // MARK: - Introspection for the menu bar
 
     struct StripState {
+        /// One vertical workspace's horizontal strip, in the same shape the
+        /// menu-bar mini-map already consumes for the active strip. Lets the
+        /// icon draw EVERY workspace (stacked) rather than only the active one.
+        struct WorkspaceStrip {
+            let slots: [(id: UInt64, appName: String, title: String, canvasX: CGFloat, width: CGFloat, healthy: Bool)]
+            let viewportX: CGFloat
+            let viewportWidth: CGFloat
+            let focusIndex: Int
+            let isActive: Bool
+        }
+
         let slots: [(id: UInt64, appName: String, title: String, canvasX: CGFloat, width: CGFloat, healthy: Bool)]
         let viewportX: CGFloat
         let viewportWidth: CGFloat
@@ -933,10 +944,32 @@ final class TeleportEngine {
         var activeWorkspace: Int = 0
         /// Total number of vertical workspaces (>= 1).
         var workspaceCount: Int = 1
+        /// EVERY workspace's strip, top-to-bottom (index 0 = topmost). The active
+        /// one is also exposed flat above (`slots`/`viewportX`/...) so existing
+        /// callers are unchanged; this is the full stack for the "show all
+        /// workspaces" overview. Empty by default so synthetic test states keep
+        /// compiling without populating it.
+        var workspaces: [WorkspaceStrip] = []
     }
 
     var stripState: StripState {
-        StripState(
+        // Build the full vertical stack so the menu-bar overview can draw every
+        // workspace. Inactive workspaces read their stashed geometry; the active
+        // one reads the live `slots`/`viewportX`/`focusIndex`.
+        var stack: [StripState.WorkspaceStrip] = []
+        for i in 0..<workspaceCount {
+            let s = workspaceSlots(i)
+            let vx = (i == activeWorkspace) ? viewportX : workspaces[i].viewportX
+            let fi = (i == activeWorkspace) ? focusIndex : workspaces[i].focusIndex
+            stack.append(.init(
+                slots: s.map { ($0.window.id, $0.window.appName, $0.window.title, $0.canvasX, $0.width, $0.window.healthy) },
+                viewportX: vx,
+                viewportWidth: contentWidth,
+                focusIndex: fi,
+                isActive: i == activeWorkspace
+            ))
+        }
+        return StripState(
             slots: slots.map { ($0.window.id, $0.window.appName, $0.window.title, $0.canvasX, $0.width, $0.window.healthy) },
             viewportX: viewportX,
             // Report the usable CONTENT width (screen minus the peek lanes), so
@@ -946,7 +979,8 @@ final class TeleportEngine {
             focusIndex: focusIndex,
             lastTeleportMs: lastTeleportMs,
             activeWorkspace: activeWorkspace,
-            workspaceCount: workspaceCount
+            workspaceCount: workspaceCount,
+            workspaces: stack
         )
     }
 

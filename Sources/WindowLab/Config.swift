@@ -105,6 +105,15 @@ struct ScrollWMConfig: Equatable {
         /// a crowded bar where other status icons get hidden. Set false to let it
         /// behave like an ordinary item (and to respect a manual drag elsewhere).
         var pinHighPriority: Bool = true
+        /// Draw the active vertical-workspace number (e.g. "2") on the menu-bar
+        /// icon when there is more than one workspace. A compact alternative /
+        /// companion to the stacked-dot indicator. On by default.
+        var showWorkspaceNumber: Bool = true
+        /// Draw EVERY vertical workspace's strip, stacked top-to-bottom, instead
+        /// of only the active one. The active workspace's row is highlighted.
+        /// Off by default so the icon stays compact for single-workspace users
+        /// (it also only ever stacks when there is more than one workspace).
+        var showAllWorkspaces: Bool = false
     }
 
     /// In-app updater behavior. ScrollWM checks GitHub Releases for a newer
@@ -220,6 +229,8 @@ struct ScrollWMConfig: Equatable {
                 "maxWidth": Double(menuBar.maxWidth),
                 "showKeyHints": menuBar.showKeyHints,
                 "pinHighPriority": menuBar.pinHighPriority,
+                "showWorkspaceNumber": menuBar.showWorkspaceNumber,
+                "showAllWorkspaces": menuBar.showAllWorkspaces,
             ],
             "update": [
                 "enabled": update.enabled,
@@ -294,6 +305,8 @@ struct ScrollWMConfig: Equatable {
             if let x = mb["maxWidth"] as? NSNumber { config.menuBar.maxWidth = CGFloat(x.doubleValue) }
             if let h = mb["showKeyHints"] as? Bool { config.menuBar.showKeyHints = h }
             if let pin = mb["pinHighPriority"] as? Bool { config.menuBar.pinHighPriority = pin }
+            if let n = mb["showWorkspaceNumber"] as? Bool { config.menuBar.showWorkspaceNumber = n }
+            if let a = mb["showAllWorkspaces"] as? Bool { config.menuBar.showAllWorkspaces = a }
             // Keep the clamps sane regardless of what's in the file.
             config.menuBar.pointsPerScreen = max(8, config.menuBar.pointsPerScreen)
             config.menuBar.minWidth = max(12, config.menuBar.minWidth)
@@ -469,7 +482,9 @@ struct ScrollWMConfig: Equatable {
         "minWidth": 30,           // px the icon never shrinks below (empty strip)
         "maxWidth": 220,          // px cap; past this the map compresses to fit
         "showKeyHints": true,     // flash the chord + action (e.g. "⌘L Focus →") to the RIGHT of the icon on each keypress
-        "pinHighPriority": true   // keep ScrollWM in the highest-priority menu-bar slot so it stays visible even when the bar is crowded
+        "pinHighPriority": true,  // keep ScrollWM in the highest-priority menu-bar slot so it stays visible even when the bar is crowded
+        "showWorkspaceNumber": true, // show the active vertical-workspace number on the icon (only when >1 workspace)
+        "showAllWorkspaces": false   // stack EVERY workspace's strip on the icon, not just the active one (only when >1 workspace)
       },
 
       // In-app updates. ScrollWM checks GitHub Releases so you actually receive

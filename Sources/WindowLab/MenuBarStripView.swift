@@ -253,6 +253,27 @@ final class MenuBarStripView: NSView {
     /// the whole strip to fit, so it never overruns the menu bar.
     var maxContentWidth: CGFloat = 220
 
+    /// Draw the active vertical-workspace NUMBER (1-based) in a small left
+    /// gutter on the icon, when there is more than one workspace. Config-driven.
+    var showWorkspaceNumber: Bool = true
+    /// Draw EVERY workspace's strip stacked top-to-bottom (active row
+    /// highlighted) instead of only the active one. Only takes effect when there
+    /// is more than one workspace. Config-driven.
+    var showAllWorkspaces: Bool = false
+
+    /// Width (points) of the left gutter reserved for the workspace-number
+    /// badge. Zero unless the badge is actually shown.
+    private let workspaceBadgeWidth: CGFloat = 13
+    /// Max workspace rows the stacked overview draws before it stops adding more
+    /// (so a tall stack stays legible in the ~22pt-tall icon).
+    private let maxStackRows = 6
+    /// Latest full vertical stack from `apply`, used by the stacked overview.
+    /// Inactive workspaces are drawn statically from this snapshot; the active
+    /// one animates through the spring-backed `slots` in single-strip mode.
+    private var allWorkspaces: [TeleportEngine.StripState.WorkspaceStrip] = []
+    /// Bold monospaced-digit font for the workspace-number badge.
+    private static let badgeFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .bold)
+
     /// Called when the icon's desired CONTENT width changes (points, excluding
     /// the host's horizontal padding). The host resizes its status item to fit.
     var onDesiredContentWidthChange: ((CGFloat) -> Void)?
@@ -263,20 +284,64 @@ final class MenuBarStripView: NSView {
     /// Content width the icon wants for the most recently applied state, given
     /// the current density and clamps. Pure function of the state's geometry.
     private func desiredContentWidth(for state: TeleportEngine.StripState, managing: Bool) -> CGFloat {
-        guard managing, !state.slots.isEmpty else { return minContentWidth }
-        var minX = state.viewportX
-        var maxX = state.viewportX + state.viewportWidth
-        for s in state.slots {
-            minX = min(minX, s.canvasX)
-            maxX = max(maxX, s.canvasX + s.width)
+        guard managing, !state.slots.isEmpty || (stackingActive(state) && state.workspaces.contains { !$0.slots.isEmpty }) else { return minContentWidth }
+        // Width of the strip map itself (excludes the left workspace-number
+        // gutter, which is added back below). In the stacked overview every
+        // workspace shares one horizontal scale, so the map must be wide enough
+        // for the WIDEST workspace; otherwise just the active strip.
+        let (span, screenWidth): (CGFloat, CGFloat)
+        if stackingActive(state) {
+            (span, screenWidth) = globalCanvasSpan(state)
+        } else {
+            var minX = state.viewportX
+            var maxX = state.viewportX + state.viewportWidth
+            for s in state.slots {
+                minX = min(minX, s.canvasX)
+                maxX = max(maxX, s.canvasX + s.width)
+            }
+            (span, screenWidth) = (maxX - minX, state.viewportWidth)
         }
-        return MenuBarMetrics.contentWidth(
-            span: maxX - minX,
-            screenWidth: state.viewportWidth,
+        let mapW = MenuBarMetrics.contentWidth(
+            span: span,
+            screenWidth: screenWidth,
             pointsPerScreen: pointsPerScreen,
             minWidth: minContentWidth,
             maxWidth: maxContentWidth
         )
+        return mapW + badgeGutterWidth(for: state)
+    }
+
+    /// True if the stacked all-workspaces overview should be drawn for `state`:
+    /// the feature is enabled AND there is more than one workspace. Single-
+    /// workspace users always get the plain single-strip presentation.
+    private func stackingActive(_ state: TeleportEngine.StripState) -> Bool {
+        showAllWorkspaces && state.workspaceCount > 1 && !state.workspaces.isEmpty
+    }
+
+    /// Left-gutter width reserved for the workspace-number badge, or 0 when it
+    /// is not shown (feature off or only one workspace).
+    private func badgeGutterWidth(for state: TeleportEngine.StripState) -> CGFloat {
+        (showWorkspaceNumber && state.workspaceCount > 1) ? workspaceBadgeWidth : 0
+    }
+
+    /// Canvas span shared across all workspaces in the stacked overview: the
+    /// widest workspace's extent, so every row draws at one common horizontal
+    /// scale (a narrower workspace reads as a shorter strip). Returns the span
+    /// and the screen-width used as the density unit.
+    private func globalCanvasSpan(_ state: TeleportEngine.StripState) -> (span: CGFloat, screenWidth: CGFloat) {
+        var span: CGFloat = 1
+        var screenWidth = max(state.viewportWidth, 1)
+        for ws in state.workspaces {
+            var minX = ws.viewportX
+            var maxX = ws.viewportX + ws.viewportWidth
+            for s in ws.slots {
+                minX = min(minX, s.canvasX)
+                maxX = max(maxX, s.canvasX + s.width)
+            }
+            span = max(span, maxX - minX)
+            screenWidth = max(screenWidth, ws.viewportWidth)
+        }
+        return (span, screenWidth)
     }
 
     private var slots: [VisualSlot] = []
@@ -292,6 +357,10 @@ final class MenuBarStripView: NSView {
     /// detect a switch between two `apply` calls.
     private var activeWorkspace = 0
     private var workspaceCount = 1
+    /// Whether the last `apply` selected the stacked all-workspaces overview.
+    private var stackedMode = false
+    /// Whether the last `apply` wants the workspace-number badge drawn.
+    private var showBadge = false
     /// Glowing selector that travels to the focused column (canvas center x).
     private var focusGlow = Spring(0, response: 0.32, dampingFraction: 0.7)
     private var focusGlowActive = false
@@ -375,6 +444,20 @@ final class MenuBarStripView: NSView {
         return "\(hintChord)  \(hintAction)"
     }
 
+    /// Whether the last `apply` chose the stacked all-workspaces overview
+    /// (headless-test introspection).
+    var debugStackedMode: Bool { stackedMode }
+    /// Whether the last `apply` wants the workspace-number badge drawn.
+    var debugShowsBadge: Bool { showBadge }
+    /// The 1-based workspace number the badge would render.
+    var debugBadgeLabel: String { "\(min(activeWorkspace, max(workspaceCount - 1, 0)) + 1)" }
+    /// Number of workspace rows the stacked overview holds (for tests).
+    var debugWorkspaceRowCount: Int { allWorkspaces.count }
+    /// The icon's desired CONTENT width for `state` (pure; headless tests).
+    func debugDesiredContentWidth(for state: TeleportEngine.StripState, managing: Bool) -> CGFloat {
+        desiredContentWidth(for: state, managing: managing)
+    }
+
     // Diff bookkeeping.
     private var lastState: TeleportEngine.StripState?
     private var lastManaging = false
@@ -425,6 +508,9 @@ final class MenuBarStripView: NSView {
         }
         activeWorkspace = state.activeWorkspace
         workspaceCount = state.workspaceCount
+        allWorkspaces = state.workspaces
+        stackedMode = stackingActive(state) && managing
+        showBadge = badgeGutterWidth(for: state) > 0 && managing
 
         // 1. Reconcile slot set against the new state (by stable id).
         reconcile(state: state, firstApply: firstApply, now: now)
@@ -689,8 +775,26 @@ final class MenuBarStripView: NSView {
         let mapW = trailing > 0 ? max(bounds.width - trailing, 0) : bounds.width
         let mapRect = NSRect(x: bounds.minX, y: bounds.minY, width: mapW, height: bounds.height)
 
-        if live > 0.01 { drawDormant(in: mapRect, alpha: live) }
-        if managingWeight > 0.01 { drawStrip(in: mapRect, alpha: managingWeight) }
+        // Carve a left gutter for the workspace-number badge (drawn last, on
+        // top of nothing else, so it never overlaps a column). The strip/dormant
+        // graphic uses the remaining region to its right.
+        let gutter: CGFloat = (showBadge && managingWeight > 0.01) ? workspaceBadgeWidth : 0
+        let contentRect = NSRect(x: mapRect.minX + gutter, y: mapRect.minY,
+                                 width: max(mapRect.width - gutter, 0), height: mapRect.height)
+
+        if live > 0.01 { drawDormant(in: contentRect, alpha: live) }
+        if managingWeight > 0.01 {
+            if stackedMode {
+                drawStackedStrips(in: contentRect, alpha: managingWeight)
+            } else {
+                drawStrip(in: contentRect, alpha: managingWeight)
+            }
+        }
+        if gutter > 0 {
+            let badgeRect = NSRect(x: mapRect.minX, y: mapRect.minY,
+                                   width: gutter, height: mapRect.height)
+            drawWorkspaceBadge(in: badgeRect, alpha: managingWeight)
+        }
         if hud > 0.01, hintActive {
             let hintRect = NSRect(x: mapRect.maxX, y: bounds.minY,
                                   width: max(bounds.maxX - mapRect.maxX, 0),
@@ -861,8 +965,165 @@ final class MenuBarStripView: NSView {
         vPath.stroke()
 
         // 4. Vertical-workspace indicator: a tiny stack of dots at the top-left,
-        // one per workspace, the active one filled. Only when >1 workspace.
-        drawWorkspaceIndicator(in: rect, alpha: alpha)
+        // one per workspace, the active one filled. Only when >1 workspace, and
+        // suppressed when the numeric badge is shown (they'd be redundant).
+        if !showBadge { drawWorkspaceIndicator(in: rect, alpha: alpha) }
+    }
+
+    /// Draw the numeric workspace badge (1-based active index) in the reserved
+    /// left gutter. Only called when `showBadge` and there is >1 workspace.
+    private func drawWorkspaceBadge(in rect: NSRect, alpha: Double) {
+        guard alpha > 0.01 else { return }
+        let label = "\(min(activeWorkspace, workspaceCount - 1) + 1)"
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        para.lineBreakMode = .byClipping
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: Self.badgeFont,
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.95 * alpha),
+            .paragraphStyle: para,
+        ]
+        let size = (label as NSString).size(withAttributes: attrs)
+        let tRect = NSRect(x: rect.minX, y: rect.minY + (rect.height - size.height) / 2,
+                           width: rect.width, height: size.height)
+        (label as NSString).draw(in: tRect, withAttributes: attrs)
+        // A faint hairline separating the badge gutter from the strip.
+        let sep = NSBezierPath()
+        sep.move(to: NSPoint(x: rect.maxX - 0.5, y: rect.minY + 3))
+        sep.line(to: NSPoint(x: rect.maxX - 0.5, y: rect.maxY - 3))
+        sep.lineWidth = 0.75
+        NSColor.labelColor.withAlphaComponent(0.18 * alpha).setStroke()
+        sep.stroke()
+    }
+
+    /// Draw EVERY workspace's strip stacked top-to-bottom: index 0 (the topmost
+    /// workspace) at the top of the icon, the active one highlighted. Each row
+    /// shares ONE horizontal scale (`globalCanvasSpan`) so a narrower workspace
+    /// reads as a shorter strip. Rows past `maxStackRows` are dropped with a
+    /// small "+N" overflow marker. Static (no per-column springs): the stack is
+    /// an at-a-glance overview, redrawn whole on each `apply`.
+    private func drawStackedStrips(in contentRect: NSRect, alpha: Double) {
+        guard !allWorkspaces.isEmpty else { return }
+        let rect = contentRect.insetBy(dx: hInset, dy: vInset)
+        guard rect.height > 4, rect.width > 4 else { return }
+
+        let total = allWorkspaces.count
+        let shown = min(total, maxStackRows)
+        let rowGap: CGFloat = 2
+        let rowH = (rect.height - rowGap * CGFloat(shown - 1)) / CGFloat(shown)
+        guard rowH > 1 else { return }
+
+        // Shared horizontal mapping across all rows.
+        let (span, _) = globalCanvasSpan(lastStateForStack)
+        let scale = rect.width / CGFloat(max(span, 1))
+
+        for row in 0..<shown {
+            let ws = allWorkspaces[row]
+            // Top-to-bottom: row 0 at the top (AppKit y grows up).
+            let top = rect.maxY - CGFloat(row) * (rowH + rowGap)
+            let rowRect = NSRect(x: rect.minX, y: top - rowH, width: rect.width, height: rowH)
+            drawWorkspaceRow(ws, in: rowRect, scale: scale, alpha: alpha)
+        }
+
+        // Overflow marker if more workspaces exist than rows shown.
+        if total > shown {
+            let label = "+\(total - shown)"
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 7, weight: .semibold),
+                .foregroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.9 * alpha),
+            ]
+            let size = (label as NSString).size(withAttributes: attrs)
+            (label as NSString).draw(
+                at: NSPoint(x: rect.maxX - size.width, y: rect.minY - 1), withAttributes: attrs)
+        }
+    }
+
+    /// The state used by the stacked overview's shared scale. Captured on each
+    /// `apply` so `drawStackedStrips` can recompute the global span without the
+    /// full `StripState` on hand.
+    private var lastStateForStack: TeleportEngine.StripState {
+        // Reconstruct a minimal state from the cached stack so globalCanvasSpan
+        // (which only reads `workspaces`/`viewportWidth`) works unchanged.
+        TeleportEngine.StripState(
+            slots: [], viewportX: 0,
+            viewportWidth: allWorkspaces.first?.viewportWidth ?? 1,
+            focusIndex: 0, lastTeleportMs: 0,
+            activeWorkspace: activeWorkspace, workspaceCount: workspaceCount,
+            workspaces: allWorkspaces)
+    }
+
+    /// Draw one workspace's columns into a single row of the stacked overview.
+    /// The active workspace's row is full brightness with a viewport outline;
+    /// inactive rows are dimmed. Columns are tinted by app color like the live
+    /// strip but without per-column animation.
+    private func drawWorkspaceRow(_ ws: TeleportEngine.StripState.WorkspaceStrip,
+                                  in rowRect: NSRect, scale: CGFloat, alpha: Double) {
+        let activeRow = ws.isActive
+        let rowAlpha = (activeRow ? 1.0 : 0.5) * alpha
+
+        // Active row gets a subtle backing so the eye finds "where I am" fast.
+        if activeRow {
+            let bg = NSBezierPath(roundedRect: rowRect.insetBy(dx: -1, dy: 0), xRadius: 2, yRadius: 2)
+            NSColor.labelColor.withAlphaComponent(0.06 * alpha).setFill()
+            bg.fill()
+        }
+
+        // Canvas origin = the row's own min across its columns + viewport, so
+        // every row left-aligns at the same x=0 reference (the global scale
+        // already sizes the widest one to fill the width).
+        var minX = ws.viewportX
+        for s in ws.slots { minX = min(minX, s.canvasX) }
+        func mapX(_ x: CGFloat) -> CGFloat { rowRect.minX + (x - minX) * scale }
+
+        // Empty workspace: a faint placeholder dash so the row still reads.
+        if ws.slots.isEmpty {
+            let dashH = max(rowRect.height * 0.4, 1.5)
+            let r = NSRect(x: rowRect.minX, y: rowRect.midY - dashH / 2,
+                           width: min(rowRect.width, 8), height: dashH)
+            let p = NSBezierPath(roundedRect: r, xRadius: 1, yRadius: 1)
+            p.setLineDash([2, 1.5], count: 2, phase: 0)
+            p.lineWidth = 0.75
+            NSColor.secondaryLabelColor.withAlphaComponent(0.5 * rowAlpha).setStroke()
+            p.stroke()
+            return
+        }
+
+        for (i, s) in ws.slots.enumerated() {
+            let x = mapX(s.canvasX)
+            let w = max(s.width * scale - 1, 1.5)
+            let r = NSRect(x: x, y: rowRect.minY, width: w, height: rowRect.height)
+            let path = NSBezierPath(roundedRect: r, xRadius: 1.4, yRadius: 1.4)
+            let focused = i == ws.focusIndex
+            let tint = AppColors.color(appName: s.appName, title: s.title)
+
+            // Neutral body, brighter for the focused column in its workspace.
+            let bodyWhite = (focused ? 0.7 : 0.42)
+            NSColor(white: CGFloat(bodyWhite), alpha: 1)
+                .withAlphaComponent(rowAlpha).setFill()
+            path.fill()
+
+            // App tint on the bottom half, like the live strip.
+            NSGraphicsContext.saveGraphicsState()
+            path.addClip()
+            let half = NSRect(x: r.minX, y: r.minY, width: r.width, height: r.height * 0.55)
+            let gradient = NSGradient(colors: [tint.withAlphaComponent(CGFloat(0.8) * rowAlpha),
+                                               tint.withAlphaComponent(0)])
+            gradient?.draw(in: half, angle: 90)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+
+        // Viewport outline on the ACTIVE row only (where it is meaningful).
+        if activeRow {
+            let vx = mapX(ws.viewportX) + 0.5
+            let vw = max(ws.viewportWidth * scale - 1, 3)
+            let vRect = NSRect(x: vx, y: rowRect.minY + 0.5,
+                               width: min(vw, rowRect.maxX - vx - 0.5),
+                               height: rowRect.height - 1)
+            let vPath = NSBezierPath(roundedRect: vRect, xRadius: 1.6, yRadius: 1.6)
+            vPath.lineWidth = 0.75
+            NSColor.labelColor.withAlphaComponent(0.9 * alpha).setStroke()
+            vPath.stroke()
+        }
     }
 
     /// Stacked dots showing which vertical workspace is active (niri-style).
