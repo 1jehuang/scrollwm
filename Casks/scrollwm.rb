@@ -1,6 +1,6 @@
 cask "scrollwm" do
-  version "0.1.6"
-  sha256 "4e7610c900c656991cfebae401a8b7ba1202ca7505dcf593b3cb0092e79bce69"
+  version "0.1.7"
+  sha256 "28effed0d3259fb6a9b7364db4fa09eb3d2c8f2ac2305f8da9afa8c00a0f00ec"
 
   url "https://github.com/1jehuang/scrollwm/releases/download/v#{version}/ScrollWM-#{version}.zip"
   name "ScrollWM"
