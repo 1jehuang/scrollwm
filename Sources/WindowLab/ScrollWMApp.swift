@@ -1380,6 +1380,9 @@ final class ScrollWMController: NSObject {
     /// canvasX of each column (strip order), so a test can prove a suspended
     /// column reserves no gap (its right neighbor slides in).
     var debugSlotCanvasX: [CGFloat] { engine.slots.map { $0.canvasX } }
+    /// Per-column widths (strip order), for the bulk-width (`width all` /
+    /// `arrange N`) integration assertions.
+    var debugColumnWidths: [CGFloat] { engine.slots.map { $0.width } }
 
     /// Per-strip slot titles (display order), for the multi-display focus/move
     /// integration test. Reads the SAME engines production drives.
@@ -1695,6 +1698,8 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         stripView.pointsPerScreen = mb.pointsPerScreen
         stripView.minContentWidth = mb.minWidth
         stripView.maxContentWidth = mb.maxWidth
+        stripView.showWorkspaceNumber = mb.showWorkspaceNumber
+        stripView.showAllWorkspaces = mb.showAllWorkspaces
         contentWidth = mb.minWidth
 
         // Priority placement + notch workaround (see MenuBarController).
@@ -1911,6 +1916,8 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         stripView.pointsPerScreen = mb.pointsPerScreen
         stripView.minContentWidth = mb.minWidth
         stripView.maxContentWidth = mb.maxWidth
+        stripView.showWorkspaceNumber = mb.showWorkspaceNumber
+        stripView.showAllWorkspaces = mb.showAllWorkspaces
         // Re-clamp the current item to the new bounds immediately.
         setContentWidth(contentWidth)
         // If the high-priority pin is ON, reclaim the top slot now (config

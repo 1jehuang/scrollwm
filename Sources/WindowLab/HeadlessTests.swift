@@ -721,6 +721,27 @@ func runHeadlessE2ETest() {
     // Reset width back to 100% so later assertions keep their footing.
     key("cmd+4")
 
+    // --- CLI `width all <N>`: resize EVERY column in one command ---
+    // Drive the real control-command parser (the `scrollwm` CLI surface) so the
+    // verb dispatch + bulk-width path are covered end to end, not just the
+    // engine method.
+    let allReply = controller.handleControlCommand("width all 50")
+    Headless.pump(0.08)
+    t.check("`width all 50` reports success", allReply.hasPrefix("ok:"))
+    t.check("`width all 50` sized every column to ~50%",
+            controller.debugColumnWidths.allSatisfy { abs($0 - want50) <= 1 })
+    // `arrange <N>` while already managing re-arranges THEN bulk-sizes.
+    let arrReply = controller.handleControlCommand("arrange 25")
+    Headless.pump(0.08)
+    t.check("`arrange 25` reports success", arrReply.hasPrefix("ok:"))
+    t.check("`arrange 25` sized every column to ~25%",
+            controller.debugColumnWidths.allSatisfy { abs($0 - want25) <= 1 })
+    // A bad width arg is a clean error, not a crash or partial resize.
+    let badReply = controller.handleControlCommand("width all wat")
+    t.check("`width all wat` is a clean error", badReply.hasPrefix("error:"))
+    // Restore 100% so later assertions keep their footing.
+    _ = controller.handleControlCommand("width all 100"); Headless.pump(0.06)
+
     // --- Cmd+L focus next, Cmd+H focus prev ---
     controller.focus(index: 0); Headless.pump(0.05)
     key("cmd+l")
