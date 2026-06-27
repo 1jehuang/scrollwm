@@ -266,6 +266,26 @@ case "sandbox":
     runSandbox(windowCount: n, displayIndex: sandboxDisplay)
 case "displaytest":
     args.contains("--live") ? runDisplayTest() : runHeadlessDisplayTest()
+case "dragofftest":
+    // Headless external-monitor "drag-off" test: a managed column the user drags
+    // onto another display is EVICTED (left where they put it) instead of being
+    // yanked back, while a merely-parked column is never evicted. Always headless.
+    runHeadlessDragOffTest()
+case "extadopttest":
+    // Headless external-monitor adoption test: single strip (multiDisplay=false,
+    // stripDisplay scope) adopts ONLY built-in windows and leaves the external
+    // alone on arrange / fast-adopt / resync. Always headless.
+    runHeadlessExternalAdoptTest()
+case "parktest":
+    // Headless external-monitor parking test: a parked column's clamp sliver
+    // stays on the strip's own display and never spills onto the external, for
+    // both the real above-left layout and a side-by-side rearrangement.
+    runHeadlessParkTest()
+case "exthotplugtest":
+    // Headless external-monitor hotplug test: unplug/replug the above-left
+    // external while the strip is on the built-in (strip stays put), and unplug
+    // the built-in (strip migrates to the external). Always headless.
+    runHeadlessExternalHotplugTest()
 case "displaybindcheck":
     runDisplayBindCheck()
 case "e2etest":

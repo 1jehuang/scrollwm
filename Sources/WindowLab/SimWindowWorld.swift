@@ -235,6 +235,17 @@ final class SimWindowWorld: WindowBackend {
         lock.lock(); find(element)?.nativeSpace = space; lock.unlock()
     }
 
+    /// Test-only: place a window's frame VERBATIM, bypassing the off-screen
+    /// clamp and min-size/aspect logic that `setPosition`/`setSize` apply. Models
+    /// the user DRAGGING a window anywhere on the desktop - including fully onto
+    /// another monitor - which macOS allows (the clamp only fires for positions
+    /// that would leave NO part of the window on any display). Used by the
+    /// drag-off-display eviction test to relocate a managed window onto the
+    /// external display exactly as a user would.
+    func debugSetFrame(_ element: AXUIElement, _ frame: CGRect) {
+        lock.lock(); find(element)?.frame = frame; lock.unlock()
+    }
+
     /// Switch the active native Space (Ctrl+Left/Right, Mission Control, or a
     /// fullscreen-Space toggle). Windows on `space` now appear on-screen; windows
     /// on the previously-active Space drop out of the on-screen list. Fires the

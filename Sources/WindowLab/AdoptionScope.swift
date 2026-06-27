@@ -66,6 +66,64 @@ enum AdoptionScope {
         return best == stripDisplay
     }
 
+    /// True if a window the strip ALREADY manages has been dragged onto a
+    /// DIFFERENT physical display by the user and should therefore be EVICTED
+    /// (released back to the desktop, left where the user put it) instead of
+    /// teleported back onto the strip.
+    ///
+    /// ## Why this exists (the multi-display "yank-back" bug)
+    ///
+    /// With one Mission Control Space spanning both monitors, a managed strip
+    /// column the user drags onto the external display still EXISTS in AX and is
+    /// still on the current Space, so `removeSlots` (which only drops windows
+    /// whose AX element vanished) keeps it. The next teleport then repositions
+    /// it back onto the strip's display, fighting the user. Under the default
+    /// `stripDisplay` scope the strip should only manage its OWN display's
+    /// windows, so a column that genuinely moved to another monitor must be let
+    /// go - the mirror image of `belongsToStripDisplay` rejecting a foreign
+    /// window at adopt time.
+    ///
+    /// ## Parked vs dragged (the false-positive we must avoid)
+    ///
+    /// A column scrolled off the viewport is PARKED: the engine shoves it far
+    /// past the strip's side edge (`parkingX`, margin 4000) and macOS clamps it
+    /// to a thin sliver pinned at the strip-display edge. That parked frame can
+    /// momentarily best-overlap a NEIGHBORING display (e.g. a sliver clamped
+    /// onto a monitor that abuts that edge), so evicting purely on best-overlap
+    /// would wrongly release parked columns. The caller therefore passes
+    /// `isParked` for any slot currently positioned off the content region; a
+    /// parked slot is NEVER evicted (the user did not move it, the engine did).
+    ///
+    /// Only meaningful under `Scope.stripDisplay`; `allDisplays` never evicts
+    /// (one strip is meant to span every monitor). Single-display setups have no
+    /// `others`, so nothing is ever evicted.
+    ///
+    /// - Parameters:
+    ///   - liveFrame: the window's CURRENT AX frame (top-left global), read back
+    ///                fresh - never the stored slot geometry, which is what we
+    ///                are trying to detect has gone stale.
+    ///   - stripDisplay: the strip's own display, full AX frame.
+    ///   - others: every OTHER display's full AX frame (empty on single-display).
+    ///   - isParked: true if the engine has this column parked off-screen this
+    ///               cycle (so its frame is engine-driven, not user-driven).
+    static func evictedFromStripDisplay(liveFrame: CGRect,
+                                        stripDisplay: CGRect,
+                                        others: [CGRect],
+                                        isParked: Bool,
+                                        scope: Scope) -> Bool {
+        // Legacy whole-desktop strip never evicts; nothing to compare against on
+        // a single-display setup; a parked column is engine-positioned, not user-
+        // moved, so it is exempt.
+        guard scope == .stripDisplay, !others.isEmpty, !isParked else { return false }
+        // Degenerate/unmeasurable frames are KEPT (never lose a window we cannot
+        // classify) - the same safety bias as `belongsToStripDisplay`.
+        let displays = [stripDisplay] + others
+        guard let best = DisplayGeometry.display(bestOverlapping: liveFrame, displays: displays) else {
+            return false
+        }
+        return best != stripDisplay
+    }
+
     /// Filter adoption candidates to the indices the strip should keep.
     ///
     /// - Parameters:
