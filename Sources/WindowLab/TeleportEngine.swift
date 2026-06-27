@@ -2,7 +2,7 @@ import Foundation
 import ApplicationServices
 import AppKit
 
-/// The teleport-tier core: windows live in columns on a horizontal strip.
+/// The teleport core: windows live in columns on a horizontal strip.
 /// Navigation = instant viewport jumps (no animation). All real, all AX.
 ///
 /// Canvas model (PaperWM-style):

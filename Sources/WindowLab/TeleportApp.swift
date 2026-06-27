@@ -1,14 +1,11 @@
 import Foundation
 import AppKit
 
-/// The teleport-tier app: menu bar + hotkeys + instant strip navigation.
-/// Permission tiers (each mode checks only what it needs):
-///   Tier 0 "teleport":  Accessibility only (hotkeys are permission-free)
-///   Tier 1 "pan":       + Input Monitoring (scroll event tap)
-///   Tier 2 "cinematic": + Screen Recording (Metal/SCK proxies)  [future]
+/// The teleport app: menu bar + hotkeys + instant strip navigation.
+/// Requires exactly one permission: Accessibility (hotkeys are permission-free).
 func runTeleport(windowCount: Int, spawn: Bool, selftestSeconds: Int?) {
     guard AXSource.isTrusted else {
-        print("Teleport tier requires exactly one permission: Accessibility.")
+        print("Teleport requires exactly one permission: Accessibility.")
         print("System Settings -> Privacy & Security -> Accessibility")
         _ = AXSource.promptForTrustIfNeeded()
         exit(2)
@@ -87,7 +84,7 @@ func runTeleport(windowCount: Int, spawn: Bool, selftestSeconds: Int?) {
     lifecycle.start()
 
     print("""
-    Teleport tier running (menu bar mini-map active):
+    Teleport running (menu bar mini-map active):
       ctrl+opt+left/right   focus previous/next column
       ctrl+opt+1..9         jump to column N
       menu bar              click any window to jump

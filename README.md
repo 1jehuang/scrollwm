@@ -300,7 +300,7 @@ swift build
 .build/debug/WindowLab pan 10 8 --spawn --selftest # scroll-driven panning
 .build/debug/WindowLab overlay 8 --selftest        # Metal overlay + event tap
 .build/debug/WindowLab capturebench 5  # SCK capture latency (needs Screen Rec)
-.build/debug/WindowLab teleport --spawn --selftest # teleport tier e2e
+.build/debug/WindowLab teleport --spawn --selftest # teleport e2e
 .build/debug/WindowLab run --selftest  # production round trip
 .build/debug/WindowLab run --crashtest # crash phase (then relaunch to recover)
 ```
@@ -314,11 +314,3 @@ Measured on M-series MacBook (macOS 26):
 | 16 real windows animated @60Hz | 4.0 ms/tick | 8.0 ms (budget 16.7) |
 | SCK capture age | 0.5 ms | 0.9 ms |
 | IOSurface→MTLTexture | 0.01 ms | 0.05 ms |
-
-### Roadmap tiers
-
-- **Tier 0 (this app): teleport.** Accessibility only. Instant navigation.
-- **Tier 1: smooth pan.** + Input Monitoring (scroll event tap). Real windows
-  animated at 60Hz — validated viable by `scrollbench`.
-- **Tier 2: cinematic.** + Screen Recording. Metal compositor scrolls live
-  window textures at 120Hz (`overlay` + `capturebench` prove the budget).

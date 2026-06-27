@@ -1,10 +1,10 @@
 import Foundation
 import AppKit
 
-/// Menu bar presence for the teleport tier:
+/// Menu bar presence:
 /// - status item icon is a LIVE MINI-MAP of the strip (focus + viewport drawn)
 /// - menu lists all windows; selecting one teleports to it
-/// - shows last teleport latency and permission tier
+/// - shows last teleport latency
 final class MenuBarController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let engine: TeleportEngine
@@ -46,7 +46,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             stripView.autoresizingMask = [.width, .height]
             button.addSubview(stripView)
         }
-        // The teleport tier is always "managing" (it adopts on launch).
+        // Teleport always "manages" (it adopts on launch).
         stripView.apply(state: engine.stripState, managing: true)
 
         let menu = NSMenu()

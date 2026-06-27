@@ -5,9 +5,9 @@ import Metal
 import CoreVideo
 import AppKit
 
-/// Milestone 4 (v2 groundwork): measure ScreenCaptureKit window capture
+/// Measure ScreenCaptureKit window capture
 /// latency and IOSurface -> MTLTexture conversion cost. This decides how
-/// fresh "cinematic mode" proxies can actually be.
+/// fresh live-window proxies can actually be.
 final class CaptureBenchmark: NSObject, SCStreamOutput, SCStreamDelegate {
     private let device: MTLDevice
     private var textureCache: CVMetalTextureCache?
@@ -114,7 +114,7 @@ final class CaptureBenchmark: NSObject, SCStreamOutput, SCStreamDelegate {
         print("""
 
           interpretation:
-          - capture age = staleness floor for cinematic-mode proxies
+          - capture age = staleness floor for live-window proxies
           - first-frame = warm-up cost when scroll begins (must hide with placeholder)
           - texture convert must stay well under 1ms to fit the 8.3ms budget
         """)
@@ -124,7 +124,7 @@ final class CaptureBenchmark: NSObject, SCStreamOutput, SCStreamDelegate {
 func runCaptureBench(seconds: Int) {
     guard CaptureBenchmark.preflight() else {
         print("""
-        Screen Recording permission NOT granted (this is expected for the v1 teleport tier).
+        Screen Recording permission NOT granted (this is expected; ScrollWM does not need it).
         The capture benchmark needs it. To run this benchmark:
           System Settings -> Privacy & Security -> Screen & System Audio Recording
           add/enable: \(CommandLine.arguments[0])

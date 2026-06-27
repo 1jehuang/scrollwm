@@ -3,7 +3,7 @@ import Carbon
 import AppKit
 
 /// Carbon global hotkeys. These require NO TCC permission, which is what
-/// makes the teleport tier Accessibility-only.
+/// keeps ScrollWM Accessibility-only.
 final class HotkeyManager {
     typealias Handler = () -> Void
 

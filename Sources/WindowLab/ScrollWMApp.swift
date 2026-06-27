@@ -1,7 +1,7 @@
 import Foundation
 import AppKit
 
-/// ScrollWM: the production teleport-tier app.
+/// ScrollWM: the production teleport app.
 ///
 /// Safety model (the "don't break the user's desktop" contract):
 ///   1. Launches DORMANT: no window is touched until the user invokes Arrange.
