@@ -4,6 +4,15 @@ import AppKit
 // Unbuffered stdout: progress lines must appear immediately even when piped.
 setbuf(stdout, nil)
 
+// Never let a broken control-socket pipe kill us. The running app hosts the
+// control server in THIS process; if a `scrollwm` CLI client disconnects mid
+// reply (e.g. Ctrl-C during a large `status`), the server's `write()` to the
+// dead peer would otherwise raise SIGPIPE and terminate the whole window
+// manager, dropping the user's managed layout. With SIGPIPE ignored, `write()`
+// returns EPIPE and our write loops handle it gracefully. (Also protects the
+// short-lived CLI client process itself.)
+signal(SIGPIPE, SIG_IGN)
+
 // WindowLab: reality-test harness for the scrolling window manager.
 //
 // Subcommands:
@@ -135,7 +144,19 @@ let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-psn_") }
 //     it defaults to the diagnostic `probe`, preserving the dev workflow.
 // We detect the app case via the main bundle's URL ending in `.app`.
 let launchedAsAppBundle = Bundle.main.bundleURL.pathExtension == "app"
-let command = args.first ?? (launchedAsAppBundle ? "run" : "probe")
+
+// How a BARE invocation (no subcommand) behaves depends on HOW we were reached:
+//   - As ScrollWM.app's main executable (Finder/`open`/login agent): start the
+//     production app (`run`).
+//   - Via the user-facing `scrollwm` CLI shim - a symlink INTO the app bundle
+//     (e.g. /opt/homebrew/bin/scrollwm). Here `launchedAsAppBundle` is false
+//     (Bundle.main points at the symlink's dir), but the user is exploring the
+//     CLI, so print `help` rather than the `probe` window-title dump.
+//   - As the bare dev `WindowLab` binary (.build/debug/WindowLab): keep the
+//     diagnostic `probe` default for the dev workflow.
+let invokedViaBundleSymlink = !launchedAsAppBundle && executableResolvesIntoAppBundle()
+let defaultBareCommand = launchedAsAppBundle ? "run" : (invokedViaBundleSymlink ? "help" : "probe")
+let command = args.first ?? defaultBareCommand
 
 // Internal: the detached bundle-swapper for in-app updates. Runs from a
 // throwaway COPY of our binary (so it isn't executing inside the bundle it is
@@ -166,12 +187,21 @@ if command == "--version" || command == "-V" {
     exit(0)
 }
 
+// Explicit help: `scrollwm --help|-h|help` prints usage to stdout and exits 0.
+// This is a real, documented command (not an accident of the `default:` arm),
+// so it is distinguishable from a typo'd verb (which exits non-zero below).
+if command == "--help" || command == "-h" || command == "help" {
+    print(scrollwmHelpText())
+    exit(0)
+}
+
 // CLI control verbs: talk to a RUNNING ScrollWM app over its control socket.
 // These are the user-facing `scrollwm <verb>` commands (see runControlCLI).
 let controlVerbs: Set<String> = [
     "status", "version", "hello", "arrange", "release", "toggle", "focus", "move", "width",
     "workspace", "ws", "close", "display", "focus-mode", "focusmode", "reload", "reload-config",
-    "tutorial", "skills", "proficiency", "login", "launch-at-login", "update", "update-check", "ping", "quit",
+    "tutorial", "skills", "proficiency", "login", "launch-at-login", "loginitem",
+    "update", "update-check", "ping", "quit",
 ]
 if controlVerbs.contains(command) {
     exit(runControlCLI(Array(args)))
@@ -370,7 +400,22 @@ case "keytapprobe":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 20
     runKeyTapProbe(seconds: seconds)
 default:
-    print("""
+    // An unrecognized command. Distinguish a genuine typo from an explicit help
+    // request (handled above): print a short error to STDERR and exit non-zero
+    // so scripts can detect it, with a pointer to `--help` for the full usage.
+    FileHandle.standardError.write(
+        "scrollwm: unknown command '\(command)'. Run `scrollwm --help` for usage.\n"
+            .data(using: .utf8)!)
+    exit(2)
+}
+
+// MARK: - CLI help
+
+/// The full `scrollwm`/`WindowLab` usage text. Printed by an explicit
+/// `--help`/`-h`/`help` (exit 0). Kept as a function so it can be referenced
+/// from the top-level command dispatch above regardless of source order.
+func scrollwmHelpText() -> String {
+    """
     ScrollWM / WindowLab
 
     Control a running ScrollWM from your shell (the app must be running):
@@ -400,122 +445,49 @@ default:
       scrollwm tutorial            open the in-app cheat sheet
       scrollwm logs [--tail N|--follow|--path|--clear]
                                    show the app log (~/Library/Logs/ScrollWM/)
-      scrollwm --version           print the installed ScrollWM version
+      scrollwm version             print app version + capabilities as JSON
+      scrollwm --version           print the installed ScrollWM version (no app needed)
+      scrollwm --help              show this help
       scrollwm quit                restore windows and quit the app
 
     Lab / test harness (spawns its own processes; safe):
       WindowLab probe [-v]     enumerate CG+AX windows, match, report latency
       WindowLab bench          AX move/resize benchmark (windows restored after)
       WindowLab watch [secs]   repeated full resync loop with timing
-      WindowLab scrollbench [n] [hz]
-                               animate n disposable test windows via AX moves,
-                               measure jank. Headless: always spawns its own
-                               throwaway windows; never touches your real ones.
-      WindowLab pan [secs] [n] [--spawn] [--selftest]
-                               v1 slice: ctrl+opt+scroll pans real windows on a
-                               virtual canvas with inertia. Windows restored after.
       WindowLab run [--selftest]
                                ScrollWM production app: dormant menu bar agent.
                                Arrange/release via menu, ctrl+opt+esc, or the CLI.
                                Exact frame restore on release/quit/crash.
       WindowLab unittest       pure-logic tests for width/move/close ops (no AX needed)
+      WindowLab headlesstest   run ALL integration suites HEADLESS (no real window
+                               is spawned/moved/focused/closed; safe while you work)
       WindowLab updatecheck [--install] [--prerelease] [--stage-only]
-                               check GitHub Releases for a newer ScrollWM (pure
-                               network; --stage-only downloads+verifies+extracts
-                               without self-replacing, for CI/dev validation).
-      WindowLab animtest       pure-logic tests for the animated menu-bar
-                               mini-map (Spring physics + action inference)
-      WindowLab headlesstest   run ALL integration suites (ops/e2e/reveal/
-                               spawnlatency/display) HEADLESS: the real engine +
-                               controller logic runs against an in-memory window
-                               world. No real window is spawned/moved/focused/
-                               closed and no global keystroke is injected, so it
-                               never touches your screen or focus. Safe to run
-                               anytime, even while you work.
-      WindowLab fuzz [seed] [--steps N] [--seeds K] [--iters M]
-                               [--engine-only | --pure-only] [--replay SEED]
-                               seeded, reproducible property-based fuzzing of the
-                               real engine + pure logic against the in-memory sim
-                               world. Drives long random op sequences and asserts
-                               model invariants after every step (compactness,
-                               focus/workspace bounds, finite geometry, no dup
-                               windows, model==reality width). HEADLESS: never
-                               touches your screen or focus. A failure prints the
-                               seed + full op log; --replay <seed> re-runs it.
-      WindowLab fuzzmodel [seed] [--steps N] [--seeds K] [--replay SEED]
-                               DIFFERENTIAL fuzz: an independent reference model
-                               of the strip vs the real engine, checked after
-                               every random op (catches semantic order/focus/
-                               workspace/viewport bugs, not just crashes).
-      WindowLab fuzzctrl [seed] [--iters N] [--runs K --ops M] [--replay SEED]
-                               fuzz the untrusted-input surface: JSONC config
-                               parse, Chord/width parsing, and random chord +
-                               control-command sequences through a real headless
-                               controller. Asserts state stays coherent.
-      WindowLab fuzzdisp [seed] [--seeds K] [--iters M]
-                               fuzz multi-display hotplug (resolver + rebind),
-                               parking-corner policy, adoption-scope/geometry,
-                               and restore round-trips under unplugged monitors.
-      WindowLab fuzzconc [seed] [--seeds K] [--steps N]
-                               fuzz the async stack (LifecycleMonitor poll +
-                               fast-adopt + reconcile) with interleaved timed
-                               window events, pumping the run loop between steps.
-                               Slower (real timing); keep budgets modest.
-      WindowLab statespace [--max-visited N] [--max-depth D] [--max-windows W]
-                               [--engine-only | --pure-only]
-                               BOUNDED EXHAUSTIVE state-space checking: a BFS
-                               over the engine state machine that visits every
-                               reachable logical state (deduped) up to a bound
-                               and reports the SHORTEST op sequence to any
-                               invariant violation, plus exhaustive decision-
-                               table proofs of ResyncPlanner / parking corner /
-                               DisplaySelector / SemVer ordering. Deterministic
-                               and headless.
-      WindowLab opstest        integration test for width/move/close/focus-sync.
-                               HEADLESS by default (in-memory windows). Pass
-                               --live to exercise REAL spawned windows instead.
-      WindowLab spawnlatency   new-window adoption latency (AX-observer fast path
-                               vs poll). HEADLESS by default; --live for real AX.
-      WindowLab newwintest     multi-display adoption scope: spawn windows on the
-                               strip AND on the external, then prove (live AX) the
-                               external windows are LEFT ALONE (no yank) while a
-                               new window on the strip display is adopted fast.
-                               Skips cleanly on single-display hardware.
-      WindowLab displaybindcheck
-                               live check of the strip-move bind path: verify the
-                               primary-height Y-flip lands the strip on the right
-                               display (incl. a non-primary external). Spawns its
-                               own disposable windows; restores them after.
+                               check GitHub Releases for a newer ScrollWM
+      WindowLab fuzz | fuzzmodel | fuzzctrl | fuzzdisp | fuzzconc | statespace
+                               headless property/state-space checkers (see source)
       WindowLab sandbox [n] [--display M]
-                               run the REAL controller locked to n disposable
-                               windows it spawns (default 4). Drive the real
-                               hotkeys safely; your real windows are untouched.
-                               --display M tiles them on monitor M (0-based,
-                               left-to-right) so you can sandbox on an external.
-      WindowLab e2etest        end-to-end keybinding test (Alt+1-4 / Cmd+H/L/Q /
-                               workspaces). HEADLESS by default: chords are
-                               delivered to the real binding tables with NO
-                               CGEvent injected. Pass --live for real windows +
-                               synthesized keystrokes.
-      WindowLab revealtest     "Arrange All reveals + adopts hidden/minimized".
-                               HEADLESS by default; --live for real windows.
-      WindowLab displaytest    multi-display integration: strip windows land on
-                               the strip display, the off-screen parking sliver
-                               stays on the strip display (not a neighbor), and a
-                               strip rebind moves windows onto the other display.
-                               HEADLESS by default (synthetic 2-display world);
-                               --live runs against your real monitors.
-      WindowLab clamshelltest  CLAMSHELL / equal-display repro: drives the real
-                               controller through a laptop-lid-close transition
-                               (built-in primary turns off, an external becomes
-                               the new primary) with two equal 1440p externals + a
-                               sleep/wake burst. Asserts the strip follows its own
-                               display by stable id, never oscillates, keeps every
-                               window on-screen, and that a redundant display
-                               change issues NO window resizes (no "glitching").
-                               Always headless: no real window/monitor.
-      WindowLab hotkeyprobe [secs]
-                               register Alt+1-4 / Cmd+H / Cmd+L / Cmd+Q globally
-                               and report which key combos Carbon actually delivers.
-    """)
+                               drive the REAL controller on n disposable windows
+                               it spawns (your real windows are untouched)
+
+    Run `WindowLab --help` (or with no subcommand on the dev binary) for the full
+    diagnostic/test command set.
+    """
+}
+
+/// True when THIS executable resolves (through symlinks) to a file inside a
+/// `*.app` bundle - i.e. we were launched via the user-facing `scrollwm` shim
+/// (a symlink into `ScrollWM.app/Contents/MacOS/ScrollWM`), even though
+/// `Bundle.main` points at the symlink's directory. Used to choose a friendly
+/// default (`help`) for a bare `scrollwm` instead of the dev `probe` dump.
+func executableResolvesIntoAppBundle() -> Bool {
+    let raw = Bundle.main.executableURL?.path
+        ?? Bundle.main.executablePath
+        ?? CommandLine.arguments.first
+    guard let raw, !raw.isEmpty else { return false }
+    var url = URL(fileURLWithPath: (raw as NSString).resolvingSymlinksInPath)
+    while url.pathComponents.count > 1 {
+        if url.pathExtension == "app" { return true }
+        url.deleteLastPathComponent()
+    }
+    return false
 }

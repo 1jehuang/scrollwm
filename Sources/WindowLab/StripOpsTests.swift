@@ -70,6 +70,30 @@ enum StripOpsTests {
         check("width clamps fraction >1 to 100%", e.width(forFraction: 5.0) == (V - 2 * g).rounded())
         check("presets are [0.25,0.5,0.75,1.0]", TeleportEngine.widthPresets == [0.25, 0.5, 0.75, 1.0])
 
+        // --- parseWidthFraction (the `scrollwm width <arg>` CLI parser) ---
+        // Percents 25/50/75/100 and fractions 0.x..1.0 map to a fraction in
+        // (0,1]; everything else (esp. the ambiguous 1.0<v<25 band, and
+        // non-finite/garbage input) must be rejected so the CLI errors instead
+        // of silently setting an absurd sub-1% width.
+        func pwf(_ s: String) -> CGFloat? { ScrollWMController.parseWidthFraction(s) }
+        check("pwf 25 -> 0.25", pwf("25") == 0.25)
+        check("pwf 50 -> 0.5", pwf("50") == 0.5)
+        check("pwf 100 -> 1.0", pwf("100") == 1.0)
+        check("pwf 0.5 -> 0.5", pwf("0.5") == 0.5)
+        check("pwf 1 -> 1.0 (fraction)", pwf("1") == 1.0)
+        check("pwf 1.0 -> 1.0", pwf("1.0") == 1.0)
+        check("pwf 1.5 rejected (ambiguous)", pwf("1.5") == nil)
+        check("pwf 2 rejected (ambiguous)", pwf("2") == nil)
+        check("pwf 24 rejected (ambiguous)", pwf("24") == nil)
+        check("pwf 0 rejected", pwf("0") == nil)
+        check("pwf -5 rejected", pwf("-5") == nil)
+        check("pwf 150 rejected", pwf("150") == nil)
+        check("pwf inf rejected", pwf("inf") == nil)
+        check("pwf nan rejected", pwf("nan") == nil)
+        check("pwf abc rejected", pwf("abc") == nil)
+        check("pwf empty rejected", pwf("") == nil)
+        check("pwf 25 is min accepted percent", pwf("24.999") == nil && pwf("25") != nil)
+
         // --- tiling invariant: exactly N columns at fraction 1/N fill V ---
         // Build N columns each sized to 1/N, pack them with a leading gap, and
         // assert the strip's right edge lands at V - gap (symmetric margins),

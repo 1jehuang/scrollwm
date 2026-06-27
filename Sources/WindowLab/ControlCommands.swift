@@ -204,14 +204,19 @@ extension ScrollWMController {
     /// (fine-grained). See docs/INTEGRATION.md.
     static let controlProtocolRevision = 1
 
-    /// The capability flags advertised to integrators. Derived from the actual
-    /// verb set so the handshake never drifts from what the app really supports.
+    /// The capability flags advertised to integrators. These are the canonical
+    /// user-facing control verbs the app services (aliases like `ws`/`hello` are
+    /// intentionally omitted; clients should use the canonical name). Kept in
+    /// sync with the `handleControlCommand` switch and asserted by
+    /// `ControlContractTests` so the handshake never claims a verb the app can't
+    /// actually run, and never silently drops one it can.
     static var controlCapabilities: [String] {
         [
             "ping", "status", "version",
             "arrange", "release", "toggle",
             "focus", "move", "workspace", "width", "close",
             "display", "focus-mode", "reload",
+            "skills", "login", "tutorial", "update", "quit",
         ]
     }
 
@@ -234,8 +239,18 @@ extension ScrollWMController {
     }
 
     /// Accept "25"/"50"/"75"/"100" (percent) or "0.0".."1.0" (fraction).
+    ///
+    /// The percent/fraction split keys off whether the value exceeds 1.0, so the
+    /// AMBIGUOUS band `1.0 < v < 25` is rejected rather than silently treated as
+    /// a sub-1% width. (Previously `width 1.5` parsed as 1.5% -> a ~3px column,
+    /// almost never what the user meant - they typed either a bad fraction or a
+    /// bad percent.) Non-finite input (`inf`/`nan`) is rejected. A bare `25` is
+    /// the smallest accepted percent; `1` (==100%) and `0.x` fractions still work.
     static func parseWidthFraction(_ s: String) -> CGFloat? {
-        guard let v = Double(s) else { return nil }
+        guard let v = Double(s), v.isFinite else { return nil }
+        // Reject the ambiguous gap between "fraction" (<=1.0) and the smallest
+        // sensible percent (25). e.g. 1.5, 2, 10, 24.9 are all rejected.
+        if v > 1.0 && v < 25.0 { return nil }
         let f = v > 1.0 ? v / 100.0 : v
         guard f > 0.0, f <= 1.0 else { return nil }
         return CGFloat(f)

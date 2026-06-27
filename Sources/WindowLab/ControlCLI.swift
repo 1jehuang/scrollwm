@@ -34,6 +34,16 @@ func runControlCLI(_ args: [String]) -> Int32 {
 
         """.data(using: .utf8)!)
         return 3
+    } catch ControlClient.Failure.notResponding {
+        // The app is up (we connected) but did not reply within the timeout -
+        // likely wedged on a long operation. Distinct from "not running" so a
+        // script/watchdog can tell the difference. Exit 4.
+        FileHandle.standardError.write("""
+        ScrollWM is not responding (connected, but no reply within \(ControlClient.timeoutSeconds)s).
+        It may be busy or wedged. Try again, or restart it: `scrollwm quit` then `open -a ScrollWM`.
+
+        """.data(using: .utf8)!)
+        return 4
     } catch {
         FileHandle.standardError.write("scrollwm: \(error)\n".data(using: .utf8)!)
         return 1

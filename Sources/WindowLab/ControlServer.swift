@@ -145,13 +145,27 @@ final class ControlServer {
 
 /// Client side: used by the `scrollwm` CLI verbs to talk to a running app.
 enum ControlClient {
-    enum Failure: Error { case notRunning, io(String) }
+    enum Failure: Error { case notRunning, notResponding, io(String) }
+
+    /// Wall-clock cap on the connect+read round-trip. A healthy app replies in
+    /// well under 1s even for `arrange`/`release` over ~50 windows (see the
+    /// audit latency table), so 5s is generous headroom while still bounding a
+    /// WEDGED app (main thread stuck in a long AX call, or accept loop blocked):
+    /// without this the CLI would block forever on `read()`. On timeout we throw
+    /// `.notResponding` (distinct from `.notRunning`) so the CLI can tell the
+    /// user the app is alive but not answering.
+    static let timeoutSeconds = 5
 
     /// Connect, send `command`, return the trimmed response.
     static func send(_ command: String, socketPath: String = ControlSocket.path()) throws -> String {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw Failure.io("socket()") }
         defer { close(fd) }
+
+        // Bound blocking send()/recv() so a wedged server can't hang us forever.
+        var tv = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
@@ -182,7 +196,10 @@ enum ControlClient {
         var off = 0
         while off < bytes.count {
             let n = bytes[off...].withUnsafeBytes { write(fd, $0.baseAddress, bytes.count - off) }
-            if n <= 0 { throw Failure.io("write()") }
+            if n <= 0 {
+                if n < 0, errno == EAGAIN || errno == EWOULDBLOCK { throw Failure.notResponding }
+                throw Failure.io("write()")
+            }
             off += n
         }
         // Half-close our write side so the server sees EOF if it reads to end.
@@ -192,7 +209,12 @@ enum ControlClient {
         var buf = [UInt8](repeating: 0, count: 4096)
         while true {
             let n = read(fd, &buf, buf.count)
-            if n < 0 { throw Failure.io("read()") }
+            if n < 0 {
+                // SO_RCVTIMEO fired: the app is up (we connected) but didn't
+                // answer in time -> report "not responding", not "not running".
+                if errno == EAGAIN || errno == EWOULDBLOCK { throw Failure.notResponding }
+                throw Failure.io("read()")
+            }
             if n == 0 { break }
             data.append(contentsOf: buf[0..<n])
         }
