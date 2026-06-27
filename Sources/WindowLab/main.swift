@@ -266,6 +266,11 @@ case "sandbox":
     runSandbox(windowCount: n, displayIndex: sandboxDisplay)
 case "displaytest":
     args.contains("--live") ? runDisplayTest() : runHeadlessDisplayTest()
+case "dragofftest":
+    // Headless external-monitor "drag-off" test: a managed column the user drags
+    // onto another display is EVICTED (left where they put it) instead of being
+    // yanked back, while a merely-parked column is never evicted. Always headless.
+    runHeadlessDragOffTest()
 case "displaybindcheck":
     runDisplayBindCheck()
 case "e2etest":

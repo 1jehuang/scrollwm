@@ -287,6 +287,19 @@ final class LifecycleMonitor {
             !standardExisting.contains { CFEqual($0.element, slot.window.element) }
         }
 
+        // Eviction: a managed column the user DRAGGED onto another physical
+        // display still exists in AX (so `removeSlots` kept it) and is still on
+        // the current Space, but under the default `stripDisplay` scope the strip
+        // must not own another monitor's window - the next teleport would yank it
+        // back, fighting the user. Read each surviving column's FRESH AX frame
+        // from this enumeration and drop the ones that now best-overlap a
+        // different display (parked columns are exempt; see the pure policy in
+        // `AdoptionScope.evictedFromStripDisplay`). Evicted windows are left
+        // exactly where the user put them - we remove the slot WITHOUT moving it.
+        let evicted = engine.evictDraggedOffDisplay { ref in
+            standardExisting.first { CFEqual($0.element, ref.element) }?.frame
+        }
+
         // Additions: new windows ON THE CURRENT SPACE (per the planner). Insert
         // each immediately to the RIGHT of the focused column (PaperWM/niri
         // style) and focus the newest so the viewport follows the window the
@@ -333,20 +346,21 @@ final class LifecycleMonitor {
         let sizeChanged = engine.reconcileSizes(from: standardAdoptable)
 
         adoptedCount += newWindows.count
-        removedCount += removed
+        removedCount += removed + evicted
         lastResyncMs = Double(Clock.nowAbsNs() &- start) / 1e6
 
-        if removed > 0 || !newWindows.isEmpty || sizeChanged {
+        if removed > 0 || evicted > 0 || !newWindows.isEmpty || sizeChanged {
             engine.compactStrip()
             if let lastInsertedIndex {
                 // Focus + scroll the viewport to reveal the newly opened window.
                 engine.focus(index: lastInsertedIndex)
-            } else if sizeChanged || removed > 0 {
+            } else if sizeChanged || removed > 0 || evicted > 0 {
                 // A managed window changed size out from under us (an app that
                 // settled its async resize slower than the fast-path follow-up's
                 // budget, a terminal snapping to character cells, the user
                 // dragging an edge, ...) OR a column was removed (the app closed
-                // a window, it minimized, or moved to another Space). Re-fit the
+                // a window, it minimized, moved to another Space, or was EVICTED
+                // after the user dragged it to another display). Re-fit the
                 // viewport to the focused column so:
                 //   - a focused window that GREW past the viewport edge scrolls
                 //     fully into view (the 2s safety net behind the fast-path
@@ -362,7 +376,7 @@ final class LifecycleMonitor {
             } else {
                 engine.teleport()
             }
-            onChange?(newWindows.count, removed)
+            onChange?(newWindows.count, removed + evicted)
         }
     }
 
@@ -646,6 +660,57 @@ extension TeleportEngine {
             onLayoutChange?()
         }
         return removed
+    }
+
+    /// True if the column at array index `i` (in the ACTIVE workspace) is
+    /// currently PARKED off the content region this cycle - i.e. the engine,
+    /// not the user, is the reason its live frame sits off the strip. A parked
+    /// column has scrolled fully past one side of the viewport, so `onScreenTarget`
+    /// shoves it to `parkingX`. Eviction (`evictDraggedOffDisplay`) must exempt
+    /// these so a parked sliver clamped onto a neighbor monitor is not mistaken
+    /// for a window the user dragged there.
+    func slotIsParked(_ i: Int) -> Bool {
+        guard slots.indices.contains(i) else { return false }
+        let slot = slots[i]
+        let left = slot.canvasX - viewportX
+        let right = left + slot.width
+        return right <= 0 || left >= contentWidth
+    }
+
+    /// Evict columns the user has DRAGGED onto a different physical display.
+    /// Under the default `stripDisplay` adopt scope the strip manages only its
+    /// own monitor's windows, so a managed column whose freshly-read AX frame now
+    /// best-overlaps another display was moved off by the user and should be let
+    /// go (dropped from the strip, left exactly where they put it) rather than
+    /// teleported back. Parked columns (engine-positioned off-screen) are exempt.
+    ///
+    /// `liveFrame(_:)` reads the window's CURRENT AX frame (top-left global); a
+    /// nil result (unreadable) keeps the column (never lose a window we cannot
+    /// classify). Returns the number of columns evicted. Pure policy lives in
+    /// `AdoptionScope.evictedFromStripDisplay`; this is the engine glue that
+    /// feeds it each slot's live frame + parked state and removes the matches
+    /// WITHOUT moving them (unlike `releaseAll`, which restores frames).
+    @discardableResult
+    func evictDraggedOffDisplay(liveFrame: (ManagedWindowRef) -> CGRect?) -> Int {
+        guard adoptScope == .stripDisplay, !otherDisplayFrames.isEmpty else { return 0 }
+        let strip = stripDisplayFrame ?? screenFrame
+        // Snapshot the eviction decision per active-workspace slot BEFORE
+        // mutating, since `slotIsParked` reads live viewport/canvas state.
+        var evictIDs = Set<UInt64>()
+        for i in slots.indices {
+            let slot = slots[i]
+            guard let frame = liveFrame(slot.window) else { continue }
+            if AdoptionScope.evictedFromStripDisplay(
+                liveFrame: frame,
+                stripDisplay: strip,
+                others: otherDisplayFrames,
+                isParked: slotIsParked(i),
+                scope: adoptScope) {
+                evictIDs.insert(slot.window.id)
+            }
+        }
+        guard !evictIDs.isEmpty else { return 0 }
+        return removeSlots { evictIDs.contains($0.window.id) }
     }
 
     /// Re-pack columns left-to-right, removing gaps left by closed windows.
