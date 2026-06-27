@@ -89,6 +89,15 @@ enum Headless {
     /// Because the sim's `cgWindows(onscreenOnly:true)` now omits off-active-Space
     /// windows, only windows on the world's active Space are adopted - mirroring
     /// `arrange`'s on-screen scoping with zero extra test logic.
+    ///
+    /// Like production `arrange` (`ScrollWMController.arrange` ends in
+    /// `engine.focus(index: 0)`), this also FOCUSES column 0, which `teleport`s
+    /// every adopted window to its real on-screen target. That matters for any
+    /// test that later checks live frames against `engine.onScreenTarget` (e.g.
+    /// the `stripIsOnCurrentSpace` fast-adopt gate under a non-zero `peekInset`):
+    /// without the teleport the sim windows stay at their spawn X, 48px off the
+    /// peek-lane target, and the gate cannot match them. Skipped only when the
+    /// adopt found nothing (empty strip), mirroring arrange's early return.
     @discardableResult
     static func arrangeCurrentSpace(_ engine: TeleportEngine,
                                     pids: [pid_t]) -> [MatchedWindow] {
@@ -98,6 +107,7 @@ enum Headless {
             cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
         ).filter { $0.cg != nil }
         engine.adopt(matched: matched)
+        if !engine.slots.isEmpty { engine.focus(index: 0) }
         return matched
     }
 
