@@ -281,6 +281,11 @@ case "parktest":
     // stays on the strip's own display and never spills onto the external, for
     // both the real above-left layout and a side-by-side rearrangement.
     runHeadlessParkTest()
+case "exthotplugtest":
+    // Headless external-monitor hotplug test: unplug/replug the above-left
+    // external while the strip is on the built-in (strip stays put), and unplug
+    // the built-in (strip migrates to the external). Always headless.
+    runHeadlessExternalHotplugTest()
 case "displaybindcheck":
     runDisplayBindCheck()
 case "e2etest":
