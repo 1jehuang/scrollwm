@@ -1,0 +1,233 @@
+{
+  "columns" : [
+    {
+      "app" : "Ghostty",
+      "focused" : true,
+      "healthy" : true,
+      "index" : 1,
+      "title" : "~",
+      "width" : 894
+    }
+  ],
+  "floating" : [
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🌐 jcode\/forest Sloth"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🌐 jcode\/forest Rhino"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🌐 jcode\/forest Crocodile"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🦕 jcode\/forest Sauropod [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🦍 jcode\/forest Gorilla [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🐸 jcode\/forest Frog [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🐹 jcode\/forest Hamster [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🐥 jcode\/forest Chick [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🐰 jcode\/forest Rabbit [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🐏 jcode\/forest Ram [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🐟 jcode\/forest Fish [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🦉 jcode\/forest Owl [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🐔 jcode\/forest Chicken [self-dev]"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🌐 jcode\/forest Rooster"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🌐 jcode\/forest Penguin"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🌐 jcode\/forest Kangaroo"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "🦍 jcode\/forest Gorilla"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    },
+    {
+      "app" : "Ghostty",
+      "canTile" : true,
+      "title" : "~"
+    }
+  ],
+  "floatingCount" : 42,
+  "focusedColumn" : 1,
+  "focusMode" : "fit",
+  "managing" : true,
+  "protocol" : 1,
+  "version" : "0.1.6",
+  "windowCount" : 1,
+  "workspace" : 2,
+  "workspaceCount" : 2
+}
