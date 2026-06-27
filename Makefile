@@ -23,6 +23,7 @@ build:
 test: build
 	.build/debug/WindowLab unittest
 	.build/debug/WindowLab animtest
+	.build/debug/WindowLab mmtest
 	.build/debug/WindowLab headlesstest
 	.build/debug/WindowLab fuzz 1 --seeds 60 --steps 300 --iters 1500
 	.build/debug/WindowLab fuzzmodel 1 --seeds 40 --steps 300

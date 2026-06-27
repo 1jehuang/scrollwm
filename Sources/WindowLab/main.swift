@@ -260,6 +260,8 @@ case "updatecheck":
                            allowPrerelease: args.contains("--prerelease")))
 case "animtest":
     exit(MenuBarAnimationTests.run() ? 0 : 1)
+case "mmtest":
+    exit(MultiMonitorTests.run() ? 0 : 1)
 case "animrender":
     let out = args.dropFirst().first ?? "menubar_anim.png"
     exit(MenuBarAnimationRender.run(outPath: out) ? 0 : 1)
@@ -459,6 +461,7 @@ func scrollwmHelpText() -> String {
                                Arrange/release via menu, ctrl+opt+esc, or the CLI.
                                Exact frame restore on release/quit/crash.
       WindowLab unittest       pure-logic tests for width/move/close ops (no AX needed)
+      WindowLab mmtest         pure-logic tests for the multi-monitor policies (no AX needed)
       WindowLab headlesstest   run ALL integration suites HEADLESS (no real window
                                is spawned/moved/focused/closed; safe while you work)
       WindowLab updatecheck [--install] [--prerelease] [--stage-only]
