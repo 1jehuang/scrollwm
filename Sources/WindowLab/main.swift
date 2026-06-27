@@ -358,7 +358,9 @@ default:
 
     Control a running ScrollWM from your shell (the app must be running):
       scrollwm status              print strip state as JSON
-      scrollwm arrange             adopt current-Space windows (launches app if needed)
+      scrollwm arrange [25|50|75|100|0.0-1.0]
+                                   adopt current-Space windows (launches app if
+                                   needed); optional width sizes EVERY column
       scrollwm release             restore all windows, go dormant
       scrollwm toggle              arrange <-> release
       scrollwm focus <next|prev|left|right|N>
@@ -367,8 +369,8 @@ default:
       scrollwm move <up|down>      send focused window to the workspace above/below
       scrollwm workspace <up|down|N>
                                    switch vertical workspace (niri-style)
-      scrollwm width <25|50|75|100|0.0-1.0>
-                                   resize focused column
+      scrollwm width [all] <25|50|75|100|0.0-1.0>
+                                   resize focused column (or `all` columns)
       scrollwm close               close the focused window
       scrollwm display <next|main|primary|largest|N>
                                    move the scrolling strip to another monitor
