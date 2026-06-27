@@ -2,15 +2,15 @@ import Foundation
 import ApplicationServices
 import AppKit
 
-/// Integration test for "Arrange All Windows includes hidden & minimized".
+/// Integration test for "arrange includes hidden & minimized windows".
 ///
 /// Spawns disposable windows, MINIMIZES some of them, then drives the REAL
 /// production controller (hard-locked to the spawned pids via `sandboxPIDs`):
 ///
-///   1. A plain `arrange` adopts only the VISIBLE windows (minimized ones are
-///      correctly skipped) - this is the pre-existing, safe behavior.
-///   2. `arrangeAllWindows` first de-miniaturizes the minimized windows, then
-///      adopts EVERYTHING, so every spawned window ends up on the strip.
+///   1. A plain `arrange` now REVEALS the minimized windows first, then adopts
+///      EVERYTHING - so every spawned window ends up on the strip.
+///   2. `arrangeAllWindows` does the same and additionally equalizes the columns
+///      so the whole desktop is visible at once.
 ///
 /// Restores + terminates the spawned windows at the end.
 ///
@@ -67,11 +67,15 @@ func runWindowRevealTest() {
         let minimizedNow = liveWindows().filter { $0.isMinimized }.count
         check("minimized \(minimizeCount) windows up front", minimizedNow == minimizeCount)
 
-        // --- Plain arrange: adopts only the VISIBLE windows ---
+        // --- Plain arrange: now REVEALS minimized windows and adopts ALL ---
         DispatchQueue.main.sync { controller.arrange() }
-        Thread.sleep(forTimeInterval: 0.6)
-        check("plain arrange adopts only visible windows (\(total - minimizeCount))",
-              controller.debugSlotCount == total - minimizeCount)
+        // arrange reveals (animated ~0.45s) then resyncs to pull the revealed
+        // windows in; give it room.
+        Thread.sleep(forTimeInterval: 1.4)
+        check("plain arrange reveals + adopts every window incl. minimized (\(total))",
+              controller.debugSlotCount == total)
+        check("no spawned window left minimized after plain arrange",
+              liveWindows().allSatisfy { !$0.isMinimized })
 
         // Release so arrangeAllWindows starts from dormant, like the menu action.
         DispatchQueue.main.sync { controller.release() }

@@ -884,13 +884,46 @@ final class ScrollWMController: NSObject {
             Log.warn("arrange: session locked/inactive, refusing", "arrange")
             return
         }
-        // Idempotent verb: while ALREADY managing, "arrange" reconciles the
-        // current Space's windows into the strip (adopting any that appeared,
-        // dropping any that closed) rather than no-op'ing. This is what makes
-        // the menu-bar "Arrange Windows into Strip" item and `scrollwm arrange`
-        // share ONE behavior in every state instead of diverging. The heavy
-        // "reveal hidden + minimized, then equalize" flow is the separate
-        // "Arrange All Windows" action, deliberately kept distinct.
+        // Reveal hidden apps (Cmd+H) and minimized windows up front so a plain
+        // "arrange" tidies EVERYTHING on the current Space, not just what is
+        // already visible: the user expects "arrange" to pull hidden/minimized
+        // windows onto the strip too. Revealing brings them back onto the
+        // CURRENT Space first, so the Space-safety contract still holds (we
+        // never reach into another Space). The sandbox/test lock flows straight
+        // through, so this can only ever touch the locked pids.
+        let reveal = WindowReveal.reveal(pidFilter: sandboxPIDs ?? pidFilter)
+        if reveal.didReveal {
+            Log.info("arrange: revealed \(reveal.unhiddenApps) hidden app(s), "
+                     + "\(reveal.unminimizedWindows) minimized window(s)", "arrange")
+            // Adopt what is visible now, then resync after the unhide/
+            // de-miniaturize animation lands so the freshly-revealed windows are
+            // pulled in too (they are not in the WindowServer on-screen list
+            // until the animation finishes). The immediate adopt keeps the
+            // synchronous CLI reply meaningful; the deferred pass catches the
+            // rest (and starts management even when EVERY window was hidden).
+            arrangeAdoptNow(pidFilter: pidFilter)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+                guard let self else { return }
+                if self.isManaging {
+                    for strip in self.strips where strip.isManaging { strip.lifecycle?.resync() }
+                    self.menuBar.refresh()
+                } else {
+                    self.arrangeAdoptNow(pidFilter: pidFilter)
+                }
+            }
+            return
+        }
+        arrangeAdoptNow(pidFilter: pidFilter)
+    }
+
+    /// The adopt half of `arrange`: reconcile the current Space's windows into
+    /// the strip with NO reveal step (callers reveal first when they want hidden
+    /// windows). While ALREADY managing this resyncs every managing strip
+    /// (adopting any that appeared, dropping any that closed); from dormant it
+    /// adopts the current-Space windows and starts management. The menu-bar
+    /// "Arrange Windows into Strip" item and `scrollwm arrange` share this ONE
+    /// behavior in every state instead of diverging.
+    private func arrangeAdoptNow(pidFilter: Set<pid_t>? = nil) {
         if isManaging {
             // Resync EVERY managing strip so each display reconciles its own
             // windows (one strip in the single-display case).
@@ -1972,14 +2005,14 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             showAllItem.target = self
             menu.addItem(showAllItem)
 
-            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (incl. hidden & minimized)", action: #selector(arrangeAllAction), keyEquivalent: "")
+            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (reveal + fit on screen)", action: #selector(arrangeAllAction), keyEquivalent: "")
             arrangeAllItem.target = self
             menu.addItem(arrangeAllItem)
 
             // Same verb as the `scrollwm arrange` CLI: re-adopt the current
             // Space's windows into the strip (idempotent while managing). Kept
             // enabled so the menu item and the command always do the same thing.
-            let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip", action: #selector(arrangeAction), keyEquivalent: "")
+            let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip (incl. hidden & minimized)", action: #selector(arrangeAction), keyEquivalent: "")
             arrangeItem.target = self
             menu.addItem(arrangeItem)
         } else {
@@ -1988,11 +2021,11 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             menu.addItem(header)
             menu.addItem(.separator())
 
-            let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip", action: #selector(arrangeAction), keyEquivalent: "")
+            let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip (incl. hidden & minimized)", action: #selector(arrangeAction), keyEquivalent: "")
             arrangeItem.target = self
             menu.addItem(arrangeItem)
 
-            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (incl. hidden & minimized)", action: #selector(arrangeAllAction), keyEquivalent: "")
+            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (reveal + fit on screen)", action: #selector(arrangeAllAction), keyEquivalent: "")
             arrangeAllItem.target = self
             menu.addItem(arrangeAllItem)
 

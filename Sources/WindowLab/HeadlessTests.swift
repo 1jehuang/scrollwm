@@ -759,11 +759,15 @@ func runHeadlessRevealTest() {
     let minimizedNow = pids.flatMap { AXSource.windows(forPID: $0) }.filter { $0.isMinimized }.count
     t.check("minimized \(minimizeCount) windows up front", minimizedNow == minimizeCount)
 
-    // --- Plain arrange: adopts only the VISIBLE windows ---
+    // --- Plain arrange: now REVEALS minimized windows and adopts EVERYTHING ---
+    // A bare "arrange" un-minimizes (and un-hides) first, so the user's whole
+    // current Space lands on the strip, not just what was already visible.
     controller.arrange()
-    Headless.pump(0.1)
-    t.check("plain arrange adopts only visible windows (\(total - minimizeCount))",
-            controller.debugSlotCount == total - minimizeCount)
+    Headless.pump(0.6) // cover the reveal + deferred resync (asyncAfter ~0.45s)
+    t.check("plain arrange reveals + adopts every window incl. minimized (\(total))",
+            controller.debugSlotCount == total)
+    t.check("no spawned window left minimized after plain arrange",
+            pids.flatMap { AXSource.windows(forPID: $0) }.allSatisfy { !$0.isMinimized })
 
     // Regression: minimizing a window that ScrollWM already manages must NOT be
     // interpreted as an implicit release/removal. Only close or explicit Release
@@ -773,7 +777,7 @@ func runHeadlessRevealTest() {
         world.setMinimized(managedVisible, true)
         Headless.pump(2.25) // wait for the 2s lifecycle safety-net poll
         t.check("managed minimized window stays in strip until deliberate release/close",
-                controller.debugSlotCount == total - minimizeCount)
+                controller.debugSlotCount == total)
         world.setMinimized(managedVisible, false)
         Headless.pump(0.1)
     }
