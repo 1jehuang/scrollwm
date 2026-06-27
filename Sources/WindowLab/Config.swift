@@ -78,6 +78,17 @@ struct ScrollWMConfig: Equatable {
         // "largest" (the external on a laptop+monitor setup), or a 1-based
         // display index ("1", "2", …). Resolved by DisplaySelector.pick.
         var stripDisplay: String = "main"
+        /// While ScrollWM is MANAGING, automatically tile (adopt onto the strip)
+        /// any standard top-level window that appears un-arranged on a managed
+        /// display's current Space, so you never see a stray window floating in
+        /// the background behind the strip. Dialogs/panels/utility palettes are
+        /// never auto-tiled (they stay reachable from the menu). Fully reversible:
+        /// Release restores every window's original position, and while dormant
+        /// nothing is ever touched. On by default so "manage this monitor" means
+        /// every ordinary window on it lands on the strip. The pure include/skip
+        /// decision lives in `AutoTilePolicy`; `adoptScope` still bounds which
+        /// displays a strip will adopt from.
+        var autoTileNewWindows: Bool = true
     }
 
     /// Menu-bar mini-map sizing. The icon grows with the strip instead of being
@@ -114,6 +125,18 @@ struct ScrollWMConfig: Equatable {
         /// Off by default so the icon stays compact for single-workspace users
         /// (it also only ever stacks when there is more than one workspace).
         var showAllWorkspaces: Bool = false
+        /// Show a small floating mini-map indicator on displays that have NO
+        /// system menu bar of their own (every non-primary monitor: macOS only
+        /// draws the menu bar on one display unless "Displays have separate
+        /// Spaces" is on). The system status item still lives in the real menu
+        /// bar; this adds a lightweight, click-through-friendly floating panel
+        /// pinned to the top of each other managed display so you can see the
+        /// strip's state (and which display you're on) without glancing back at
+        /// the primary monitor. On by default; only ever appears with >1 display.
+        /// Placement is the pure `IndicatorPlacement`; the panel is
+        /// `FloatingStripIndicator`. Set false to keep the status only in the
+        /// real menu bar.
+        var showExternalDisplayIndicator: Bool = true
     }
 
     /// In-app updater behavior. ScrollWM checks GitHub Releases for a newer
@@ -222,6 +245,7 @@ struct ScrollWMConfig: Equatable {
                 "multiDisplay": layout.multiDisplay,
                 "adoptScope": layout.adoptScope.rawValue,
                 "stripDisplay": layout.stripDisplay,  // [md-select]
+                "autoTileNewWindows": layout.autoTileNewWindows,
             ],
             "menuBar": [
                 "pointsPerScreen": Double(menuBar.pointsPerScreen),
@@ -231,6 +255,7 @@ struct ScrollWMConfig: Equatable {
                 "pinHighPriority": menuBar.pinHighPriority,
                 "showWorkspaceNumber": menuBar.showWorkspaceNumber,
                 "showAllWorkspaces": menuBar.showAllWorkspaces,
+                "showExternalDisplayIndicator": menuBar.showExternalDisplayIndicator,
             ],
             "update": [
                 "enabled": update.enabled,
@@ -288,6 +313,7 @@ struct ScrollWMConfig: Equatable {
             }
             if let fh = layout["fillHeight"] as? Bool { config.layout.fillHeight = fh }
             if let md = layout["multiDisplay"] as? Bool { config.layout.multiDisplay = md }
+            if let at = layout["autoTileNewWindows"] as? Bool { config.layout.autoTileNewWindows = at }
             if let s = layout["adoptScope"] as? String {
                 if let scope = AdoptionScope.Scope(configValue: s) {
                     config.layout.adoptScope = scope
@@ -307,6 +333,7 @@ struct ScrollWMConfig: Equatable {
             if let pin = mb["pinHighPriority"] as? Bool { config.menuBar.pinHighPriority = pin }
             if let n = mb["showWorkspaceNumber"] as? Bool { config.menuBar.showWorkspaceNumber = n }
             if let a = mb["showAllWorkspaces"] as? Bool { config.menuBar.showAllWorkspaces = a }
+            if let e = mb["showExternalDisplayIndicator"] as? Bool { config.menuBar.showExternalDisplayIndicator = e }
             // Keep the clamps sane regardless of what's in the file.
             config.menuBar.pointsPerScreen = max(8, config.menuBar.pointsPerScreen)
             config.menuBar.minWidth = max(12, config.menuBar.minWidth)
@@ -469,7 +496,15 @@ struct ScrollWMConfig: Equatable {
         //   "largest" = the biggest display (the external on a laptop+monitor)
         //   "1"/"2"/… = a 1-based display index
         // Move it at runtime too: `scrollwm display <next|main|primary|largest|N>`.
-        "stripDisplay": "main"
+        "stripDisplay": "main",
+
+        // While ScrollWM is MANAGING, automatically tile any standard window
+        // that shows up un-arranged on a managed display, so you never see a
+        // stray window floating in the background behind the strip. Dialogs and
+        // utility panels are left floating (still reachable from the menu).
+        // Fully reversible: Release restores every window; dormant never
+        // touches anything. Set false to leave new/un-adopted windows floating.
+        "autoTileNewWindows": true
       },
 
       // Menu-bar mini-map sizing. The icon GROWS with the strip instead of
@@ -484,7 +519,8 @@ struct ScrollWMConfig: Equatable {
         "showKeyHints": true,     // flash the chord + action (e.g. "⌘L Focus →") to the RIGHT of the icon on each keypress
         "pinHighPriority": true,  // keep ScrollWM in the highest-priority menu-bar slot so it stays visible even when the bar is crowded
         "showWorkspaceNumber": true, // show the active vertical-workspace number on the icon (only when >1 workspace)
-        "showAllWorkspaces": false   // stack EVERY workspace's strip on the icon, not just the active one (only when >1 workspace)
+        "showAllWorkspaces": false,   // stack EVERY workspace's strip on the icon, not just the active one (only when >1 workspace)
+        "showExternalDisplayIndicator": true // also float a small mini-map on monitors that have no system menu bar (only with >1 display)
       },
 
       // In-app updates. ScrollWM checks GitHub Releases so you actually receive
