@@ -1360,6 +1360,16 @@ final class ScrollWMController: NSObject {
     var debugSlotCount: Int { engine.slots.count }
     var debugSlotTitles: [String] { engine.slots.map { $0.window.title } }
     var debugFocusIndex: Int { engine.focusIndex }
+    /// Titles of the columns the engine has SUSPENDED (native fullscreen or
+    /// diverged to another Space): kept in the strip but excluded from layout +
+    /// every AX write. For the Space/fullscreen integration tests.
+    var debugSuspendedTitles: [String] {
+        engine.slots.filter { $0.window.suspended }.map { $0.window.title }
+    }
+    /// canvasX of each column (strip order), so a test can prove a suspended
+    /// column reserves no gap (its right neighbor slides in).
+    var debugSlotCanvasX: [CGFloat] { engine.slots.map { $0.canvasX } }
+
     /// Per-strip slot titles (display order), for the multi-display focus/move
     /// integration test. Reads the SAME engines production drives.
     var debugStripTitles: [[String]] { strips.map { $0.engine.slots.map { $0.window.title } } }

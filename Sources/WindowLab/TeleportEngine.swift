@@ -33,6 +33,19 @@ final class TeleportEngine {
         var appName: String
         var title: String
         var healthy = true
+        /// Managed but TEMPORARILY not an active strip column the engine may
+        /// write to: set while the window is in native macOS fullscreen (it owns
+        /// its own dedicated Space, so the engine must not fight the OS for its
+        /// geometry) and, more generally, while a managed window has diverged to
+        /// another native Space. A suspended window is KEPT in the strip (so it
+        /// re-attaches in place when it returns) but is skipped by `teleport`,
+        /// `reconcileSizes`, and every resize verb, and is excluded from the
+        /// active layout (`compactStrip`/`stripContentWidth`/navigation), so it
+        /// neither corrupts the window's OS-owned frame nor leaves a phantom gap.
+        /// Cleared automatically by the resync once the window is a normal
+        /// current-Space window again. Defaults false, so a window never touched
+        /// by the Space/fullscreen logic behaves exactly as before.
+        var suspended = false
         /// Frame the window had before WE first moved it. Ground truth for restore.
         let originalFrame: CGRect
         /// Last screen-space origin we actually committed via AX. Used to skip
@@ -509,6 +522,9 @@ final class TeleportEngine {
             // desync). Leave the last known real size; the resync size-
             // reconcile refreshes it once the window is reachable again.
             guard slot.window.healthy else { continue }
+            // Suspended (fullscreen / off-Space) windows are OS-owned; skip them
+            // so "Show All Windows" never resizes a window we do not control.
+            if slot.window.suspended { continue }
             // Optimistically update the model so a stale readback still reflects
             // the requested width; the readback below + resync correct it.
             slots[i].width = target
@@ -542,8 +558,12 @@ final class TeleportEngine {
     /// Total width the packed strip occupies on the canvas: the right edge of
     /// the last column plus the trailing `gap` margin (symmetric with the
     /// leading margin `compactStrip` opens with). Zero for an empty strip.
+    ///
+    /// Suspended columns (fullscreen / off-Space) reserve no canvas band (see
+    /// `compactStrip`), so the extent is measured from the last NON-suspended
+    /// column; a trailing suspended slot does not inflate the scrollable width.
     var stripContentWidth: CGFloat {
-        guard let last = slots.last else { return 0 }
+        guard let last = slots.last(where: { !$0.window.suspended }) else { return 0 }
         return last.canvasX + last.width + gap
     }
 
@@ -640,6 +660,10 @@ final class TeleportEngine {
         for i in indices {
             let slot = slots[i]
             guard slot.window.healthy else { continue }
+            // Suspended windows (native fullscreen, or diverged to another Space)
+            // are OS-owned; never write their position or we fight the OS for a
+            // window we do not control.
+            if slot.window.suspended { continue }
             let target = onScreenTarget(for: slot)
             // Skip windows that are already where they should be (within a
             // sub-pixel tolerance): the AX write would be a wasted round-trip.

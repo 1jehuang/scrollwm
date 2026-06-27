@@ -63,7 +63,7 @@ extension TeleportEngine {
         let requestedWidth = width(forFraction: fraction)
 
         let slot = slots[focusIndex]
-        if slot.window.healthy {
+        if slot.window.healthy && !slot.window.suspended {
             // Optimistically update the model so a missing/stale readback still
             // reflects the user's intent. Safe ONLY for a healthy window: the
             // immediate readback below plus `scheduleWidthReconcile` and the
@@ -243,6 +243,8 @@ extension TeleportEngine {
         guard slots.indices.contains(idx) else { return }
         let slot = slots[idx]
         guard slot.window.healthy else { return }
+        // Suspended (fullscreen / off-Space) windows are OS-owned; never resize.
+        if slot.window.suspended { return }
 
         let target = width(forFraction: fraction)
         // Already close enough (e.g. a window that opened at exactly the column
@@ -313,6 +315,8 @@ extension TeleportEngine {
         guard fillHeight else { return }
         guard slots.indices.contains(idx) else { return }
         guard slots[idx].window.healthy else { return }
+        // Suspended (fullscreen / off-Space) windows are OS-owned; never resize.
+        if slots[idx].window.suspended { return }
         // Always pin the top to the strip's top edge regardless of whether a
         // resize is needed: `teleport()` places the window from `slot.y`, so
         // this is what seats it just under the menu bar.
@@ -336,6 +340,8 @@ extension TeleportEngine {
     @discardableResult
     func fillSlotToUsableHeight(_ slot: inout Slot, force: Bool) -> Bool {
         guard fillHeight, slot.window.healthy else { return false }
+        // Suspended (fullscreen / off-Space) windows are OS-owned; never resize.
+        if slot.window.suspended { return false }
         let target = screenFrame.height
         // Already full height: skip the cross-process round-trip entirely
         // (unless forced, e.g. a resolution change where the model was already

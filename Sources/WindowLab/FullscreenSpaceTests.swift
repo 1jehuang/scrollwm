@@ -105,14 +105,14 @@ func runHeadlessFullscreenTest() {
     t.check("Scenario 1: fullscreen window still managed by the strip",
             controller.debugSlotTitles.count == 3)
 
-    // PROVE the strand "fights the OS": macOS owns the fullscreen window's frame
-    // (it fills its dedicated Space). Model that by stamping the window to the
-    // full display frame, then run a real strip resize on that very column.
-    // Because the column is still managed, the engine WRITES a narrow strip
-    // width straight onto the OS-owned fullscreen window - the engine and macOS
-    // fight over the window's geometry. (`setFocusedWidth` writes size
-    // unconditionally for a healthy slot, TeleportEngine.swift:515, so this is
-    // not masked by teleport's position-skip optimization.)
+    // PROVE the strand no longer "fights the OS": macOS owns the fullscreen
+    // window's frame (it fills its dedicated Space). Model that by stamping the
+    // window to the full display frame, then run a real strip resize on that very
+    // column. The column is still managed but SUSPENDED (native fullscreen), and
+    // every resize verb now skips a suspended slot (`setFocusedWidth` /
+    // `applySpawnWidth` / `applyFillHeight` early-return on `suspended`), so the
+    // engine leaves the OS-owned geometry untouched instead of overwriting it
+    // with a narrow strip width.
     let fullDisplay = CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
     _ = AXSource.setPoint(fullscreenEl, kAXPositionAttribute as String, fullDisplay.origin)
     _ = AXSource.setSize(fullscreenEl, kAXSizeAttribute as String, fullDisplay.size)
@@ -121,17 +121,19 @@ func runHeadlessFullscreenTest() {
     // "SimWin-<i>"; sortedEls[1] is "SimWin-1".
     let fsTitle = "SimWin-1"
     if let fsIndex = controller.debugSlotTitles.firstIndex(of: fsTitle) {
+        t.check("Scenario 1: the fullscreen column is SUSPENDED (excluded from writes)",
+                controller.debugSuspendedTitles.contains(fsTitle))
         controller.focus(index: fsIndex)
         controller.setWidthFraction(0.25)
         Headless.pump(0.1)
         if let posAfter = world.frame(of: fullscreenEl) {
-            // The engine re-committed a NARROW strip width, NOT the full-display
-            // size macOS gave the fullscreen window. That overwrite is the strand
-            // actively corrupting the fullscreen window's geometry.
-            t.check("Scenario 1: engine OVERWRITES the OS-owned fullscreen frame (active strand)",
-                    posAfter.width < fullDisplay.width - 1)
+            // The engine did NOT touch the OS-owned full-display frame: a resize
+            // verb on a suspended fullscreen column is a no-op, so macOS's
+            // geometry survives intact (no strand corrupting the window).
+            t.check("Scenario 1: engine LEAVES the OS-owned fullscreen frame intact (no strand)",
+                    abs(posAfter.width - fullDisplay.width) <= 1)
         } else {
-            t.check("Scenario 1: engine OVERWRITES the OS-owned fullscreen frame (active strand)", false)
+            t.check("Scenario 1: engine LEAVES the OS-owned fullscreen frame intact (no strand)", false)
         }
     } else {
         t.check("Scenario 1: fullscreen column locatable by title", false)

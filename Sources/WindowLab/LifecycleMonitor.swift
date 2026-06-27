@@ -287,6 +287,18 @@ final class LifecycleMonitor {
             !standardExisting.contains { CFEqual($0.element, slot.window.element) }
         }
 
+        // Fullscreen suspension: a managed window in native macOS fullscreen owns
+        // its own dedicated Space and its OS-controlled full-display frame. If we
+        // kept treating it as a normal strip column the engine would fight the OS
+        // for its geometry (teleport/resize writes) and `reconcileSizes` would
+        // pull the full-display size in as that column's width, exploding the
+        // strip. Marking it `suspended` keeps it in the strip (so it re-attaches
+        // in place on exit) but excludes it from layout + every AX write. We read
+        // fullscreen straight from the fresh AX enumeration (`standardExisting`
+        // carries fullscreen windows; only the *adoptable* set filters them out),
+        // and clear the flag the moment a column is no longer fullscreen.
+        let suspensionChanged = engine.reconcileFullscreenSuspension(from: standardExisting)
+
         // Additions: new windows ON THE CURRENT SPACE (per the planner). Insert
         // each immediately to the RIGHT of the focused column (PaperWM/niri
         // style) and focus the newest so the viewport follows the window the
@@ -336,12 +348,12 @@ final class LifecycleMonitor {
         removedCount += removed
         lastResyncMs = Double(Clock.nowAbsNs() &- start) / 1e6
 
-        if removed > 0 || !newWindows.isEmpty || sizeChanged {
+        if removed > 0 || !newWindows.isEmpty || sizeChanged || suspensionChanged {
             engine.compactStrip()
             if let lastInsertedIndex {
                 // Focus + scroll the viewport to reveal the newly opened window.
                 engine.focus(index: lastInsertedIndex)
-            } else if sizeChanged || removed > 0 {
+            } else if sizeChanged || removed > 0 || suspensionChanged {
                 // A managed window changed size out from under us (an app that
                 // settled its async resize slower than the fast-path follow-up's
                 // budget, a terminal snapping to character cells, the user
@@ -650,10 +662,18 @@ extension TeleportEngine {
 
     /// Re-pack columns left-to-right, removing gaps left by closed windows.
     /// Opens with a `gap` leading margin (symmetric with the trailing margin).
+    ///
+    /// Suspended columns (native fullscreen, or diverged to another Space) are
+    /// OS-owned and not visible on this Space, so they reserve NO canvas band:
+    /// `x` does not advance for them, so the strip closes the gap they would
+    /// otherwise leave and the neighbor to their right slides in. They keep their
+    /// array position (canvasX pinned to the current `x`), so when un-suspended a
+    /// later `compactStrip` re-seats them in place between the same neighbors.
     func compactStrip() {
         var x: CGFloat = gap
         for i in slots.indices {
             slots[i].canvasX = x
+            if slots[i].window.suspended { continue }
             x += slots[i].width + gap
         }
     }
@@ -672,6 +692,12 @@ extension TeleportEngine {
     func reconcileSizes(from standard: [AXWindowInfo]) -> Bool {
         var changed = false
         for i in slots.indices {
+            // A suspended window (native fullscreen, or diverged to another
+            // Space) is OS-owned: its live frame is the full-display fullscreen
+            // size, NOT a strip column width. Pulling that into the model would
+            // balloon the column and shove every neighbor a screen-width away.
+            // Leave its stored size untouched; it is reconciled on un-suspend.
+            if slots[i].window.suspended { continue }
             let el = slots[i].window.element
             guard let info = standard.first(where: { CFEqual($0.element, el) }) else { continue }
             // The window is present in a fresh AX enumeration with a readable
@@ -692,6 +718,35 @@ extension TeleportEngine {
                 changed = true
             }
         }
+        if changed { onLayoutChange?() }
+        return changed
+    }
+
+    /// Reconcile the `suspended` flag of every managed column against a fresh AX
+    /// enumeration so a window in native macOS fullscreen is suspended (excluded
+    /// from layout + all engine writes) and a window that left fullscreen is
+    /// resumed. Spans ALL workspaces, so a fullscreen window parked in an
+    /// inactive vertical workspace is handled too. Returns true if any column's
+    /// suspension state changed, so the caller re-packs + re-fits the viewport.
+    ///
+    /// A window absent from the enumeration (closed, or unreadable) is left as-is
+    /// here; removal/health is owned by the existing reconcile/remove passes.
+    @discardableResult
+    func reconcileFullscreenSuspension(from standard: [AXWindowInfo]) -> Bool {
+        var changed = false
+        func apply(_ slot: Slot) {
+            guard let info = standard.first(where: { CFEqual($0.element, slot.window.element) })
+            else { return }
+            let shouldSuspend = info.isFullscreen
+            if slot.window.suspended != shouldSuspend {
+                slot.window.suspended = shouldSuspend
+                // Force the next teleport to re-place a resumed window (its parked
+                // position was never committed while suspended).
+                if !shouldSuspend { slot.window.lastCommittedOrigin = nil }
+                changed = true
+            }
+        }
+        for slot in allManagedSlots { apply(slot) }
         if changed { onLayoutChange?() }
         return changed
     }
