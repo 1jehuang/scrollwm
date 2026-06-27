@@ -1461,6 +1461,28 @@ final class ScrollWMController: NSObject {
         }
     }
 
+    /// Per-display strip snapshot for the `status` JSON: one entry per strip
+    /// (one per managed monitor), with its window count, active vertical
+    /// workspace, whether it is the focused/active strip, and its display id.
+    /// Only meaningful with per-display strips (multiDisplay); a single-strip
+    /// setup reports one entry. Additive: integrators that ignore it are
+    /// unaffected.
+    func controlDisplays() -> [[String: Any]] {
+        strips.enumerated().map { (i, strip) in
+            let s = strip.engine.stripState
+            var entry: [String: Any] = [
+                "index": i + 1,
+                "managing": strip.isManaging,
+                "active": i == activeStripIndex,
+                "windowCount": strip.engine.slots.count,
+                "workspace": s.activeWorkspace + 1,
+                "workspaceCount": s.workspaceCount,
+            ]
+            if let id = strip.displayID { entry["displayID"] = Int(id) }
+            return entry
+        }
+    }
+
     /// Start listening for `scrollwm` CLI commands on the control socket.
     /// Production-only (the `run` path calls this); the handler runs on the
     /// main thread, so it can touch AX/AppKit safely.

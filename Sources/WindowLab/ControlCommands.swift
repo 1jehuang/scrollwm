@@ -273,6 +273,10 @@ extension ScrollWMController {
             obj["columns"] = controlColumns()
             obj["workspace"] = debugActiveWorkspace + 1
             obj["workspaceCount"] = debugWorkspaceCount
+            // Per-display strips (one entry per managed monitor): window count,
+            // active workspace, and which is the focused/active strip. One entry
+            // on a single-display setup. Additive (see docs/INTEGRATION.md).
+            obj["displays"] = controlDisplays()
             let floating = floatingWindows
             obj["floatingCount"] = floating.count
             obj["floating"] = floating.map { w -> [String: Any] in

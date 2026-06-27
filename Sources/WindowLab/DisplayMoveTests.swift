@@ -166,6 +166,19 @@ func runHeadlessDisplayMoveTest() {
                 controller.debugActiveStripIndex == 0)
     }
 
+    // === 7. status JSON reports per-display strips. ===
+    let statusJSON = controller.controlStatusJSON()
+    if let obj = (try? JSONSerialization.jsonObject(with: Data(statusJSON.utf8))) as? [String: Any],
+       let displays = obj["displays"] as? [[String: Any]] {
+        t.check("status: one displays entry per strip", displays.count == 2)
+        t.check("status: exactly one active strip",
+                displays.filter { ($0["active"] as? Bool) == true }.count == 1)
+        t.check("status: total managed windows across displays == 3",
+                displays.compactMap { $0["windowCount"] as? Int }.reduce(0, +) == 3)
+    } else {
+        t.check("status: displays array present + well-formed", false)
+    }
+
     controller.release()
     Headless.pump(0.1)
 
