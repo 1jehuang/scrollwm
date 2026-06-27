@@ -479,14 +479,25 @@ final class LifecycleMonitor {
     /// True if any managed window is currently on the user's Space, judged by
     /// matching each slot's EXPECTED screen frame against the on-screen CG list.
     /// One match is enough (windows do not all move at once).
+    ///
+    /// The expected position MUST be computed exactly the way `teleport` places
+    /// the window (`engine.onScreenTarget`), which insets every on-screen column
+    /// by the side peek lane (`peekInset`/`contentOriginX`). The earlier inline
+    /// math omitted that inset, so with the production default `peekInset = 48`
+    /// (larger than the 8px tolerance) NO on-screen slot ever matched the real CG
+    /// bounds: the gate always returned false, the fast-adopt Space-freeze guard
+    /// always tripped for a non-empty strip, and every same-Space window after
+    /// the first was stranded until the 2s safety-net poll instead of adopting
+    /// instantly. Reusing `onScreenTarget` keeps the gate honest at any inset
+    /// (and parked columns simply don't match - one on-screen column is enough).
     private func stripIsOnCurrentSpace(cg: [CGWindowInfo]) -> Bool {
         for slot in engine.slots {
-            let expectedX = engine.screenFrame.origin.x + slot.canvasX - engine.viewportX
+            let expected = engine.onScreenTarget(for: slot)
             let pid = slot.window.pid
             let hit = cg.contains { c in
                 c.ownerPID == pid
-                    && abs(c.bounds.origin.x - expectedX) <= 8
-                    && abs(c.bounds.origin.y - slot.y) <= 8
+                    && abs(c.bounds.origin.x - expected.x) <= 8
+                    && abs(c.bounds.origin.y - expected.y) <= 8
             }
             if hit { return true }
         }
