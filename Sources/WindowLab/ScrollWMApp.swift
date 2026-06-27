@@ -777,6 +777,23 @@ final class ScrollWMController: NSObject {
     private func startLifecycle(for strip: DisplayStrip, filter: Set<pid_t>?) {
         let monitor = LifecycleMonitor(engine: strip.engine)
         monitor.pidFilter = filter
+        // Space-safety: never activate (and thus teleport the user to) a window
+        // whose app has NO window on the Space the user is currently viewing. We
+        // judge "on the current Space" by the WindowServer on-screen list (the
+        // same current-Space signal arrange/resync use). A window dragged to
+        // another Desktop, or left on a different Space, still exists in AX as a
+        // stranded strip column; focusing it must NOT yank the user across Spaces.
+        // macOS only follows an activation across Spaces when ALL of the app's
+        // windows are off the current Space, so we allow activation as long as the
+        // app has at least one on-screen window (covers multi-window apps and the
+        // common single-Space case). Sandbox/headless installs the same rule.
+        strip.engine.activationKeepsCurrentSpace = { window in
+            let onscreen = CGWindowSource.listWindows(onscreenOnly: true)
+            // No on-screen list at all (degraded/locked) -> assume safe rather
+            // than refusing focus; the session guards elsewhere handle lock.
+            guard !onscreen.isEmpty else { return true }
+            return onscreen.contains { $0.ownerPID == window.pid }
+        }
         monitor.onChange = { [weak self] _, _ in
             guard let self else { return }
             RestoreStore.save(engines: self.strips.map { $0.engine })

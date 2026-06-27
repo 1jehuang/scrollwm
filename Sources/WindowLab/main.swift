@@ -295,6 +295,12 @@ case "fullscreentest":
     // freeze split, the fullscreen-Space spurious-adopt seed, and that returning
     // re-converges. Always headless: never touches a real window/Space/keyboard.
     runHeadlessFullscreenTest()
+case "spacefocustest":
+    // Headless Space focus-GUARD test (P2a): focusing a strip column whose window
+    // was sent to another native Space must NOT activate its app (which would
+    // teleport the user across Spaces). Always headless: never touches a real
+    // window/Space/keyboard.
+    runHeadlessSpaceFocusGuardTest()
 case "clamshelltest":
     // Headless CLAMSHELL / equal-display repro: drives the REAL controller's
     // settled-display-change path through a laptop-lid-close transition (built-in

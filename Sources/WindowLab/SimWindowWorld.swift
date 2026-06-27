@@ -462,6 +462,7 @@ final class SimWindowWorld: WindowBackend {
     func activateApp(pid: pid_t) {
         // Record focus only; never steal the user's real keyboard focus.
         lock.lock()
+        activateAppCalls.append(pid)
         if focused?.pid != pid {
             // Activating an app focuses its frontmost managed window if we have
             // not already focused one in it.
@@ -469,6 +470,13 @@ final class SimWindowWorld: WindowBackend {
         }
         lock.unlock()
     }
+
+    /// Every pid the engine asked to activate, in order (test introspection).
+    /// The Space-focus guard must NOT activate an app whose target window is on
+    /// another native Space (that would teleport the user); this spy proves it.
+    private(set) var activateAppCalls: [pid_t] = []
+    /// Clear the activate spy (call before a measured focus operation).
+    func resetActivateSpy() { lock.lock(); activateAppCalls.removeAll(); lock.unlock() }
 
     func appIsHidden(pid: pid_t) -> Bool {
         lock.lock(); defer { lock.unlock() }; return hiddenApps.contains(pid)

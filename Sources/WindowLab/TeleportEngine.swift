@@ -708,6 +708,15 @@ final class TeleportEngine {
     /// `reloadConfig` updates it for the running monitor. See `AdoptionScope`.
     var adoptScope: AdoptionScope.Scope = .stripDisplay
 
+    /// Optional Space-safety predicate consulted in `raiseAndFocus` before
+    /// activating a window's app: returns true when activating is safe (the
+    /// window's app has at least one window on the Space the user is currently
+    /// viewing), false when it would teleport the user to another Space. The
+    /// controller installs it from the live WindowServer on-screen list; nil (the
+    /// default) means "assume safe" so bare-engine tests and the common
+    /// single-Space case behave exactly as before. See `raiseAndFocus`.
+    var activationKeepsCurrentSpace: ((ManagedWindowRef) -> Bool)?
+
     /// Which horizontal edge a parked window should slide toward. Mirrors the
     /// side a column scrolled off, so the nub lands where the content went.
     enum ParkSide { case left, right }
@@ -871,7 +880,21 @@ final class TeleportEngine {
         AXSource.raise(window.element)
         AXSource.setBool(window.element, kAXMainAttribute as String, true)
         AXSource.setBool(window.element, kAXFocusedAttribute as String, true)
-        AXSource.activateApp(pid: window.pid)
+        // Space-safety guard: NEVER activate an app none of whose windows are on
+        // the Space the user is currently viewing. macOS switches the user to a
+        // window's Space when its app is activated, so activating a stranded
+        // column (a window the user dragged to another Desktop, or one left on a
+        // different Space) would yank the user away from the Space they are on -
+        // the single most user-hostile Spaces behavior. `activationKeepsCurrentSpace`
+        // is set by the controller from the live on-screen list; nil (the default
+        // for bare-engine unit/fuzz tests and the common single-Space case) means
+        // "assume safe", so existing behavior is byte-identical. The raise / main /
+        // focused writes above are harmless AX no-ops for an off-Space window (they
+        // never change the active Space); only `activateApp` teleports, so only it
+        // is gated.
+        if activationKeepsCurrentSpace?(window) ?? true {
+            AXSource.activateApp(pid: window.pid)
+        }
     }
 
     // MARK: - Introspection for the menu bar
