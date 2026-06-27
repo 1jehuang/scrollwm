@@ -129,6 +129,52 @@ mv "$STAGE" "$APP"
 say "launching"
 open "$APP"
 
+# --- Install the `scrollwm` CLI on PATH (bash / zsh / fish) -----------------
+# The bundle's main executable dispatches any subcommand, so the CLI is just a
+# symlink to it. Pick the first user-writable bin dir on PATH; fall back to
+# ~/.local/bin and wire that dir onto PATH for every common shell.
+say "installing 'scrollwm' CLI on PATH"
+CLI_TARGET="$APP/Contents/MacOS/ScrollWM"
+CLI_LINK=""
+for d in "/opt/homebrew/bin" "/usr/local/bin" "$HOME/.local/bin" "$HOME/bin"; do
+    if [[ -d "$d" && -w "$d" ]]; then CLI_LINK="$d/scrollwm"; break; fi
+done
+[[ -n "$CLI_LINK" ]] || { mkdir -p "$HOME/.local/bin"; CLI_LINK="$HOME/.local/bin/scrollwm"; }
+ln -sf "$CLI_TARGET" "$CLI_LINK"
+echo "    linked $CLI_LINK"
+
+# Ensure the chosen dir is on PATH for bash, zsh and fish. No-op for standard
+# dirs every shell already includes (Homebrew etc.); idempotent across re-runs.
+CLI_DIR="$(dirname "$CLI_LINK")"
+case "$CLI_DIR" in
+    /opt/homebrew/bin|/usr/local/bin|/usr/bin|/bin|/usr/sbin|/sbin) ;;  # already on PATH
+    *)
+        BEGIN="# >>> ScrollWM CLI (added by installer) >>>"
+        END="# <<< ScrollWM CLI <<<"
+        RCS=("$HOME/.zshrc" "$HOME/.bashrc")
+        [[ -e "$HOME/.bash_profile" ]] && RCS+=("$HOME/.bash_profile")
+        for rc in "${RCS[@]}"; do
+            if [[ -e "$rc" ]] && grep -qF "$BEGIN" "$rc" 2>/dev/null; then continue; fi
+            {
+                printf '\n%s\n' "$BEGIN"
+                printf 'case ":$PATH:" in *":%s:"*) ;; *) export PATH="%s:$PATH" ;; esac\n' "$CLI_DIR" "$CLI_DIR"
+                printf '%s\n' "$END"
+            } >> "$rc"
+            echo "    ensured PATH in $rc"
+        done
+        FISHCONF="$HOME/.config/fish/conf.d/scrollwm.fish"
+        mkdir -p "$(dirname "$FISHCONF")"
+        cat > "$FISHCONF" <<FISH
+$BEGIN
+if test -d $CLI_DIR
+    fish_add_path $CLI_DIR
+end
+$END
+FISH
+        echo "    ensured PATH in $FISHCONF (open a new terminal to use 'scrollwm')"
+        ;;
+esac
+
 cat <<DONE
 
 ScrollWM $VER installed to:

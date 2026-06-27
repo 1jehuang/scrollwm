@@ -30,6 +30,19 @@ for d in "/opt/homebrew/bin" "/usr/local/bin" "$HOME/.local/bin" "$HOME/bin"; do
     if [[ -L "$LINK" ]]; then say "removing CLI symlink $LINK"; rm -f "$LINK"; fi
 done
 
+# Remove the PATH lines the installer added to the shell rc files + fish conf.
+BEGIN="# >>> ScrollWM CLI (added by installer) >>>"
+END="# <<< ScrollWM CLI <<<"
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+    if [[ -f "$rc" ]] && grep -qF "$BEGIN" "$rc" 2>/dev/null; then
+        say "removing PATH block from $rc"
+        # Delete the marker block (inclusive) plus a leading blank line.
+        sed -i '' "/$BEGIN/,/$END/d" "$rc"
+    fi
+done
+FISHCONF="$HOME/.config/fish/conf.d/scrollwm.fish"
+if [[ -f "$FISHCONF" ]]; then say "removing $FISHCONF"; rm -f "$FISHCONF"; fi
+
 SUPPORT="$HOME/Library/Application Support/ScrollWM"
 SANDBOX="$HOME/Library/Application Support/ScrollWM-Sandbox"
 if [[ "$PURGE" == "1" ]]; then
