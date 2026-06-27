@@ -32,7 +32,7 @@ import CoreGraphics
 /// the channel can deliver. The tutorial window explains this too.
 struct ScrollWMConfig: Equatable {
     struct Layout: Equatable {
-        var columnGap: CGFloat = 12
+        var columnGap: CGFloat = 2
         var minColumnWidth: CGFloat = 200
         /// Width (px) reserved at the LEFT and RIGHT screen edges as a "peek
         /// lane". On-screen columns are laid out inside the screen inset by this
@@ -406,7 +406,7 @@ struct ScrollWMConfig: Equatable {
     // (or relaunch). Comments starting with // are allowed.
     {
       "layout": {
-        "columnGap": 12,          // px between columns and screen edges
+        "columnGap": 2,           // px between columns and screen edges
         "minColumnWidth": 200,    // px floor; a column never shrinks below this
 
         // Px reserved at the LEFT and RIGHT screen edges as a "peek lane".
