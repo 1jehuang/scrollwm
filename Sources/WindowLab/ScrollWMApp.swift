@@ -1306,6 +1306,17 @@ final class ScrollWMController: NSObject {
         menuBar.refresh()
     }
 
+    /// Resize EVERY column to the same fraction of the strip width
+    /// (CLI `width all <N>` and `arrange <N>`). Returns the number of columns a
+    /// resize was issued for, so the caller can report it. No-op while dormant.
+    @discardableResult
+    func setAllWidthsFraction(_ fraction: CGFloat) -> Int {
+        guard isManaging else { return 0 }
+        let n = engine.setAllWidths(fraction: fraction)
+        menuBar.refresh()
+        return n
+    }
+
     /// Per-column snapshot for the CLI `status` command.
     func controlColumns() -> [[String: Any]] {
         engine.slots.enumerated().map { (i, slot) in

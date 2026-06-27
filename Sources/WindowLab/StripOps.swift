@@ -397,6 +397,65 @@ extension TeleportEngine {
             .first { $0 >= minimum - 0.5 }
     }
 
+    /// Resize EVERY column to the same fraction of the usable strip width
+    /// (CLI `width all <N>` / `arrange <N>`). This is the bulk counterpart to
+    /// `setFocusedWidth`: instead of acting only on the focused column it walks
+    /// the whole strip so the user can say "make all my windows 50%" in one
+    /// command.
+    ///
+    /// Robustness mirrors `applySpawnWidth`/`setFocusedWidth`: many apps enforce
+    /// a larger minimum and silently clamp a too-small `setSize` while STILL
+    /// returning AX `.success`, and some resize asynchronously, so we never trust
+    /// the request. For each healthy, non-suspended window we optimistically
+    /// reflect the target, write it, read back the REAL frame, store that, and
+    /// schedule the async reconcile so the model converges to reality even when
+    /// the app wins. After all columns are sized we re-pack the canvas and
+    /// re-fit the viewport to the focused column.
+    ///
+    /// Returns the number of columns a resize was issued for (0 when the strip
+    /// is empty), so the caller can report it.
+    @discardableResult
+    func setAllWidths(fraction: CGFloat) -> Int {
+        guard !slots.isEmpty else { return 0 }
+        let target = width(forFraction: fraction)
+        var resized = 0
+        for idx in slots.indices {
+            let slot = slots[idx]
+            // Skip windows we must never touch: unhealthy (no live AX) or
+            // suspended (fullscreen / off-Space, OS-owned). Their model width is
+            // left at the last known real size, same as `setFocusedWidth`.
+            guard slot.window.healthy, !slot.window.suspended else { continue }
+
+            // Optimistically reflect the request; the readback below + the async
+            // reconcile pull the model back to the real (possibly clamped) frame.
+            slots[idx].width = target
+            // In fill-height mode request the full column height alongside the
+            // width so aspect-locked apps have room to grow (mirrors
+            // `setFocusedWidth`); otherwise preserve the current height.
+            let requestedHeight = fillHeight ? screenFrame.height : slot.height
+            _ = AXSource.setSize(
+                slot.window.element,
+                kAXSizeAttribute as String,
+                CGSize(width: target, height: requestedHeight)
+            )
+            if let actual = AXSource.copySize(slot.window.element, kAXSizeAttribute as String) {
+                slots[idx].width = actual.width
+                slots[idx].height = actual.height
+            }
+            resized += 1
+        }
+        // Re-pack the canvas with the new widths and follow the viewport to the
+        // focused column, then let slow/animated apps settle via the reconcile.
+        compactStrip()
+        refitViewportToFocused()
+        onLayoutChange?()
+        for idx in slots.indices where slots[idx].window.healthy {
+            scheduleWidthReconcile(for: slots[idx].window, targetWidth: target,
+                                   startWidth: slots[idx].width)
+        }
+        return resized
+    }
+
     /// Move the focused column one position toward `delta` (negative = left,
     /// positive = right) within the strip. Returns false at the edges or when
     /// nothing is focused.

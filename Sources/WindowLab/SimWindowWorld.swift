@@ -64,6 +64,16 @@ final class SimWindowWorld: WindowBackend {
         /// just-created window is readable via AX a few frames before it appears
         /// on-screen. Zero (the default) means "published immediately".
         var cgPublishAt: TimeInterval = 0
+        /// Test-only divergence between the AX frame and the WindowServer (CG)
+        /// bounds for this window. Real macOS reads AX (`allWindows`) and CG
+        /// (`CGWindowListCopyWindowInfo`) in SEPARATE syscalls a frame or more
+        /// apart, so while a window is mid-move/park the two snapshots disagree
+        /// by more than the fusion threshold (> 8px). The base sim derives both
+        /// from `frame`, so it cannot reproduce that race on its own; this offset
+        /// shifts ONLY the reported CG bounds (origin + size deltas), modeling a
+        /// churning window whose CG row lags its AX frame. Zero = perfectly
+        /// agreeing snapshots (the default).
+        var cgFrameOffset: CGRect = .zero
 
         init(id: Int, pid: pid_t, appName: String, title: String,
              role: String, subrole: String, frame: CGRect, minSize: CGSize,
@@ -246,6 +256,15 @@ final class SimWindowWorld: WindowBackend {
         lock.lock(); find(element)?.frame = frame; lock.unlock()
     }
 
+    /// Inject a test-only AX-vs-CG snapshot divergence for one window (the GATE-C
+    /// churn race). `offset` shifts ONLY the reported CG bounds relative to the AX
+    /// frame: `offset.origin` moves the CG origin, `offset.size` deltas its size.
+    /// Pass `.zero` to clear. Used to prove the motion-invariant fusion fallback
+    /// still recognizes a moved-but-present current-Space window.
+    func setCGFrameOffset(_ element: AXUIElement, _ offset: CGRect) {
+        lock.lock(); find(element)?.cgFrameOffset = offset; lock.unlock()
+    }
+
     /// Switch the active native Space (Ctrl+Left/Right, Mission Control, or a
     /// fullscreen-Space toggle). Windows on `space` now appear on-screen; windows
     /// on the previously-active Space drop out of the on-screen list. Fires the
@@ -333,9 +352,19 @@ final class SimWindowWorld: WindowBackend {
             if onscreenOnly && w.cgPublishAt > now { return nil }
             if onscreenOnly && w.nativeSpace != activeSpaceID { return nil }
             nextCGID += 1
+            // Apply the test-only AX-vs-CG divergence: the reported CG bounds are
+            // the AX frame shifted by `cgFrameOffset` (origin + size), modeling a
+            // churning window whose WindowServer row lags its AX frame.
+            let o = w.cgFrameOffset
+            let cgBounds = CGRect(
+                x: w.frame.origin.x + o.origin.x,
+                y: w.frame.origin.y + o.origin.y,
+                width: w.frame.width + o.size.width,
+                height: w.frame.height + o.size.height
+            )
             return CGWindowInfo(
                 windowID: nextCGID, ownerPID: w.pid, ownerName: w.appName,
-                title: w.title, bounds: w.frame, layer: 0, alpha: 1.0,
+                title: w.title, bounds: cgBounds, layer: 0, alpha: 1.0,
                 isOnscreen: true, memoryUsage: 0
             )
         }

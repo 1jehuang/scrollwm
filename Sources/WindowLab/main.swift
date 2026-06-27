@@ -185,9 +185,6 @@ case "bench":
 case "watch":
     let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 10
     runWatch(seconds: seconds)
-case "overlay":
-    let seconds = args.dropFirst().compactMap { Int($0) }.first ?? 15
-    runOverlay(seconds: seconds, selftest: args.contains("--selftest"))
 case "scrollbench":
     let numbers = args.dropFirst().compactMap { Int($0) }
     runScrollBench(
@@ -378,7 +375,9 @@ default:
 
     Control a running ScrollWM from your shell (the app must be running):
       scrollwm status              print strip state as JSON
-      scrollwm arrange             adopt current-Space windows (launches app if needed)
+      scrollwm arrange [25|50|75|100|0.0-1.0]
+                                   adopt current-Space windows (launches app if
+                                   needed); optional width sizes EVERY column
       scrollwm release             restore all windows, go dormant
       scrollwm toggle              arrange <-> release
       scrollwm focus <next|prev|left|right|N>
@@ -387,8 +386,8 @@ default:
       scrollwm move <up|down>      send focused window to the workspace above/below
       scrollwm workspace <up|down|N>
                                    switch vertical workspace (niri-style)
-      scrollwm width <25|50|75|100|0.0-1.0>
-                                   resize focused column
+      scrollwm width [all] <25|50|75|100|0.0-1.0>
+                                   resize focused column (or `all` columns)
       scrollwm close               close the focused window
       scrollwm display <next|main|primary|largest|N>
                                    move the scrolling strip to another monitor
@@ -408,9 +407,6 @@ default:
       WindowLab probe [-v]     enumerate CG+AX windows, match, report latency
       WindowLab bench          AX move/resize benchmark (windows restored after)
       WindowLab watch [secs]   repeated full resync loop with timing
-      WindowLab overlay [secs] [--selftest]
-                               Metal overlay; ctrl+opt+scroll pans fake canvas.
-                               --selftest posts synthetic scrolls and reports latency.
       WindowLab scrollbench [n] [hz]
                                animate n disposable test windows via AX moves,
                                measure jank. Headless: always spawns its own

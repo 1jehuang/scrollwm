@@ -35,12 +35,30 @@ extension ScrollWMController {
             // Idempotent: while managing, this reconciles the current Space's
             // windows into the strip (same path as the menu-bar "Arrange
             // Windows into Strip" item), so the command and the menu match.
+            //
+            // Optional trailing width arg: `arrange 50` (or any 25/50/75/100 or
+            // 0.0-1.0 fraction) arranges THEN sizes every column to that width,
+            // so "tidy everything to half-width" is one command.
+            var widthArg: CGFloat? = nil
+            if let arg = args.first {
+                guard let f = Self.parseWidthFraction(arg) else {
+                    return "error: arrange width must be 25/50/75/100 or a fraction 0.0-1.0"
+                }
+                widthArg = f
+            }
             let wasManaging = isManaging
             arrange()
+            guard isManaging else {
+                return "error: nothing to arrange (no manageable windows on this Space)"
+            }
+            if let widthArg {
+                let n = setAllWidthsFraction(widthArg)
+                let pct = Int((widthArg * 100).rounded())
+                let verb = wasManaging ? "re-arranged" : "arranged"
+                return "ok: \(verb) \(debugSlotCount) windows, set \(n) to \(pct)% width"
+            }
             if wasManaging { return "ok: re-arranged \(debugSlotCount) windows" }
-            return isManaging
-                ? "ok: arranged \(debugSlotCount) windows"
-                : "error: nothing to arrange (no manageable windows on this Space)"
+            return "ok: arranged \(debugSlotCount) windows"
 
         case "release":
             if !isManaging { return "ok: already released (dormant)" }
@@ -93,7 +111,19 @@ extension ScrollWMController {
 
         case "width":
             guard isManaging else { return "error: not managing; run `scrollwm arrange` first" }
-            guard let arg = args.first else { return "error: usage: width <25|50|75|100|0.0-1.0>" }
+            guard let arg = args.first else { return "error: usage: width [all] <25|50|75|100|0.0-1.0>" }
+            // `width all <N>` resizes EVERY column; `width <N>` only the focused
+            // one (back-compat).
+            if arg.lowercased() == "all" {
+                guard let widthArg = args.dropFirst().first else {
+                    return "error: usage: width all <25|50|75|100|0.0-1.0>"
+                }
+                guard let fraction = Self.parseWidthFraction(widthArg) else {
+                    return "error: width must be 25/50/75/100 or a fraction 0.0-1.0"
+                }
+                let n = setAllWidthsFraction(fraction)
+                return "ok: set \(n) columns to \(Int((fraction * 100).rounded()))% width"
+            }
             guard let fraction = Self.parseWidthFraction(arg) else {
                 return "error: width must be 25/50/75/100 or a fraction 0.0-1.0"
             }

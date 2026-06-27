@@ -464,6 +464,33 @@ enum StripOpsTests {
         check("snap-up: wider than 100% column returns nil",
               eSnap.nextPresetWidth(atLeast: w100 + 50) == nil)
 
+        // --- setAllWidths: every column resizes to one fraction ---
+        // The CLI `width all <N>` / `arrange <N>` path. Synthetic windows have no
+        // live AX size (copySize fails), so the optimistic model update is what we
+        // assert; the headless ops test covers the real-AX readback/clamp.
+        let eAll = makeEngine(count: 4, width: 400)
+        let allTarget = eAll.width(forFraction: 0.5)
+        let allResized = eAll.setAllWidths(fraction: 0.5)
+        check("setAllWidths resizes every healthy column", allResized == 4)
+        check("setAllWidths sets all column widths to the target",
+              eAll.slots.allSatisfy { abs($0.width - allTarget) < 0.5 })
+        check("setAllWidths keeps the strip compact", isCompact(eAll))
+
+        // A suspended (OS-owned) column is skipped; its width is untouched.
+        let eSusp = makeEngine(count: 3, width: 400)
+        eSusp.slots[1].window.suspended = true
+        let suspResized = eSusp.setAllWidths(fraction: 0.25)
+        let qTarget = eSusp.width(forFraction: 0.25)
+        check("setAllWidths skips suspended columns", suspResized == 2)
+        check("setAllWidths leaves a suspended column's width alone",
+              abs(eSusp.slots[1].width - 400) < 0.5)
+        check("setAllWidths resizes the non-suspended columns",
+              abs(eSusp.slots[0].width - qTarget) < 0.5 && abs(eSusp.slots[2].width - qTarget) < 0.5)
+
+        // Empty strip is a safe no-op.
+        let eAllEmpty = makeEngine(count: 0)
+        check("setAllWidths on an empty strip resizes nothing", eAllEmpty.setAllWidths(fraction: 0.5) == 0)
+
         // --- Config: chord parsing ---
         if let c = Chord(string: "cmd+shift+h") {
             check("chord cmd+shift+h keyCode is H (4)", c.keyCode == 4)

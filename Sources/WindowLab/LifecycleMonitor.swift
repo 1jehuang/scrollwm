@@ -456,10 +456,19 @@ final class LifecycleMonitor {
 
         // Current-Space gate via the on-screen CG list (cheap, one syscall).
         let cg = CGWindowSource.listWindows(onscreenOnly: true)
-        let matched = IdentityMatcher.match(axWindows: unmanaged, cgWindows: cg)
-        let onscreenMatches = matched.enumerated()
-            .filter { $0.element.cg != nil }
-            .map { unmanaged[$0.offset] }
+        // Match the FULL firing-app window set (managed + unmanaged), not just the
+        // unmanaged subset. The motion-invariant per-PID fusion fallback
+        // (`IdentityMatcher.match` pass 2) will hand a same-PID CG row to ANY
+        // unmatched AX window of that PID; if we matched only the new window it
+        // could wrongly claim an EXISTING managed window's CG row and be adopted
+        // before the WindowServer has actually published it (the publish race).
+        // Matching every app window lets the managed ones soak up their own rows
+        // first, so a genuinely-unpublished new window finds no leftover row and
+        // correctly waits (retries) until it is really on-screen.
+        let matched = IdentityMatcher.match(axWindows: appWindows, cgWindows: cg)
+        let onscreenMatches = zip(appWindows, matched)
+            .filter { (info, m) in m.cg != nil && !engine.isManaged(info.element) }
+            .map { $0.0 }
         // Display-scope: drop newly-created windows that live on ANOTHER monitor
         // under the default `stripDisplay` scope, so the fast path never yanks an
         // external-display window onto the strip. Same pure rule as
