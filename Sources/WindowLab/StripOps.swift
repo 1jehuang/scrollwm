@@ -418,6 +418,9 @@ extension TeleportEngine {
     func setAllWidths(fraction: CGFloat) -> Int {
         guard !slots.isEmpty else { return 0 }
         let target = width(forFraction: fraction)
+        // Left edge of the usable content region: a window parked here has the
+        // full strip width of room to its right.
+        let roomX = contentOriginX
         var resized = 0
         for idx in slots.indices {
             let slot = slots[idx]
@@ -433,6 +436,21 @@ extension TeleportEngine {
             // width so aspect-locked apps have room to grow (mirrors
             // `setFocusedWidth`); otherwise preserve the current height.
             let requestedHeight = fillHeight ? screenFrame.height : slot.height
+
+            // CRUCIAL ORDERING (same as `setFocusedWidth`): move the window to a
+            // spot with room to the right BEFORE growing it. macOS/AppKit curtails
+            // an in-place resize at the display's visible-frame edge
+            // (`constrainFrameRect`), so a window anchored near the RIGHT edge
+            // could otherwise only grow until its right edge met the screen edge -
+            // the real width would then fall short of the request and DESYNC from
+            // the model. Parking each window at the content-region left edge first
+            // gives it the full strip width of room; the teleport pass below
+            // repositions every column to its real on-screen target afterward, so
+            // this pre-move never shows.
+            let pre = CGPoint(x: roomX, y: slot.y)
+            if AXSource.setPoint(slot.window.element, kAXPositionAttribute as String, pre) == .success {
+                slot.window.lastCommittedOrigin = pre
+            }
             _ = AXSource.setSize(
                 slot.window.element,
                 kAXSizeAttribute as String,

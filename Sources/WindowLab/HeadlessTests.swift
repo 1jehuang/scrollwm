@@ -550,6 +550,58 @@ func runHeadlessOpsTest() {
         world.setSystemFocus(engine.slots[engine.focusIndex].window.element)
     }
 
+    // --- BULK WIDTH (setAllWidths): `scrollwm width all 100` / `arrange 100`
+    // must grow EVERY column to the full width with the model matching reality,
+    // even though every adopted window starts anchored at a different x (some
+    // near the display's right edge). The bulk path pre-moves each window to a
+    // spot with room to the right BEFORE growing it, exactly like the focused
+    // width key, so macOS's in-place resize clamp never strands a column narrow
+    // and desynced. Same sim `constrainResizeToDisplay` curtailing as above. ---
+    do {
+        let display = Headless.defaultVisibleFrame
+        let aEngine = TeleportEngine(screenFrame: display)
+        aEngine.peekInset = 48
+        aEngine.stripDisplayFrame = Headless.defaultFullFrame
+        world.displays = [Headless.defaultFullFrame]
+        world.constrainResizeToDisplay = true
+        let basePID: pid_t = 5980
+        // Three windows tiled left-to-right; the rightmost starts hard against
+        // the display's right edge so an in-place grow there would be curtailed.
+        var els: [AXUIElement] = []
+        for i in 0..<3 {
+            els.append(world.addWindow(pid: basePID + pid_t(i), title: "AllW-\(i)",
+                                       frame: CGRect(x: 80 + CGFloat(i) * 480, y: 80,
+                                                     width: 440, height: 500)))
+        }
+        let am = IdentityMatcher.match(
+            axWindows: (0..<3).flatMap { AXSource.windows(forPID: basePID + pid_t($0)) },
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+        ).filter { (basePID..<(basePID + 3)).contains($0.ax.pid) }
+        aEngine.adopt(matched: am)
+        guard aEngine.slots.count == 3 else {
+            t.check("bulk-width: adopted three columns", false)
+            world.constrainResizeToDisplay = false; world.displays = []
+            return
+        }
+        // Grow EVERY column to 100% in one bulk op.
+        let want100 = aEngine.width(forFraction: 1.0)
+        let n = aEngine.setAllWidths(fraction: 1.0)
+        Headless.pump(0.1)
+        t.check("bulk-width: resized all three columns", n == 3)
+        for i in 0..<3 {
+            let live = world.frame(of: els[i])?.width ?? 0
+            t.check("bulk-width: column \(i) grew to FULL width despite its start x (\(Int(want100)))",
+                    abs(live - want100) <= 2)
+            t.check("bulk-width: column \(i) model width matches the live width (no desync)",
+                    abs(aEngine.slots[i].width - live) <= 2)
+        }
+        // Cleanup shared sim state.
+        world.constrainResizeToDisplay = false
+        world.displays = []
+        for el in els { world.destroyWindow(el, notify: false) }
+        world.setSystemFocus(engine.slots[engine.focusIndex].window.element)
+    }
+
     // --- CLOSE PULL-IN: closing a column that leaves the viewport parked over
     // dead space to the RIGHT must scroll the strip back so the remaining
     // windows fill the gap. The user's "closing a window should sometimes move
