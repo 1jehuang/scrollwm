@@ -487,6 +487,80 @@ final class ScrollWMController: NSObject {
         }
     }
 
+    // MARK: - Floating per-display indicator ([md-indicator])
+
+    /// One display's data for the floating mini-map indicator: where to place a
+    /// panel (pure `IndicatorPlacement`), the live strip state to draw, whether
+    /// it is the ACTIVE strip, and the AX-plane flip anchor for positioning.
+    struct IndicatorView {
+        var placement: IndicatorPlacement.Placement
+        var state: TeleportEngine.StripState
+        var isActive: Bool
+        var primaryHeight: CGFloat
+    }
+
+    /// Build the set of floating indicators to show right now: one per MANAGING
+    /// display that does NOT host the system menu bar (so the status item is not
+    /// already visible there). Returns empty when the feature is off, there is a
+    /// single display, or nothing qualifies. The menu bar owns the actual panels
+    /// and diffs this by `displayID`.
+    ///
+    /// macOS only reports the menu bar on the screen whose `visibleFrame` is
+    /// inset from the top of its `frame` (the menu-bar band); we treat that as
+    /// "has system menu bar". With "Displays have separate Spaces" ON every
+    /// screen has a menu bar, so no floating panel is shown (each already has the
+    /// real status item) - exactly right.
+    func indicatorViews() -> [IndicatorView] {
+        guard config.menuBar.showExternalDisplayIndicator else { return [] }
+        let screens = NSScreen.screens
+        guard screens.count > 1 else { return [] }
+        let primaryHeight = (screens.first { $0.frame.origin == .zero }
+                             ?? NSScreen.main ?? screens[0]).frame.height
+
+        // Map each NSScreen to a strip (by best display overlap) so we know if it
+        // is managing and which strip state to draw on it.
+        func stripForScreen(_ s: NSScreen) -> DisplayStrip? {
+            let axFull = DisplayGeometry.axFrame(appKitFrame: s.frame, primaryHeight: primaryHeight)
+            var best: DisplayStrip?
+            var bestArea: CGFloat = 0
+            for strip in strips {
+                let f = strip.engine.stripDisplayFrame ?? strip.engine.screenFrame
+                let a = DisplayGeometry.overlapArea(axFull, f)
+                if a > bestArea { bestArea = a; best = strip }
+            }
+            return bestArea > 0 ? best : nil
+        }
+
+        let activeID = activeStrip.displayID
+        var inputs: [IndicatorPlacement.DisplayInput] = []
+        var stateByID: [CGDirectDisplayID: (state: TeleportEngine.StripState, active: Bool)] = [:]
+        for s in screens {
+            let hasMenuBar = (s.frame.maxY - s.visibleFrame.maxY) > 1  // menu-bar band present
+            let strip = stripForScreen(s)
+            let managing = strip?.isManaging ?? false
+            let id = s.displayID
+            inputs.append(IndicatorPlacement.DisplayInput(
+                fullAXFrame: DisplayGeometry.axFrame(appKitFrame: s.frame, primaryHeight: primaryHeight),
+                visibleAXFrame: DisplayGeometry.axFrame(appKitFrame: s.visibleFrame, primaryHeight: primaryHeight),
+                hasSystemMenuBar: hasMenuBar,
+                isManaging: managing,
+                id: id))
+            if let strip, let id {
+                stateByID[id] = (strip.engine.stripState, strip.displayID == activeID)
+            }
+        }
+
+        let placements = IndicatorPlacement.placements(
+            displays: inputs,
+            indicatorSize: CGSize(width: ProductionMenuBar.indicatorWidth, height: ProductionMenuBar.indicatorHeight),
+            topInset: ProductionMenuBar.indicatorTopInset)
+        return placements.compactMap { p -> IndicatorView? in
+            guard let id = p.displayID, let entry = stateByID[id] else { return nil }
+            return IndicatorView(placement: p, state: entry.state,
+                                 isActive: entry.active, primaryHeight: primaryHeight)
+        }
+    }
+
     /// Bind the strip to a SPECIFIC display (its visible frame becomes the
     /// strip's usable area; its full frame the parking reference; every other
     /// screen the "other" set). Unlike `refreshDisplayGeometry`, this updates the
@@ -1709,6 +1783,17 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
 
     static let autosaveName = "ScrollWMMain"
 
+    /// Floating per-display indicator panels, keyed by display id ([md-indicator]).
+    /// One per managing display that has no system menu bar; created/updated/torn
+    /// down on every `refresh()` (and hotplug) from `controller.indicatorViews()`.
+    /// Never created in headless mode (the panel guards on `AXSource.backend`).
+    private var indicators: [CGDirectDisplayID: FloatingStripIndicator] = [:]
+    /// Floating-indicator panel size + top inset (points). Slightly wider than
+    /// the menu-bar floor so the mini-map reads on a big external display.
+    static let indicatorWidth: CGFloat = 168
+    static let indicatorHeight: CGFloat = 26
+    static let indicatorTopInset: CGFloat = 6
+
     /// Preferred status-item position (points from the right of the status
     /// area). Small = high priority: it sits next to the system cluster so it
     /// is the LAST third-party item macOS hides when the bar runs out of room.
@@ -1915,6 +2000,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         if let appActivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(appActivationObserver)
         }
+        removeAllIndicators()
     }
 
     func refresh() {
@@ -1922,6 +2008,41 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         // the previous state and animates the change at the display's refresh
         // rate, then idles its display link once everything settles.
         stripView.apply(state: engine.stripState, managing: controller.isManaging)
+        updateIndicators()
+    }
+
+    /// Reconcile the floating per-display indicator panels against the current
+    /// `controller.indicatorViews()`: create panels for newly-qualifying
+    /// displays, update + reposition the live ones, and tear down panels whose
+    /// display no longer qualifies (released, unplugged, or now hosting the
+    /// menu bar). No-op in headless mode (the panels themselves stay inert).
+    private func updateIndicators() {
+        let views = controller.indicatorViews()
+        var liveIDs = Set<CGDirectDisplayID>()
+        for v in views {
+            guard let id = v.placement.displayID else { continue }
+            liveIDs.insert(id)
+            let indicator = indicators[id] ?? {
+                let made = FloatingStripIndicator(displayID: id)
+                indicators[id] = made
+                return made
+            }()
+            indicator.setFrameAX(v.placement.frameAX, primaryHeight: v.primaryHeight)
+            indicator.apply(state: v.state, managing: true)
+            indicator.setActive(v.isActive)
+            indicator.setVisible(true)
+        }
+        // Tear down indicators whose display no longer qualifies.
+        for (id, indicator) in indicators where !liveIDs.contains(id) {
+            indicator.close()
+            indicators.removeValue(forKey: id)
+        }
+    }
+
+    /// Tear down every floating indicator (release / quit / config-off).
+    func removeAllIndicators() {
+        for (_, indicator) in indicators { indicator.close() }
+        indicators.removeAll()
     }
 
     /// Flash a key-hint over the menu-bar icon: the chord just pressed and the
