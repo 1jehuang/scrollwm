@@ -182,6 +182,47 @@ func runHeadlessOpsTest() {
         t.check("fill-height clamp: adopted the tall-min window", false)
     }
 
+    // --- FILL HEIGHT vs. the display BOTTOM-EDGE clamp (regression for
+    // "a window spawned LOW on screen, e.g. Messages from Spotlight, fills only
+    // part of the column height"). macOS/AppKit's `constrainFrameRect` curtails
+    // an in-place GROW at the display's visible-frame bottom edge: from a low
+    // spawn origin a `setSize(fullHeight)` can only stretch until the window's
+    // bottom meets the screen edge, NOT to the full usable height. The engine
+    // must PIN the window's top to the strip top BEFORE the resize so it has the
+    // full vertical room. We turn on the sim's `constrainResizeToDisplay` (the
+    // same model the width-edge case uses) to reproduce the real curtailing. ---
+    do {
+        let display = Headless.defaultVisibleFrame
+        let edgeEngine = TeleportEngine(screenFrame: display)
+        edgeEngine.fillHeight = true
+        edgeEngine.stripDisplayFrame = Headless.defaultFullFrame
+        world.displays = [Headless.defaultFullFrame]
+        world.constrainResizeToDisplay = true
+        defer { world.constrainResizeToDisplay = false; world.displays = [] }
+        let lowPID: pid_t = 5650
+        // Spotlight-style: opens centered/low, short, with room below cut off.
+        let spawnY = display.maxY - 360 - 20   // bottom 380px of the display
+        let lowEl = world.addWindow(pid: lowPID, title: "LowSpawn",
+                                    frame: CGRect(x: 60, y: spawnY, width: 700, height: 360))
+        if let lowInfo = AXSource.windows(forPID: lowPID).first {
+            edgeEngine.insert(window: lowInfo, at: 0)
+            edgeEngine.applyFillHeight(toSlotAt: 0)
+            edgeEngine.compactStrip()
+            edgeEngine.teleport()
+            Headless.pump(0.05)
+            let liveLow = world.frame(of: lowEl) ?? .zero
+            t.check("fill-height edge: low-spawned window reached the FULL usable height (\(Int(usableH)))",
+                    abs(liveLow.height - usableH) <= 2)
+            t.check("fill-height edge: top pinned under the menu bar (\(Int(usableTop)))",
+                    abs(liveLow.origin.y - usableTop) <= 2)
+            t.check("fill-height edge: model height matches the live full height",
+                    abs(edgeEngine.slots[0].height - liveLow.height) <= 2)
+        } else {
+            t.check("fill-height edge: adopted the low-spawned window", false)
+        }
+        world.destroyWindow(lowEl, notify: false)
+    }
+
     // fillHeight DISABLED preserves the window's native height (regression
     // guard: the flag must actually gate the behavior).
     let noFillEngine = TeleportEngine(screenFrame: Headless.defaultVisibleFrame)

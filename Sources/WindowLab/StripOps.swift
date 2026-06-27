@@ -342,6 +342,27 @@ extension TeleportEngine {
         // updated to the new height but the real window has not been resized).
         if !force && abs(slot.height - target) <= 1 { return false }
 
+        // CRUCIAL: pin the window's TOP to the destination strip top (`slot.y`)
+        // BEFORE growing its height. macOS/AppKit (`constrainFrameRect`) curtails
+        // an in-place GROW at the display's visible-frame bottom edge, so a
+        // window spawned LOW on screen - e.g. Messages opened from Spotlight,
+        // which lands centered/low - could only stretch until its bottom met the
+        // screen edge and end up SHORT of the full usable height (the reported
+        // "spawns at not full height" bug). Moving the top up first gives it the
+        // full vertical room to reach `target`. We keep the current X (the
+        // teleport pass repositions it horizontally afterward); only the Y
+        // matters for the vertical clamp. Mirrors the horizontal pre-move in
+        // `setFocusedWidth`. The immediate readback below still pulls the model
+        // back to whatever the app actually adopts.
+        if let origin = AXSource.copyPoint(slot.window.element, kAXPositionAttribute as String),
+           abs(origin.y - slot.y) > 0.5,
+           AXSource.setPoint(slot.window.element, kAXPositionAttribute as String,
+                             CGPoint(x: origin.x, y: slot.y)) == .success {
+            // The teleport pass owns the final on-screen X; clear the cached
+            // committed origin so it re-places this window after the resize.
+            slot.window.lastCommittedOrigin = nil
+        }
+
         // Optimistically reflect the request, then pull the model back to the
         // real frame (apps clamp to their own min/fixed height while still
         // reporting success). Width is preserved at whatever the spawn-width
