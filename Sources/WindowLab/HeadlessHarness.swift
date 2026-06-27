@@ -76,6 +76,53 @@ enum Headless {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
     }
+
+    // MARK: - Native-Space helpers (Track 5 sim-Space infrastructure)
+    //
+    // Thin sugar over `SimWindowWorld`'s native-Space API so Space tests stay
+    // terse. The sim is the source of truth (`SimWindowWorld.swift`); these only
+    // wrap the common "match + adopt the current-Space windows" and "drive the
+    // engine's real diff once" steps every Space test repeats.
+
+    /// Fuse the CURRENT-Space AX+CG view exactly as production `arrange` does and
+    /// adopt the result into `engine`. Returns the matched current-Space windows.
+    /// Because the sim's `cgWindows(onscreenOnly:true)` now omits off-active-Space
+    /// windows, only windows on the world's active Space are adopted - mirroring
+    /// `arrange`'s on-screen scoping with zero extra test logic.
+    @discardableResult
+    static func arrangeCurrentSpace(_ engine: TeleportEngine,
+                                    pids: [pid_t]) -> [MatchedWindow] {
+        let ax = pids.flatMap { AXSource.windows(forPID: $0) }
+        let matched = IdentityMatcher.match(
+            axWindows: ax,
+            cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+        ).filter { $0.cg != nil }
+        engine.adopt(matched: matched)
+        return matched
+    }
+
+    /// Run the SAME pure decision `LifecycleMonitor.applyResync` runs, against the
+    /// live engine + sim, so a test can assert the Space-freeze / adopt outcome
+    /// without spinning the 2s poll. Returns the planner decision so tests can
+    /// distinguish `frozenDifferentSpace` from `apply`. The token mapping mirrors
+    /// `applyResync` (LifecycleMonitor.swift): AX index per standard window,
+    /// current-Space = windows the on-screen CG list matches.
+    @discardableResult
+    static func resyncDecision(_ engine: TeleportEngine,
+                               pids: [pid_t]) -> ResyncPlanner.Decision {
+        let ax = pids.flatMap { AXSource.windows(forPID: $0) }
+        let standard = ax.filter { $0.subrole == kAXStandardWindowSubrole as String }
+        let cg = CGWindowSource.listWindows(onscreenOnly: true)
+        let matched = IdentityMatcher.match(axWindows: standard, cgWindows: cg)
+        let axIDs = Array(standard.indices)
+        var currentSpaceIDs = Set<Int>()
+        for (i, m) in matched.enumerated() where m.cg != nil { currentSpaceIDs.insert(i) }
+        let stripIDs: [Int] = engine.allManagedSlots.enumerated().map { (s, slot) in
+            standard.firstIndex { CFEqual($0.element, slot.window.element) } ?? -(s + 1)
+        }
+        return ResyncPlanner.decide(stripIDs: stripIDs, axIDs: axIDs,
+                                    currentSpaceIDs: currentSpaceIDs)
+    }
 }
 
 /// Run EVERY headless integration test as a child process and report a roll-up.
@@ -85,7 +132,7 @@ enum Headless {
 /// child ever touches a real window or the keyboard.
 func runHeadlessSuite() -> Never {
     let exe = Bundle.main.executablePath ?? CommandLine.arguments.first ?? "WindowLab"
-    let verbs = ["opstest", "e2etest", "revealtest", "spawnlatency", "displaytest"]
+    let verbs = ["opstest", "e2etest", "revealtest", "spawnlatency", "displaytest", "spacetest"]
     var failures = 0
     for verb in verbs {
         print("\n========== headless \(verb) ==========")

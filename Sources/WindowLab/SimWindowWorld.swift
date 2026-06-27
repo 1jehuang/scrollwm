@@ -47,6 +47,16 @@ final class SimWindowWorld: WindowBackend {
         var minimized: Bool
         var fullscreen: Bool
         var hasCloseButton: Bool
+        /// The native macOS Space (Mission Control "Desktop") this window lives
+        /// on, modeled as an opaque integer id. A window appears in the
+        /// WindowServer on-screen list (`cgWindows(onscreenOnly:true)`) ONLY
+        /// while its Space is the active one, mirroring how
+        /// `CGWindowListCopyWindowInfo(onScreenOnly)` reports only the current
+        /// Space. It still exists in AX (`allWindows`/`windows(forPID:)`) on any
+        /// Space, exactly like a real window. Defaults to the world's active
+        /// Space at creation, so a test that never models Spaces behaves
+        /// identically (every window is on Space 1, which is active).
+        var nativeSpace: Int
         var alive: Bool = true
         /// Wall-clock time before which this window is WITHHELD from the
         /// WindowServer on-screen list, even though it already exists in AX.
@@ -58,7 +68,8 @@ final class SimWindowWorld: WindowBackend {
         init(id: Int, pid: pid_t, appName: String, title: String,
              role: String, subrole: String, frame: CGRect, minSize: CGSize,
              fixedAspectRatio: CGFloat?,
-             minimized: Bool, fullscreen: Bool, hasCloseButton: Bool) {
+             minimized: Bool, fullscreen: Bool, hasCloseButton: Bool,
+             nativeSpace: Int) {
             self.id = id
             self.pid = pid
             // A unique CFEqual-stable token per window. Using a per-window fake
@@ -75,6 +86,7 @@ final class SimWindowWorld: WindowBackend {
             self.minimized = minimized
             self.fullscreen = fullscreen
             self.hasCloseButton = hasCloseButton
+            self.nativeSpace = nativeSpace
         }
 
         var info: AXWindowInfo {
@@ -92,6 +104,22 @@ final class SimWindowWorld: WindowBackend {
     private var focused: Win?
     private var nextID = 700_001
     private var nextCGID: CGWindowID = 9_000_001
+
+    /// The native macOS Space (Mission Control "Desktop") the user is currently
+    /// VIEWING, as an opaque integer id. Only windows whose `nativeSpace`
+    /// matches this appear in the on-screen list `cgWindows(onscreenOnly:true)`,
+    /// mirroring real macOS where `CGWindowListCopyWindowInfo(onScreenOnly)`
+    /// reports only the current Space. New windows default to this Space, so any
+    /// test that never calls the Space API sees one Space (id 1) that is always
+    /// active - byte-identical to the pre-Space behavior. Switch it with
+    /// `setActiveSpace(_:)`. Read-only access via `activeSpace`.
+    private var activeSpaceID: Int = 1
+    /// Fired (on the main queue) AFTER the active Space changes, mirroring
+    /// `NSWorkspace.activeSpaceDidChangeNotification`. ScrollWM does NOT observe
+    /// that today (it infers the Space by intersecting AX with the on-screen
+    /// list), so this hook lets Track 1 prototype/assert a real Space-change
+    /// signal headlessly. Nil (the default) = no observer, exactly like prod.
+    private var onActiveSpaceChanged: ((_ space: Int) -> Void)?
 
     /// Displays (AX top-left global coords) used ONLY for the off-screen clamp
     /// that models macOS keeping a sliver of a parked window visible. Empty (the
@@ -127,7 +155,8 @@ final class SimWindowWorld: WindowBackend {
                    hasCloseButton: Bool = true,
                    appName: String? = nil,
                    notify: Bool = false,
-                   cgPublishDelay: TimeInterval = 0) -> AXUIElement {
+                   cgPublishDelay: TimeInterval = 0,
+                   nativeSpace: Int? = nil) -> AXUIElement {
         lock.lock()
         let id = nextID; nextID += 1
         let win = Win(id: id, pid: pid, appName: appName ?? "Sim-\(pid)",
@@ -135,7 +164,12 @@ final class SimWindowWorld: WindowBackend {
                       frame: frame, minSize: minSize,
                       fixedAspectRatio: fixedAspectRatio,
                       minimized: minimized, fullscreen: fullscreen,
-                      hasCloseButton: hasCloseButton)
+                      hasCloseButton: hasCloseButton,
+                      // Default a new window onto the Space the user is viewing,
+                      // exactly like opening one in real macOS. An explicit
+                      // `nativeSpace` models "opened on another Space" (e.g. an
+                      // app restoring a window onto its origin Desktop).
+                      nativeSpace: nativeSpace ?? activeSpaceID)
         if cgPublishDelay > 0 {
             win.cgPublishAt = Date().timeIntervalSinceReferenceDate + cgPublishDelay
         }
@@ -170,6 +204,65 @@ final class SimWindowWorld: WindowBackend {
 
     func setAppHidden(_ pid: pid_t, _ value: Bool) {
         lock.lock(); if value { hiddenApps.insert(pid) } else { hiddenApps.remove(pid) }; lock.unlock()
+    }
+
+    // MARK: - Native macOS Spaces (test-facing)
+    //
+    // A MINIMAL, additive model of Mission Control "Desktops"/Spaces, owned by
+    // Track 5 so Tracks 1/4 can model Space membership + switching headlessly.
+    // The single fidelity that matters to the engine: the WindowServer on-screen
+    // list (`cgWindows(onscreenOnly:true)`) shows ONLY windows on the ACTIVE
+    // Space, so a managed window that ends up on another Space silently drops
+    // out of the current-Space set (driving `ResyncPlanner.frozenDifferentSpace`
+    // and `arrange`/`fastAdopt` scoping) WITHOUT touching its AX existence,
+    // minimized, or hidden state. Real `CGWindowListCopyWindowInfo(onScreenOnly)`
+    // behaves exactly this way; `setAppHidden` (the only prior lever) had to
+    // also flip app-hidden state, which the engine treats differently.
+
+    /// The native Space the user is currently VIEWING (read-only). Defaults to 1.
+    var activeSpace: Int { lock.lock(); defer { lock.unlock() }; return activeSpaceID }
+
+    /// The native Space a window currently lives on, or nil if unknown.
+    func nativeSpace(of element: AXUIElement) -> Int? {
+        lock.lock(); defer { lock.unlock() }; return find(element)?.nativeSpace
+    }
+
+    /// Move a sim window to native Space `space` WITHOUT moving its frame. While
+    /// `space != activeSpace` the window vanishes from the on-screen list (other
+    /// Space) but still exists in AX, modeling "send window to another Desktop"
+    /// and a window that lives on its origin Space while the user is elsewhere.
+    func setNativeSpace(_ element: AXUIElement, _ space: Int) {
+        lock.lock(); find(element)?.nativeSpace = space; lock.unlock()
+    }
+
+    /// Switch the active native Space (Ctrl+Left/Right, Mission Control, or a
+    /// fullscreen-Space toggle). Windows on `space` now appear on-screen; windows
+    /// on the previously-active Space drop out of the on-screen list. Fires the
+    /// `activeSpaceDidChange` hook (async on main) AFTER the switch, mirroring
+    /// `NSWorkspace.activeSpaceDidChangeNotification`. No-op (and no fire) when
+    /// already on `space`, matching macOS coalescing identical transitions.
+    func setActiveSpace(_ space: Int) {
+        lock.lock()
+        guard space != activeSpaceID else { lock.unlock(); return }
+        activeSpaceID = space
+        let hook = onActiveSpaceChanged
+        lock.unlock()
+        if let hook { DispatchQueue.main.async { hook(space) } }
+    }
+
+    /// All distinct native Space ids that currently have at least one window,
+    /// plus the active Space (which may legitimately be empty). For assertions.
+    func knownSpaces() -> Set<Int> {
+        lock.lock(); defer { lock.unlock() }
+        var s = Set(wins.map { $0.nativeSpace }); s.insert(activeSpaceID); return s
+    }
+
+    /// Subscribe to active-Space changes (the headless stand-in for
+    /// `NSWorkspace.activeSpaceDidChangeNotification`). The closure runs on the
+    /// main queue AFTER each `setActiveSpace` that actually changed the Space.
+    /// Pass nil to unsubscribe. Independent of the window create/destroy sinks.
+    func subscribeActiveSpace(_ handler: ((_ space: Int) -> Void)?) {
+        lock.lock(); onActiveSpaceChanged = handler; lock.unlock()
     }
 
     /// Snapshot of every live window (for assertions). Thread-safe copy.
@@ -208,10 +301,15 @@ final class SimWindowWorld: WindowBackend {
         // minimized or app-hidden window is NOT on screen, so it drops out here
         // (which is exactly what makes `arrange`/`resync` skip them). A window
         // still within its `cgPublishAt` window is withheld too, modeling the
-        // WindowServer publish lag after `kAXWindowCreated`.
+        // WindowServer publish lag after `kAXWindowCreated`. A window on a
+        // NON-ACTIVE native Space is likewise absent from the on-screen list -
+        // `CGWindowListCopyWindowInfo(onScreenOnly)` only reports the Space the
+        // user is viewing - while still existing in AX. This is the single
+        // fidelity that drives Space-freeze / cross-Space adoption scoping.
         return wins.compactMap { w -> CGWindowInfo? in
             if onscreenOnly && (w.minimized || hiddenApps.contains(w.pid)) { return nil }
             if onscreenOnly && w.cgPublishAt > now { return nil }
+            if onscreenOnly && w.nativeSpace != activeSpaceID { return nil }
             nextCGID += 1
             return CGWindowInfo(
                 windowID: nextCGID, ownerPID: w.pid, ownerName: w.appName,

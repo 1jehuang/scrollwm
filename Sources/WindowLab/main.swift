@@ -272,6 +272,10 @@ case "e2etest":
     args.contains("--live") ? runE2EKeybindingTest() : runHeadlessE2ETest()
 case "revealtest":
     args.contains("--live") ? runWindowRevealTest() : runHeadlessRevealTest()
+case "spacetest":
+    // Headless native-Space membership + switching test (Track 5 sim-Space
+    // infra). Always headless: never touches a real window/Space/keyboard.
+    runHeadlessSpaceTest()
 case "headlesstest":
     // Run EVERY headless integration test in one child-process sweep, so a
     // single command verifies the whole suite without touching the desktop.
