@@ -2,27 +2,23 @@ import Foundation
 import ApplicationServices
 import AppKit
 
-// HEADLESS Space-change DETECTION / SIGNAL test (Track 1).
+// HEADLESS Space-change DETECTION / SIGNAL test (Track 1, now SHIPPED).
 //
-// Track 5 owns the sim-Space MODEL (`SimWindowWorld` native Spaces + the
-// `subscribeActiveSpace` hook) and the MEMBERSHIP/freeze policy proof
-// (`spacetest`). THIS suite proves the orthogonal claim Track 1 investigates:
-// ScrollWM has NO Space-change signal today, so after a native Space switch the
-// strip stays STALE for up to the safety-net poll `interval` (2s in prod), and
-// shows how an `NSWorkspace.activeSpaceDidChangeNotification`-style hook
-// collapses that gap to ~one resync (single-digit ms headless).
-//
-// It runs the EXACT production `LifecycleMonitor` against an in-memory
-// `SimWindowWorld`: no real window is spawned/moved/focused/closed, no global
-// keystroke injected. It modifies NO production behavior - the "immediate
-// resync on Space change" is wired in the TEST via the sim's
-// `subscribeActiveSpace` hook calling the existing `monitor.resync()`, exactly
-// the design Track 1's doc recommends shipping.
+// ScrollWM now observes `NSWorkspace.activeSpaceDidChangeNotification` and runs a
+// debounced `resync()` on every native Space change (LifecycleMonitor.start ->
+// scheduleSpaceResync). This suite proves that shipped wiring end-to-end against
+// an in-memory `SimWindowWorld`: no real window is spawned/moved/focused/closed,
+// no global keystroke injected. The sim's `setActiveSpace` posts the REAL public
+// notification on `NSWorkspace.shared.notificationCenter`, so the production
+// observer fires exactly as it would on a live Ctrl-arrow / Mission Control /
+// fullscreen-Space switch.
 //
 // Determinism: the monitor's safety-net poll is set to a deliberately SLOW 5s,
-// so ANY adoption observed under ~1s came from a SIGNAL (the Space hook), never
-// the poll. The "stale" assertions check a sub-poll window (0.8s) in which the
-// poll provably cannot have fired.
+// so ANY adoption observed under ~1s came from the SIGNAL (the Space observer),
+// never the poll. Before this shipped, a Space switch fired none of the other
+// triggers and the strip stayed stale until that 5s poll; that historical gap is
+// documented in `docs/spaces/01_detection.md` and was pinned by this suite's
+// earlier revision.
 
 func runHeadlessSpaceDetectionTest() {
     let world = Headless.install()
@@ -47,107 +43,93 @@ func runHeadlessSpaceDetectionTest() {
         print("\n[headless-spacedetect] \(t.passed) passed, \(t.failed) failed"); exit(1)
     }
 
-    // Real production monitor, SLOW poll so a prompt reaction must be a signal.
+    // Real production monitor, SLOW poll so a prompt reaction must be the signal.
     // Filter to our pids so it never enumerates anything but the sim windows.
     let monitor = LifecycleMonitor(engine: engine, interval: 5.0)
     monitor.pidFilter = Set(stripPIDs + [stripPID + 10, stripPID + 11])
     monitor.start()
-    Headless.pump(0.1) // let the observer subscribe
+    Headless.pump(0.1) // let the observers subscribe
 
     // ===================================================================
-    // PART A — THE DETECTION GAP (no Space signal observed): a native Space
-    // switch fires NO window-created/destroyed/launch event, so the monitor
-    // never re-evaluates. A window that appears on the strip's OWN Space while
-    // the user is away is therefore NOT in the strip on return, and STAYS
-    // missing until the 2s safety-net poll. We prove it is still missing across
-    // a sub-poll window, and that ZERO resyncs ran across two Space switches.
+    // PART A — THE SHIPPED SIGNAL: a native Space switch now triggers a
+    // debounced resync, so a window that appeared on the strip's OWN Space while
+    // the user was away is adopted within ONE signal-fast resync on return, not
+    // after the multi-second safety-net poll. This is the exact scenario that
+    // used to be the detection gap.
     // ===================================================================
     let resyncAtStart = monitor.resyncCount
 
-    // User switches AWAY to Space 2 (Ctrl-Right / Mission Control). With no
-    // subscriber this is invisible to ScrollWM.
+    // User switches AWAY to Space 2 (Ctrl-Right / Mission Control). The sim posts
+    // the real activeSpaceDidChange notification -> the monitor resyncs (and the
+    // strip freezes, since its windows are off-screen on Space 2).
     world.setActiveSpace(2)
-    Headless.pump(0.1)
-    // While viewing Space 2, the strip's windows are off-screen, so the pure
-    // policy (Track 5's helper) would freeze - but nothing RUNS it without a
-    // trigger. Confirm the policy itself agrees this is a different Space.
+    Headless.pump(0.2)
     t.check("policy: strip is frozen while viewing another Space (no current-Space windows)",
             Headless.resyncDecision(engine, pids: stripPIDs) == .frozenDifferentSpace)
+    t.check("SIGNAL: switching away fired a Space-driven resync",
+            monitor.resyncCount > resyncAtStart)
+    t.check("away on Space 2: strip kept its 2 columns (frozen, not dropped)",
+            engine.slots.count == 2)
 
     // A new window opens on the strip's Space (Space 1) WHILE the user is on
-    // Space 2 - e.g. an app you left on that Desktop opens a document window.
-    // notify:false => NO kAXWindowCreated reaches us (it is off the active
-    // Space; the WindowServer would not list it on-screen, and our fast path's
-    // current-Space gate would reject it anyway). So nothing schedules a resync.
+    // Space 2 - e.g. an app you left on that Desktop opens a document window. It
+    // is off the active Space, so no kAXWindowCreated reaches us (the fast path's
+    // current-Space gate would reject it anyway).
     let lateEl = world.addWindow(pid: stripPID + 10, title: "Late-OnSpace1",
                                  frame: CGRect(x: 860, y: 80, width: 360, height: 420),
                                  nativeSpace: 1)
-
-    // User switches BACK to Space 1. The strip's windows AND the new window are
-    // now all on-screen. But switching Spaces fires no event ScrollWM observes,
-    // so the monitor does not re-run.
-    world.setActiveSpace(1)
-    let staleDeadline = Date().addingTimeInterval(0.8) // << the 5s poll
-    while Date() < staleDeadline {
-        Headless.pump(0.02)
-        if engine.isManaged(lateEl) { break } // would only happen if a resync ran
-    }
-    t.check("GAP: window present on the strip's Space is NOT adopted on return (stale until poll)",
+    t.check("while away, the new on-Space-1 window is NOT yet adopted (off the active Space)",
             !engine.isManaged(lateEl))
-    t.check("GAP: strip still holds only its original 2 columns after the Space round-trip",
-            engine.slots.count == 2)
-    t.check("GAP: ZERO resyncs ran across two native Space switches (no signal exists)",
-            monitor.resyncCount == resyncAtStart)
 
-    // ===================================================================
-    // PART B — THE SIGNAL FIX (observe activeSpaceDidChange): wire the sim's
-    // Space hook to the EXISTING `monitor.resync()`. This is precisely the
-    // design Track 1 recommends - observe NSWorkspace.activeSpaceDidChange and
-    // trigger an immediate resync. The previously-stale window is now adopted
-    // within a single resync (~ms), not after the multi-second poll.
-    // ===================================================================
-    var spaceSignals = 0
-    world.subscribeActiveSpace { _ in
-        spaceSignals += 1
-        monitor.resync()
-    }
-
-    // First signal fires for the transition we are ALREADY on? No: the hook
-    // fires only on a CHANGE. Round-trip again to drive it. Drop the still-
-    // unmanaged Part-A window first so the only newly-adoptable window is the
-    // one we time, keeping the latency attribution unambiguous.
-    world.destroyWindow(lateEl, notify: false)
-    Headless.pump(0.05)
-
-    world.setActiveSpace(2)             // away (fires signal -> resync, strip freezes)
-    Headless.pump(0.1)
-    let newEl = world.addWindow(pid: stripPID + 11, title: "Opened-OnSpace1",
-                                frame: CGRect(x: 860, y: 80, width: 360, height: 420),
-                                nativeSpace: 1)
+    // User switches BACK to Space 1. The shipped Space observer fires a debounced
+    // resync; the strip's windows AND the new window are now on-screen, so the
+    // new window is adopted promptly - WITHOUT waiting for the 5s poll.
     let switchBackT0 = Clock.nowAbsNs()
-    world.setActiveSpace(1)             // back (fires signal -> resync -> adopt)
-
+    world.setActiveSpace(1)
     var adoptedNs: UInt64?
-    let signalDeadline = Clock.nowAbsNs() + 2_000_000_000
+    let signalDeadline = Clock.nowAbsNs() + 2_000_000_000 // << the 5s poll
     while Clock.nowAbsNs() < signalDeadline {
         Headless.pump(0.005)
-        if engine.isManaged(newEl) { adoptedNs = Clock.nowAbsNs(); break }
+        if engine.isManaged(lateEl) { adoptedNs = Clock.nowAbsNs(); break }
     }
     if let adoptedNs {
         let ms = Double(adoptedNs &- switchBackT0) / 1e6
         print(String(format: "[headless-spacedetect] Space-signal adoption in %.1f ms", ms))
-        t.check("FIX: activeSpaceDidChange signal adopts the on-Space window on return", true)
-        t.check(String(format: "FIX: adoption was signal-fast, not the 5s poll (%.0fms < 500)", ms),
+        t.check("SIGNAL: window present on the strip's Space IS adopted on return", true)
+        t.check(String(format: "SIGNAL: adoption was signal-fast, not the 5s poll (%.0fms < 500)", ms),
                 ms < 500)
     } else {
-        t.check("FIX: activeSpaceDidChange signal adopts the on-Space window on return", false)
+        t.check("SIGNAL: window present on the strip's Space IS adopted on return", false)
     }
-    t.check("FIX: the Space hook actually fired (>=2 transitions observed)", spaceSignals >= 2)
-    t.check("FIX: at least one resync ran, driven by the Space signal",
-            monitor.resyncCount > resyncAtStart)
+    t.check("SIGNAL: strip now holds its 2 originals + the late window",
+            engine.slots.count == 3 && engine.isManaged(lateEl))
+
+    // ===================================================================
+    // PART B — DEBOUNCE: a burst of rapid Space switches must collapse into a
+    // bounded number of resyncs (not one per edge), while still converging to the
+    // correct final membership. We storm 1<->2 several times quickly and assert
+    // the resync count stays well under the number of edges.
+    // ===================================================================
+    world.destroyWindow(lateEl, notify: false)
+    Headless.pump(0.05)
+    let resyncBeforeBurst = monitor.resyncCount
+    let edges = 8
+    for i in 0..<edges {
+        world.setActiveSpace(i % 2 == 0 ? 2 : 1)
+        Headless.pump(0.005) // faster than the 0.05s debounce -> edges coalesce
+    }
+    // Let the final debounce settle.
+    Headless.pump(0.3)
+    world.setActiveSpace(1) // end on the strip's Space
+    Headless.pump(0.2)
+    let burstResyncs = monitor.resyncCount - resyncBeforeBurst
+    t.check("DEBOUNCE: a burst of \(edges) rapid switches coalesced (resyncs < edges)",
+            burstResyncs < edges)
+    t.check("DEBOUNCE: strip converged back to its 2 original columns",
+            engine.slots.count == 2
+                && engine.slots.map { $0.window.title } == ["Strip-A", "Strip-B"])
 
     monitor.stop()
-    world.subscribeActiveSpace(nil)
     print("\n[headless-spacedetect] \(t.passed) passed, \(t.failed) failed")
     exit(t.summaryExitCode)
 }

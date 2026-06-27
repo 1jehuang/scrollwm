@@ -247,7 +247,18 @@ final class SimWindowWorld: WindowBackend {
         activeSpaceID = space
         let hook = onActiveSpaceChanged
         lock.unlock()
-        if let hook { DispatchQueue.main.async { hook(space) } }
+        // Post the REAL public notification too, so the production
+        // `LifecycleMonitor` observer (which listens for
+        // `activeSpaceDidChangeNotification` on `NSWorkspace.shared`) fires under
+        // the headless backend exactly as it would on a live Space switch. This
+        // is what lets headless tests exercise the shipped Space-signal wiring,
+        // not just the explicit `subscribeActiveSpace` hook.
+        DispatchQueue.main.async {
+            NSWorkspace.shared.notificationCenter.post(
+                name: NSWorkspace.activeSpaceDidChangeNotification,
+                object: NSWorkspace.shared)
+            hook?(space)
+        }
     }
 
     /// All distinct native Space ids that currently have at least one window,

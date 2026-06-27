@@ -27,6 +27,16 @@ final class LifecycleMonitor {
     /// Coalesces overlapping poll/event triggers into one enumeration.
     private var enumerating = false
 
+    /// Settle delay applied to a native Space change before resyncing, so a
+    /// burst of `activeSpaceDidChange` edges (rapid Ctrl-arrow, or the
+    /// notification firing before the WindowServer on-screen list reflects the
+    /// new Space) collapses into ONE resync sampled after the Space committed.
+    /// Small enough to feel instant, large enough to clear the transition.
+    private let spaceResyncDebounce: TimeInterval = 0.05
+    /// Monotonic token so only the latest debounced Space-resync runs; an earlier
+    /// scheduled closure whose generation is stale simply no-ops.
+    private var spaceResyncGeneration: UInt64 = 0
+
     /// Fast-adopt retry policy for the kAXWindowCreated -> WindowServer-publish
     /// race. When an app fires `kAXWindowCreated` the window exists in AX
     /// immediately, but the WindowServer's on-screen list (our current-Space
@@ -99,11 +109,46 @@ final class LifecycleMonitor {
             })
         }
 
+        // Native macOS Space-change signal. ScrollWM has no concept of WHICH
+        // Space it is on (no public API exposes a stable Space id); it infers the
+        // current Space by intersecting all-Spaces AX windows with the
+        // WindowServer on-screen list. That intersection is only re-sampled inside
+        // a resync, and a pure native-Space switch (Ctrl-arrow, Mission Control,
+        // entering/leaving a fullscreen Space, an app activation that follows a
+        // window to another Space) fires NONE of the other triggers - so without
+        // this observer the strip stayed stale for up to one poll interval (~2s,
+        // worst ~4s when a tick coalesces). `activeSpaceDidChange` is the public,
+        // permission-free edge that says "recompute now": debounce it (Space
+        // transitions can fire mid-animation before the on-screen list settles,
+        // and can burst on rapid switching) and route to the SAME `resync()` path,
+        // which already guards the locked session, coalesces, and applies the
+        // Space-aware `ResyncPlanner`. No new policy, no new permission.
+        observers.append(center.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.scheduleSpaceResync()
+        })
+
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.resync()
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+    }
+
+    /// Debounced resync for a native Space change. Coalesces a burst of
+    /// `activeSpaceDidChange` edges (rapid Ctrl-arrow, or the WindowServer firing
+    /// before the on-screen list settles mid-animation) into ONE resync after a
+    /// short settle delay, so we sample the on-screen membership once the Space
+    /// has actually committed. `resync()` itself still owns the publish-race retry
+    /// (the fast path) and every safety guard, so this stays a thin edge.
+    private func scheduleSpaceResync() {
+        spaceResyncGeneration &+= 1
+        let generation = spaceResyncGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + spaceResyncDebounce) { [weak self] in
+            guard let self, generation == self.spaceResyncGeneration else { return }
+            self.resync()
+        }
     }
 
     func stop() {
