@@ -271,6 +271,11 @@ case "dragofftest":
     // onto another display is EVICTED (left where they put it) instead of being
     // yanked back, while a merely-parked column is never evicted. Always headless.
     runHeadlessDragOffTest()
+case "extadopttest":
+    // Headless external-monitor adoption test: single strip (multiDisplay=false,
+    // stripDisplay scope) adopts ONLY built-in windows and leaves the external
+    // alone on arrange / fast-adopt / resync. Always headless.
+    runHeadlessExternalAdoptTest()
 case "displaybindcheck":
     runDisplayBindCheck()
 case "e2etest":
