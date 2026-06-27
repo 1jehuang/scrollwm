@@ -118,6 +118,26 @@ ALL headless integration tests PASSED (6 suites)
   `setActiveSpace` toggles into/out of it. (They may keep their `setAppHidden`
   approximation; both work.)
 
+### Cross-track note: a real production bug the sim surfaced
+
+While integrating, Track 4's `movetest` (built on this sim API) exposed a genuine
+**production** bug in `LifecycleMonitor.stripIsOnCurrentSpace`
+(`LifecycleMonitor.swift:482`): it computed each slot's expected on-screen X as
+`screenFrame.origin.x + canvasX - viewportX`, **omitting `peekInset`**, while
+`teleport` actually places windows at `engine.onScreenTarget` (which adds the
+`peekInset` content origin). With the production default `peekInset = 48`
+(> the 8 px match tolerance) the gate never matched a real on-screen window, so
+`fastAdopt`'s Space-freeze guard tripped for any non-empty strip and every 2nd+
+same-Space window waited for the 2 s safety-net poll. Track 4 owns the
+production fix (reuse `engine.onScreenTarget`, a no-op at `peekInset == 0`).
+
+I separately tightened the shared helper `Headless.arrangeCurrentSpace`
+(commit `9a482f8`) to focus column 0 after adopt, so it faithfully mirrors
+production `arrange` (which ends in `engine.focus(index: 0)`); this is fidelity
+hygiene but a no-op for the single-column case (`adopt()` already teleports via
+`commitAll()`). Attribution: the behavioral fix is Track 4's; the value of the
+sim infra here is that it let a headless test catch a real fast-adopt regression.
+
 ---
 
 ## JOB B — Live reproduction (sandbox only)
