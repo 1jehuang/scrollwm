@@ -221,13 +221,22 @@ scrollwm release                 # restore all windows, go dormant
 scrollwm toggle                  # arrange <-> release
 scrollwm focus next|prev|3       # change focused column (3 is 1-based)
 scrollwm move left|right         # move the focused column within the strip
-scrollwm width 25|50|75|100      # resize focused column (also accepts 0.0-1.0)
+scrollwm move up|down            # send the focused window up/down a workspace
+scrollwm workspace up|down|2     # switch vertical workspace (niri-style)
+scrollwm width [all] 25|50|75|100 # resize focused column (or `all`; accepts 0.0-1.0)
 scrollwm close                   # close the focused window
+scrollwm display next|main|2     # move the scrolling strip to another monitor
 scrollwm focus-mode fit|centered # how the viewport follows focus
 scrollwm reload                  # re-read the config file live
+scrollwm skills                  # report core keybindings you've stopped using
+scrollwm login on|off            # start ScrollWM at login (no arg = report)
+scrollwm tutorial                # open the in-app cheat sheet
 scrollwm update [--install]      # check GitHub for a newer release (and install it)
 scrollwm status                  # JSON snapshot of the strip
+scrollwm version                 # app version + capabilities as JSON
+scrollwm logs [--tail N|--follow] # show the app log
 scrollwm quit                    # restore windows and quit the app
+scrollwm --version               # print the installed version (no running app needed)
 scrollwm --help                  # full list
 ```
 

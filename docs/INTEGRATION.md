@@ -25,6 +25,12 @@ guarantees.
 - **Not running:** connecting to a missing socket (`ENOENT`) or a stale socket
   (`ECONNREFUSED`) means ScrollWM is not running. Treat this as "absent", not an
   error; the `scrollwm` CLI maps it to exit code 3.
+- **Not responding:** if the socket connects but the app does not reply within
+  the client timeout (5s; e.g. a wedged main thread), the `scrollwm` CLI maps it
+  to exit code 4 ("not responding"), distinct from "not running" (3).
+- **Exit codes (CLI):** `0` success; `2` command-level failure (reply began with
+  `error:`, or an unknown verb); `3` not running; `4` not responding; `1` other
+  transport/IO error.
 
 The reference server is `Sources/WindowLab/ControlServer.swift`; the reference
 Swift client is `ControlClient.send` in the same file; the dispatch is
@@ -44,7 +50,8 @@ marketing version.
   "protocol": 1,
   "capabilities": ["ping","status","version","arrange","release","toggle",
                    "focus","move","workspace","width","close","display",
-                   "focus-mode","reload"],
+                   "focus-mode","reload","skills","login","tutorial",
+                   "update","quit"],
   "verbs": ["...same as capabilities..."]
 }
 ```
@@ -72,13 +79,13 @@ Compatibility policy:
 | `ping` | - | `pong` | no |
 | `version` (`hello`) | - | JSON handshake | no |
 | `status` | - | JSON strip snapshot | no |
-| `arrange` | - | `ok: arranged N windows` / `error: nothing to arrange` | no (starts managing) |
-| `release` | - | `ok: released, all windows restored` | no |
+| `arrange` | `[25\|50\|75\|100\|0.0-1.0]` | `ok: arranged N windows` / `error: nothing to arrange` | no (starts managing) |
+| `release` | - | `ok: released, all windows placed` | no |
 | `toggle` | - | `ok: arranged N` / `ok: released` | no |
 | `focus` | `next\|prev\|left\|right\|N` | `ok: focused column K (title)` | yes |
 | `move` | `left\|right\|up\|down` | `ok: moved ...` | yes |
 | `workspace` (`ws`) | `up\|down\|N` (or none) | `ok: on workspace K of M` | yes |
-| `width` | `25\|50\|75\|100\|0.0-1.0` | `ok: set focused width to P%` | yes |
+| `width` | `[all] 25\|50\|75\|100\|0.0-1.0` | `ok: set focused width to P%` / `ok: set N columns to P%` | yes |
 | `close` | - | `ok: closed <title>` | yes |
 | `display` | `next\|main\|primary\|largest\|N` (or none) | `ok: displays: ...` | no |
 | `focus-mode` (`focusmode`) | `fit\|centered` (or none) | `ok: focus-mode set to X` | no |
