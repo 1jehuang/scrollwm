@@ -276,6 +276,25 @@ case "spacetest":
     // Headless native-Space membership + switching test (Track 5 sim-Space
     // infra). Always headless: never touches a real window/Space/keyboard.
     runHeadlessSpaceTest()
+case "spacedetecttest":
+    // Headless Space-change DETECTION/SIGNAL test (Track 1): proves the strip
+    // is STALE after a native Space switch with no signal, and that an
+    // activeSpaceDidChange-style hook collapses the gap to one signal-fast
+    // resync. Always headless: never touches a real window/Space/keyboard.
+    runHeadlessSpaceDetectionTest()
+case "movetest":
+    // Headless window-MOVEMENT-across-Spaces + lifecycle/removal test (Track 4):
+    // phantom columns when a managed window is sent to another Space, parking-
+    // sliver vs native-Space switch, oscillation storms, and the peekInset-
+    // robust fast-adopt gate. Always headless: never touches a real window.
+    runHeadlessMovementTest()
+case "fullscreentest":
+    // Headless native-FULLSCREEN / Mission Control / separate-Spaces test
+    // (Track 3): a managed window entering macOS fullscreen leaves the current
+    // Space (its own dedicated Space); proves the phantom-strand vs whole-strip-
+    // freeze split, the fullscreen-Space spurious-adopt seed, and that returning
+    // re-converges. Always headless: never touches a real window/Space/keyboard.
+    runHeadlessFullscreenTest()
 case "headlesstest":
     // Run EVERY headless integration test in one child-process sweep, so a
     // single command verifies the whole suite without touching the desktop.
