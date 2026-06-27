@@ -265,6 +265,9 @@ case "mmtest":
 case "animrender":
     let out = args.dropFirst().first ?? "menubar_anim.png"
     exit(MenuBarAnimationRender.run(outPath: out) ? 0 : 1)
+case "tutorialrender":
+    let prefix = args.dropFirst().first ?? "tutorial"
+    exit(TutorialRender.run(outPrefix: prefix) ? 0 : 1)
 case "opstest":
     args.contains("--live") ? runStripOpsIntegrationTest() : runHeadlessOpsTest()
 case "spawnlatency":

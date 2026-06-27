@@ -2314,20 +2314,14 @@ enum StripOpsTests {
         lanesOK = TerminalsTests.run() && lanesOK
         lanesOK = KeybindingProficiencyTests.run() && lanesOK
         lanesOK = LaunchAtLoginTests.run() && lanesOK
-        lanesOK = TutorialProgressTests.run() && lanesOK
         lanesOK = LogTests.run() && lanesOK
         lanesOK = TileabilityTests.run() && lanesOK
         lanesOK = IdentityMatcherFusionTests.run() && lanesOK
         lanesOK = ResyncFreezeTests.run() && lanesOK
 
-        // --- Tutorial redesign swarm: per-lane suites (pure + offscreen render).
-        //   1: hero strip-diagram model + view smoke        (StripDiagramTests)
-        //   2: paged content spec + full KeyAction coverage (TutorialContentTests)
-        //   3: visual theme math + component render smoke    (TutorialThemeTests)
-        //   4: interactive practice state machine + view     (TutorialPracticeTests)
-        lanesOK = StripDiagramTests.run() && lanesOK
+        // --- Tutorial suites: the paged content spec (the shortcut reference is
+        // generated from it) + the goal-oriented interactive practice drill.
         lanesOK = TutorialContentTests.run() && lanesOK
-        lanesOK = TutorialThemeTests.run() && lanesOK
         lanesOK = TutorialPracticeTests.run() && lanesOK
 
         let allOK = failed == 0 && lanesOK

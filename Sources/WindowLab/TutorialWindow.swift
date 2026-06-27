@@ -173,22 +173,13 @@ enum ChordFormatter {
 
 /// In-app tutorial / cheat-sheet window for ScrollWM.
 ///
-/// Redesigned (tutorial-redesign swarm) into a paged, themed, partly-animated,
-/// interactive window. It is composed entirely from the lane modules:
-///   - `TutorialTheme` / `TutorialComponents`  — the visual language + widgets.
-///   - `TutorialContent`                        — the pure, paged content spec
-///                                                (generated from the live config).
-///   - `TutorialStripDiagram`                   — the hero animation that SHOWS
-///                                                the scrolling-strip metaphor.
-///   - `TutorialPractice` / `TutorialPracticeView` — the interactive drill.
-///
-/// A hero header sits above a segmented page selector; selecting a segment swaps
-/// the content area between the reference pages (themed cards of keycap rows
-/// generated from the live config, so the shown keys never drift) and an
-/// interactive Practice page. The Practice page reacts to REAL key presses via a
-/// window-local `NSEvent` monitor that is installed only while that page is
-/// visible — it never registers a global tap and never touches the user's
-/// windows. Opened from the menu bar ("How to use ScrollWM"), the `scrollwm
+/// One simple, continuous vertical scroll: a short title, the live practice
+/// drill (real moving windows you drive to a goal), and a plain reference list
+/// of every shortcut generated from the live config. No tabs, no cards, no
+/// progress badges — just text + the interactive strip. The practice section
+/// reacts to REAL key presses via a window-local `NSEvent` monitor installed
+/// only while the window is key; it never registers a global tap and never
+/// touches the user's windows. Opened from the menu bar, the `scrollwm
 /// tutorial` CLI, and automatically once on a genuine first run.
 final class TutorialWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
@@ -213,339 +204,34 @@ final class TutorialWindowController: NSObject, NSWindowDelegate {
         window?.center()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    // MARK: - Segments
-
-    /// One entry in the page selector: either a content page (from
-    /// `TutorialContent`) or the interactive Practice page.
-    private enum Segment: Equatable {
-        case page(TutorialContent.PageID)
-        case practice
-    }
-
-    /// The selector order: the content pages in teaching order, with the
-    /// interactive Practice page inserted just before Settings.
-    private let segments: [Segment] = [
-        .page(.welcome), .page(.navigate), .page(.arrange),
-        .page(.workspaces), .page(.displays), .practice, .page(.settings),
-    ]
-
-    /// A short, selector-friendly title for a segment.
-    private func shortTitle(_ s: Segment) -> String {
-        switch s {
-        case .practice: return "Practice"
-        case .page(let id):
-            switch id {
-            case .welcome:    return "Welcome"
-            case .navigate:   return "Navigate"
-            case .arrange:    return "Arrange"
-            case .workspaces: return "Workspaces"
-            case .displays:   return "Displays"
-            case .settings:   return "Settings"
-            }
-        }
+        startPractice()
     }
 
     // MARK: - Window state
 
-    private var selector: TutorialSegmentedSelector?
-    private var pageContainer: NSView?
-    private var selectedIndex = 0
+    /// Outer horizontal padding for the single scroll column.
+    private let pad: CGFloat = 24
 
-    /// Horizontal inset used for wrapping content inside a page's scroll view.
-    private let pageInset = TutorialTheme.Spacing.lg
-
-    /// The reused hero animation. Auto start/stops with window membership; we
-    /// re-add it to the Welcome page each time that page is built.
-    private lazy var diagram: TutorialStripDiagramView = {
-        let v = TutorialStripDiagramView()
-        v.translatesAutoresizingMaskIntoConstraints = false
-        v.heightAnchor.constraint(equalToConstant: 184).isActive = true
-        return v
-    }()
-
-    /// The reused interactive practice view. Built from the live config; its
-    /// progress persists while the window is open.
+    /// The interactive practice view (built from the live config; progress
+    /// persists while the window is open).
     private lazy var practiceView = TutorialPracticeView(config: configProvider())
 
     /// The window-local key monitor that feeds real presses into the practice
-    /// drill. Installed only while the Practice page is visible.
+    /// drill. Installed while the window is open.
     private var keyMonitor: Any?
 
     private func buildWindow() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 660),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         win.title = "How to use ScrollWM"
         win.isReleasedWhenClosed = false
-        win.minSize = NSSize(width: 600, height: 540)
+        win.minSize = NSSize(width: 460, height: 480)
         win.delegate = self
 
-        let content = NSView()
-        content.translatesAutoresizingMaskIntoConstraints = false
-
-        let hero = TutorialHeroHeader(
-            title: "ScrollWM",
-            tagline: "A scrolling window manager for macOS. Your windows live in "
-                + "columns on one long horizontal strip you teleport across.")
-        hero.translatesAutoresizingMaskIntoConstraints = false
-
-        let sel = TutorialSegmentedSelector(titles: segments.map(shortTitle), selectedIndex: 0)
-        sel.onSelect = { [weak self] i in self?.selectSegment(i) }
-        self.selector = sel
-
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        self.pageContainer = container
-
-        let footer = buildFooter()
-
-        content.addSubview(hero)
-        content.addSubview(sel)
-        content.addSubview(container)
-        content.addSubview(footer)
-
-        let pad = TutorialTheme.Spacing.lg
-        let gap = TutorialTheme.Spacing.md
-        NSLayoutConstraint.activate([
-            hero.topAnchor.constraint(equalTo: content.topAnchor, constant: pad),
-            hero.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: pad),
-            hero.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -pad),
-
-            sel.topAnchor.constraint(equalTo: hero.bottomAnchor, constant: gap),
-            sel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: pad),
-            sel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -pad),
-
-            container.topAnchor.constraint(equalTo: sel.bottomAnchor, constant: gap),
-            container.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-
-            footer.topAnchor.constraint(equalTo: container.bottomAnchor, constant: gap),
-            footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: pad),
-            footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -pad),
-            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -pad),
-        ])
-
-        win.contentView = content
-        self.window = win
-        selectSegment(0)
-    }
-
-    /// The persistent footer: an overall progress line on the left, and the
-    /// Open Config File / Got it buttons on the right.
-    private func buildFooter() -> NSView {
-        let footer = NSView()
-        footer.translatesAutoresizingMaskIntoConstraints = false
-
-        let summary = TutorialProgress.summary(levels: levelsProvider())
-        let prog = TutorialComponents.label(summary.headline,
-                                            font: TutorialTheme.Font.caption,
-                                            color: TutorialTheme.Palette.textTertiary)
-        prog.lineBreakMode = .byTruncatingTail
-        prog.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let openConfig = NSButton(title: "Open Config File", target: self, action: #selector(openConfig))
-        openConfig.bezelStyle = .rounded
-        let done = NSButton(title: "Got it", target: self, action: #selector(closeWindow))
-        done.bezelStyle = .rounded
-        done.keyEquivalent = "\r"
-        let buttons = NSStackView(views: [openConfig, done])
-        buttons.orientation = .horizontal
-        buttons.spacing = TutorialTheme.Spacing.sm
-        buttons.translatesAutoresizingMaskIntoConstraints = false
-
-        footer.addSubview(prog)
-        footer.addSubview(buttons)
-        NSLayoutConstraint.activate([
-            prog.leadingAnchor.constraint(equalTo: footer.leadingAnchor),
-            prog.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
-            buttons.trailingAnchor.constraint(equalTo: footer.trailingAnchor),
-            buttons.topAnchor.constraint(equalTo: footer.topAnchor),
-            buttons.bottomAnchor.constraint(equalTo: footer.bottomAnchor),
-            prog.trailingAnchor.constraint(lessThanOrEqualTo: buttons.leadingAnchor,
-                                           constant: -TutorialTheme.Spacing.sm),
-            footer.heightAnchor.constraint(greaterThanOrEqualToConstant: 32),
-        ])
-        return footer
-    }
-
-    // MARK: - Page swapping
-
-    /// Select segment `index`, swap the content area, and manage the per-page
-    /// lifecycle (hero animation + practice capture).
-    private func selectSegment(_ index: Int) {
-        guard segments.indices.contains(index), let container = pageContainer else { return }
-        selectedIndex = index
-        selector?.select(index)
-
-        let segment = segments[index]
-        let page = makePageView(for: segment)
-        container.subviews.forEach { $0.removeFromSuperview() }
-        page.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(page)
-        NSLayoutConstraint.activate([
-            page.topAnchor.constraint(equalTo: container.topAnchor),
-            page.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            page.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            page.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
-
-        if case .practice = segment { startPractice() } else { stopPractice() }
-    }
-
-    private func makePageView(for segment: Segment) -> NSView {
-        switch segment {
-        case .practice:
-            return makePracticePage()
-        case .page(let id):
-            let config = configProvider()
-            let page = TutorialContent.pages(config: config).first { $0.id == id }
-                ?? TutorialContent.pages(config: config)[0]
-            return makeContentPage(page, config: config, levels: levelsProvider())
-        }
-    }
-
-    // MARK: - Content pages
-
-    /// Render one `TutorialContent.Page` as a vertically-scrolling stack of
-    /// themed cards: a section header + intro, the hero diagram (Welcome only),
-    /// a progress summary (Welcome only), and the page's items, with runs of
-    /// keybinding rows grouped into cards.
-    private func makeContentPage(_ page: TutorialContent.Page,
-                                 config: ScrollWMConfig,
-                                 levels: [KeyAction: KeybindingProficiency.Level]) -> NSView {
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = TutorialTheme.Spacing.md
-        stack.edgeInsets = NSEdgeInsets(top: TutorialTheme.Spacing.xs, left: pageInset,
-                                        bottom: pageInset, right: pageInset)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        func add(_ view: NSView, wraps: Bool = false) {
-            stack.addArrangedSubview(view)
-            if wraps {
-                view.widthAnchor.constraint(equalTo: stack.widthAnchor,
-                                            constant: -pageInset * 2).isActive = true
-            }
-        }
-
-        add(TutorialSectionHeader(title: page.title, subtitle: "from your config"), wraps: true)
-
-        if page.id == .welcome {
-            let card = TutorialCard(padding: TutorialTheme.Spacing.md)
-            card.setContent(diagram)
-            add(card, wraps: true)
-        }
-
-        add(TutorialComponents.wrapping(page.intro), wraps: true)
-
-        if page.id == .welcome {
-            add(progressSummaryCard(levels: levels), wraps: true)
-        }
-
-        // Group consecutive keybinding items into a single card; render prose /
-        // bullets / paths inline between cards.
-        var pendingRows: [NSView] = []
-        func flushRows() {
-            guard !pendingRows.isEmpty else { return }
-            add(card(rows: pendingRows), wraps: true)
-            pendingRows = []
-        }
-        for item in page.items {
-            switch item {
-            case .prose(let s):
-                flushRows(); add(TutorialComponents.wrapping(s), wraps: true)
-            case .bullet(let s):
-                flushRows(); add(TutorialComponents.bullet(s), wraps: true)
-            case .configPath(let p):
-                flushRows()
-                let pathCard = TutorialCard(padding: TutorialTheme.Spacing.md)
-                let mono = TutorialComponents.mono(p)
-                pathCard.setContent(mono)
-                mono.widthAnchor.constraint(lessThanOrEqualTo: pathCard.widthAnchor,
-                                            constant: -TutorialTheme.Spacing.md * 2).isActive = true
-                add(pathCard, wraps: true)
-            case .keybinding(let row):
-                pendingRows.append(contentsOf: keybindingRowViews(row, config: config, levels: levels))
-            }
-        }
-        flushRows()
-
-        return makeScroll(content: stack)
-    }
-
-    /// One keycap row per `KeyAction` a content row documents, so even paired
-    /// rows ("Focus left / right") render as individual keycap rows with their
-    /// own learn-state badge for the core shortcuts.
-    private func keybindingRowViews(_ row: TutorialContent.KeybindingRow,
-                                    config: ScrollWMConfig,
-                                    levels: [KeyAction: KeybindingProficiency.Level]) -> [NSView] {
-        row.covers.map { action in
-            let state: TutorialProgress.LearnState? = action.isCore
-                ? TutorialProgress.state(for: levels[action] ?? .unknown)
-                : nil
-            return TutorialKeybindingRow(config: config, action: action, state: state)
-        }
-    }
-
-    /// Wrap a set of rows in a themed card with an internal vertical stack.
-    private func card(rows: [NSView]) -> TutorialCard {
-        let inner = NSStackView()
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = TutorialTheme.Spacing.sm
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        for r in rows { inner.addArrangedSubview(r) }
-        let card = TutorialCard()
-        card.setContent(inner)
-        for r in rows { r.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true }
-        return card
-    }
-
-    /// The Welcome page's "learned vs not learned" summary: a headline, a
-    /// progress bar over the core shortcuts, and a one-line nudge toward Practice.
-    private func progressSummaryCard(levels: [KeyAction: KeybindingProficiency.Level]) -> NSView {
-        let summary = TutorialProgress.summary(levels: levels)
-        let inner = NSStackView()
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = TutorialTheme.Spacing.xs
-        inner.translatesAutoresizingMaskIntoConstraints = false
-
-        let head = TutorialComponents.label(summary.headline,
-                                            font: TutorialTheme.Font.section,
-                                            color: TutorialTheme.Palette.textPrimary)
-        let bar = NSProgressIndicator()
-        bar.isIndeterminate = false
-        bar.minValue = 0
-        bar.maxValue = 1
-        bar.doubleValue = summary.fraction
-        bar.controlSize = .regular
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        let caption = TutorialComponents.wrapping(
-            "Use a shortcut a few times and it flips to “Learned”. Open the "
-            + "Practice tab to drill them, or drift back to the menu and a key "
-            + "goes rusty — a nudge that you're leaving the keyboard.")
-
-        inner.addArrangedSubview(head)
-        inner.addArrangedSubview(bar)
-        inner.addArrangedSubview(caption)
-
-        let card = TutorialCard()
-        card.setContent(inner)
-        bar.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-        caption.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-        return card
-    }
-
-    /// A vertical scroll view whose document reflows to the scroll width and
-    /// only ever scrolls vertically.
-    private func makeScroll(content: NSView) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
@@ -553,47 +239,178 @@ final class TutorialWindowController: NSObject, NSWindowDelegate {
         scroll.autohidesScrollers = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
+        let column = buildColumn(config: configProvider())
         let clip = TutorialFlippedView()
         clip.translatesAutoresizingMaskIntoConstraints = false
-        clip.addSubview(content)
+        clip.addSubview(column)
         NSLayoutConstraint.activate([
-            content.topAnchor.constraint(equalTo: clip.topAnchor),
-            content.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
-            content.bottomAnchor.constraint(lessThanOrEqualTo: clip.bottomAnchor),
+            column.topAnchor.constraint(equalTo: clip.topAnchor),
+            column.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            column.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
+            column.bottomAnchor.constraint(equalTo: clip.bottomAnchor),
         ])
         scroll.documentView = clip
-        NSLayoutConstraint.activate([
-            clip.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-        ])
-        return scroll
+        clip.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
+
+        win.contentView = scroll
+        self.window = win
     }
 
-    // MARK: - Practice page
+    /// Build the one continuous content column: title + intro, the practice
+    /// drill, the shortcut reference, and the config footer line.
+    private func buildColumn(config: ScrollWMConfig) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 14
+        stack.edgeInsets = NSEdgeInsets(top: pad, left: pad, bottom: pad, right: pad)
+        stack.translatesAutoresizingMaskIntoConstraints = false
 
-    private func makePracticePage() -> NSView {
-        let wrap = NSView()
-        wrap.translatesAutoresizingMaskIntoConstraints = false
+        func add(_ view: NSView, fullWidth: Bool = true) {
+            stack.addArrangedSubview(view)
+            if fullWidth {
+                view.widthAnchor.constraint(equalTo: stack.widthAnchor,
+                                            constant: -pad * 2).isActive = true
+            }
+        }
+
+        add(plainTitle("ScrollWM"))
+        add(body("Your windows live in columns on one long horizontal strip. You "
+            + "never see the whole strip at once — you teleport the viewport to the "
+            + "column you want, all from the keyboard. ScrollWM stays dormant until "
+            + "you Arrange, and Release puts every window back exactly as it was."))
+
+        // Practice section.
+        add(sectionHeading("Practice"))
+        add(body("Drive the strip to each goal using the shortcuts shown. The "
+            + "windows below really move."))
         practiceView.removeFromSuperview()
         practiceView.translatesAutoresizingMaskIntoConstraints = false
-        wrap.addSubview(practiceView)
-        let pad = TutorialTheme.Spacing.lg
-        NSLayoutConstraint.activate([
-            practiceView.topAnchor.constraint(equalTo: wrap.topAnchor, constant: pad),
-            practiceView.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: pad),
-            practiceView.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -pad),
-            practiceView.bottomAnchor.constraint(lessThanOrEqualTo: wrap.bottomAnchor, constant: -pad),
-            practiceView.heightAnchor.constraint(greaterThanOrEqualToConstant: 360),
-        ])
-        return wrap
+        add(practiceView)
+
+        // Shortcut reference — every action, plainly listed from the live config.
+        add(sectionHeading("All shortcuts"))
+        for page in TutorialContent.pages(config: config) {
+            let actions = page.items.flatMap { item -> [KeyAction] in
+                if case let .keybinding(row) = item { return row.covers }
+                return []
+            }
+            guard !actions.isEmpty else { continue }   // skip pages with no shortcuts
+            add(groupHeading(page.title))
+            for action in actions {
+                add(shortcutRow(label: action.displayName,
+                                chord: ChordFormatter.chordText(config, action)))
+            }
+        }
+
+        // Config footer.
+        add(sectionHeading("Config"))
+        add(body("Every keybinding lives in one editable file. Edit it, then "
+            + "Menu → Reload Config — changes apply live."))
+        add(monoPath(ScrollWMConfig.fileURL.path))
+        add(buildButtons())
+
+        return stack
     }
+
+    // MARK: - Plain components (no cards / badges / heavy theming)
+
+    private func plainTitle(_ text: String) -> NSTextField {
+        let f = NSTextField(labelWithString: text)
+        f.font = .systemFont(ofSize: 24, weight: .bold)
+        f.textColor = .labelColor
+        f.translatesAutoresizingMaskIntoConstraints = false
+        return f
+    }
+
+    private func sectionHeading(_ text: String) -> NSTextField {
+        let f = NSTextField(labelWithString: text)
+        f.font = .systemFont(ofSize: 17, weight: .semibold)
+        f.textColor = .labelColor
+        f.translatesAutoresizingMaskIntoConstraints = false
+        return f
+    }
+
+    private func groupHeading(_ text: String) -> NSTextField {
+        let f = NSTextField(labelWithString: text)
+        f.font = .systemFont(ofSize: 12, weight: .semibold)
+        f.textColor = .secondaryLabelColor
+        f.translatesAutoresizingMaskIntoConstraints = false
+        return f
+    }
+
+    private func body(_ text: String) -> NSTextField {
+        let f = NSTextField(wrappingLabelWithString: text)
+        f.font = .systemFont(ofSize: 13)
+        f.textColor = .secondaryLabelColor
+        f.translatesAutoresizingMaskIntoConstraints = false
+        f.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return f
+    }
+
+    private func monoPath(_ text: String) -> NSTextField {
+        let f = NSTextField(wrappingLabelWithString: text)
+        f.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        f.textColor = .tertiaryLabelColor
+        f.isSelectable = true
+        f.translatesAutoresizingMaskIntoConstraints = false
+        return f
+    }
+
+    /// One reference line: "Focus left" on the left, "⌘H" on the right.
+    private func shortcutRow(label: String, chord: String) -> NSView {
+        let name = NSTextField(labelWithString: label)
+        name.font = .systemFont(ofSize: 13)
+        name.textColor = .labelColor
+        name.translatesAutoresizingMaskIntoConstraints = false
+        name.lineBreakMode = .byTruncatingTail
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let keys = NSTextField(labelWithString: chord)
+        keys.font = .systemFont(ofSize: 13, weight: .medium)
+        keys.textColor = .secondaryLabelColor
+        keys.alignment = .right
+        keys.translatesAutoresizingMaskIntoConstraints = false
+        keys.setContentHuggingPriority(.required, for: .horizontal)
+        keys.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(name)
+        row.addSubview(keys)
+        NSLayoutConstraint.activate([
+            name.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            name.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            name.topAnchor.constraint(equalTo: row.topAnchor),
+            name.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            keys.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            keys.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            keys.leadingAnchor.constraint(greaterThanOrEqualTo: name.trailingAnchor, constant: 12),
+            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 24),
+        ])
+        return row
+    }
+
+    private func buildButtons() -> NSView {
+        let openConfig = NSButton(title: "Open Config File", target: self, action: #selector(openConfig))
+        openConfig.bezelStyle = .rounded
+        let done = NSButton(title: "Got it", target: self, action: #selector(closeWindow))
+        done.bezelStyle = .rounded
+        done.keyEquivalent = "\r"
+        let buttons = NSStackView(views: [openConfig, done])
+        buttons.orientation = .horizontal
+        buttons.spacing = 12
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        return buttons
+    }
+
+    // MARK: - Practice key forwarding
 
     /// Begin forwarding real key presses into the drill. Installs a
     /// window-LOCAL `NSEvent` monitor (fires only for events delivered to this
     /// app while our window is key) gated on `practiceView.isCapturing`. We
-    /// intercept only chords carrying a ⌘/⌃/⌥ modifier so plain keys (Return,
-    /// Space, Tab, Esc) still reach the buttons, and so an accidental ⌘W/⌘Q
-    /// can't fall through to a menu action while the user is drilling.
+    /// intercept only chords carrying a ⌘/⌃/⌥ modifier so plain keys still reach
+    /// the buttons and an accidental ⌘W/⌘Q can't hit a menu while drilling.
     private func startPractice() {
         practiceView.start()
         guard keyMonitor == nil else { return }
@@ -606,9 +423,9 @@ final class TutorialWindowController: NSObject, NSWindowDelegate {
             if event.modifierFlags.contains(.shift)   { flags.insert(.maskShift) }
             if event.modifierFlags.contains(.control) { flags.insert(.maskControl) }
             if event.modifierFlags.contains(.option)  { flags.insert(.maskAlternate) }
-            if let chord = TutorialPractice.chordString(keyCode: UInt32(event.keyCode), flags: flags) {
-                self.practiceView.deliver(chord: chord)
-                return nil   // swallow so the practice chord never hits a menu
+            if let chord = TutorialPractice.chordString(keyCode: UInt32(event.keyCode), flags: flags),
+               self.practiceView.deliver(chord: chord) != .ignored {
+                return nil   // swallow only chords the drill actually consumed
             }
             return event
         }
@@ -626,7 +443,6 @@ final class TutorialWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopPractice()
-        diagram.stop()
     }
 
     // MARK: - Static rendering entry point
@@ -635,6 +451,14 @@ final class TutorialWindowController: NSObject, NSWindowDelegate {
     /// (used by the menu-bar cheat sheet + key-hint flash) that delegates to the
     /// pure, fully-tested `ChordFormatter`.
     static func pretty(_ chord: String) -> String { ChordFormatter.pretty(chord) }
+
+    /// Test/render hook: build the content column at a fixed width without a
+    /// window. Returns nil only on an unexpected layout failure.
+    func debugBuildColumn(width: CGFloat) -> NSView? {
+        let column = buildColumn(config: configProvider())
+        column.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return column
+    }
 
     // MARK: - Actions
 
@@ -647,72 +471,9 @@ final class TutorialWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-/// A rounded "physical key" view that draws one symbol (e.g. ⌘, ⇧, H, ←) with a
-/// keycap-style border + subtle fill, so the tutorial's chords read as actual
-/// keys rather than plain text. Sizes itself to its content with a minimum
-/// square-ish footprint, and adapts to light/dark mode via system colors.
-final class KeycapView: NSView {
-    private let label = NSTextField(labelWithString: "")
-
-    init(symbol: String) {
-        super.init(frame: .zero)
-        wantsLayer = true
-        translatesAutoresizingMaskIntoConstraints = false
-        // Multi-char glyphs (Space, F12) get a slightly smaller font so they fit.
-        let size: CGFloat = symbol.count > 1 ? 11 : 14
-        label.stringValue = symbol
-        label.font = .systemFont(ofSize: size, weight: .semibold)
-        label.alignment = .center
-        label.textColor = .labelColor
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.setAccessibilityElement(false)
-        addSubview(label)
-
-        // Pad the symbol inside the cap and pin the cap to EXACTLY hug its
-        // content (with a key-like minimum width), so a grid cell never
-        // stretches a lone cap across its column. A `>=` minimum alone leaves
-        // the width unbounded above, which AppKit then stretches to fill.
-        let hPad: CGFloat = 8, vPad: CGFloat = 4
-        let exactWidth = widthAnchor.constraint(equalTo: label.widthAnchor, constant: hPad * 2)
-        exactWidth.priority = .defaultHigh   // yields to the 24pt floor for narrow glyphs
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            heightAnchor.constraint(greaterThanOrEqualTo: label.heightAnchor, constant: vPad * 2),
-            exactWidth,
-            widthAnchor.constraint(greaterThanOrEqualToConstant: 24),
-            heightAnchor.constraint(equalToConstant: 24),
-        ])
-        // Don't let the cap stretch in the row.
-        setContentHuggingPriority(.required, for: .horizontal)
-        setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        // The whole cap is one a11y element that speaks the symbol.
-        setAccessibilityElement(true)
-        setAccessibilityRole(.staticText)
-        setAccessibilityLabel(symbol)
-
-        applyStyle()
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    /// Re-apply the keycap style when the system appearance changes (light/dark).
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        applyStyle()
-    }
-
-    private func applyStyle() {
-        // Resolve CG colors against THIS view's effective appearance so the cap
-        // matches light/dark mode.
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.cornerRadius = 5
-            layer?.borderWidth = 1
-            layer?.borderColor = NSColor.separatorColor.cgColor
-            layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.9).cgColor
-        }
-    }
+/// A top-left-origin container so scrolled tutorial content starts at the top.
+final class TutorialFlippedView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 extension ScrollWMConfig {
