@@ -284,7 +284,13 @@ final class MenuBarStripView: NSView {
     /// Content width the icon wants for the most recently applied state, given
     /// the current density and clamps. Pure function of the state's geometry.
     private func desiredContentWidth(for state: TeleportEngine.StripState, managing: Bool) -> CGFloat {
-        guard managing, !state.slots.isEmpty || (stackingActive(state) && state.workspaces.contains { !$0.slots.isEmpty }) else { return minContentWidth }
+        guard managing, !state.slots.isEmpty || (stackingActive(state) && state.workspaces.contains { !$0.slots.isEmpty }) else {
+            // Not managing, or the active workspace is empty: the strip itself
+            // shows the dormant glyph at the floor width, but if a workspace
+            // badge applies (managing + >1 workspace) we still reserve its left
+            // gutter so the number stays visible instead of vanishing.
+            return minContentWidth + (managing ? badgeGutterWidth(for: state) : 0)
+        }
         // Width of the strip map itself (excludes the left workspace-number
         // gutter, which is added back below). In the stacked overview every
         // workspace shares one horizontal scale, so the map must be wide enough
@@ -349,6 +355,12 @@ final class MenuBarStripView: NSView {
     private var viewportW = Spring(1, response: 0.42, dampingFraction: 0.85)
     /// 0 = dormant glyph, 1 = live strip. Cross-fades the two presentations.
     private var modeFade = Spring(0, response: 0.34, dampingFraction: 0.9)
+    /// 0 = released (no chrome), 1 = managing. Independent of whether the ACTIVE
+    /// workspace happens to be empty: an empty workspace fades the *strip* to the
+    /// dormant glyph (`modeFade -> 0`) but you still need to see WHICH workspace
+    /// you're on, so the workspace-number badge rides this fade instead. It only
+    /// drops to 0 on a real release (stop managing).
+    private var manageFade = Spring(0, response: 0.34, dampingFraction: 0.9)
     /// Horizontal page slide for workspace switches (icon-widths, springs to 0).
     private var pageSlide = Spring(0, response: 0.5, dampingFraction: 0.8)
     /// Vertical page slide for VERTICAL workspace switches (icon-heights ->0).
@@ -497,6 +509,11 @@ final class MenuBarStripView: NSView {
         let firstApply = lastState == nil
         dormant = !managing || state.slots.isEmpty
         modeFade.target = dormant ? 0 : 1
+        // The managing chrome (workspace-number badge / dots) tracks ONLY whether
+        // we manage at all, so it stays put on an empty active workspace where the
+        // strip itself fades out. Snap it on first apply so it doesn't fade in.
+        manageFade.target = managing ? 1 : 0
+        if firstApply { manageFade.reset(to: manageFade.target) }
 
         // Detect a vertical workspace switch and play the page slide. Direction
         // mirrors the strip: switching DOWN (active index grows) slides the new
@@ -721,7 +738,7 @@ final class MenuBarStripView: NSView {
     /// so the offscreen render harness (`animrender`) can drive frames with a
     /// fixed dt and deterministic clock for visual verification + screenshots.
     func advance(dt: Double, now: CFTimeInterval) {
-        modeFade.step(dt)
+        modeFade.step(dt); manageFade.step(dt)
         viewportX.step(dt); viewportW.step(dt)
         pageSlide.step(dt); pageSlideY.step(dt); focusGlow.step(dt)
         for s in slots { s.step(dt, now: now) }
@@ -749,7 +766,7 @@ final class MenuBarStripView: NSView {
     }
 
     private func everythingSettled() -> Bool {
-        modeFade.isSettled && viewportX.isSettled && viewportW.isSettled &&
+        modeFade.isSettled && manageFade.isSettled && viewportX.isSettled && viewportW.isSettled &&
         pageSlide.isSettled && pageSlideY.isSettled && focusGlow.isSettled &&
         !hintActive && slots.allSatisfy { $0.settled }
     }
@@ -763,6 +780,10 @@ final class MenuBarStripView: NSView {
 
         let live = 1 - modeFade.value      // dormant weight
         let managingWeight = modeFade.value
+        // Managing-chrome weight (badge / workspace dots). Stays up on an empty
+        // active workspace where the strip itself has faded to the dormant glyph,
+        // so you can still read WHICH workspace you're on.
+        let chromeWeight = CGFloat(manageFade.value)
 
         // The key-hint is drawn to the RIGHT of the mini-map, never on top of
         // it: the windows graphic keeps its own region on the left at full
@@ -777,8 +798,10 @@ final class MenuBarStripView: NSView {
 
         // Carve a left gutter for the workspace-number badge (drawn last, on
         // top of nothing else, so it never overlaps a column). The strip/dormant
-        // graphic uses the remaining region to its right.
-        let gutter: CGFloat = (showBadge && managingWeight > 0.01) ? workspaceBadgeWidth : 0
+        // graphic uses the remaining region to its right. The gutter tracks the
+        // managing chrome (not the strip fade), so it persists on an empty
+        // active workspace where the strip has faded to the dormant glyph.
+        let gutter: CGFloat = (showBadge && chromeWeight > 0.01) ? workspaceBadgeWidth : 0
         let contentRect = NSRect(x: mapRect.minX + gutter, y: mapRect.minY,
                                  width: max(mapRect.width - gutter, 0), height: mapRect.height)
 
@@ -793,7 +816,14 @@ final class MenuBarStripView: NSView {
         if gutter > 0 {
             let badgeRect = NSRect(x: mapRect.minX, y: mapRect.minY,
                                    width: gutter, height: mapRect.height)
-            drawWorkspaceBadge(in: badgeRect, alpha: managingWeight)
+            drawWorkspaceBadge(in: badgeRect, alpha: Double(chromeWeight))
+        } else if chromeWeight > 0.01 && managingWeight <= 0.01 {
+            // Managing an EMPTY active workspace with the numeric badge OFF: the
+            // strip faded to the dormant glyph, so `drawStrip` (which normally
+            // hosts the workspace dots) never ran. Draw the dots here so a
+            // multi-workspace user still sees which workspace they're on.
+            drawWorkspaceIndicator(in: contentRect.insetBy(dx: hInset, dy: 0),
+                                   alpha: Double(chromeWeight))
         }
         if hud > 0.01, hintActive {
             let hintRect = NSRect(x: mapRect.maxX, y: bounds.minY,

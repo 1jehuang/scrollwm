@@ -253,6 +253,35 @@ enum MenuBarAnimationTests {
         let wBadge = withBadge.debugDesiredContentWidth(for: multi, managing: true)
         check("badge widens the icon by the gutter", wBadge > wPlain)
 
+        // Regression: an EMPTY active workspace (e.g. you just switched DOWN to a
+        // fresh empty workspace, or moved the last column out) still shows the
+        // workspace number. The strip itself fades to the dormant glyph, but the
+        // badge must persist so you can tell WHICH workspace you're on.
+        let emptyActive = ws([], focus: 0, active: true)
+        var emptyStack = state([], focus: 0)        // active strip has no columns
+        emptyStack.activeWorkspace = 1
+        emptyStack.workspaceCount = 3
+        emptyStack.workspaces = [ws([1, 2], focus: 0, active: false),
+                                 emptyActive,
+                                 ws([6], focus: 0, active: false)]
+        let emptyBadgeView = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 60, height: 22))
+        emptyBadgeView.showWorkspaceNumber = true
+        emptyBadgeView.showAllWorkspaces = false
+        emptyBadgeView.apply(state: emptyStack, managing: true, now: vt)
+        check("badge shown on an EMPTY active workspace", emptyBadgeView.debugShowsBadge)
+        check("badge label is active index (2) when empty", emptyBadgeView.debugBadgeLabel == "2")
+        // The icon must reserve the badge gutter so the number isn't clipped:
+        // its width exceeds the bare dormant floor by the gutter.
+        let wEmpty = emptyBadgeView.debugDesiredContentWidth(for: emptyStack, managing: true)
+        let bare = MenuBarStripView(frame: .zero)
+        bare.showWorkspaceNumber = false
+        let wEmptyBare = bare.debugDesiredContentWidth(for: emptyStack, managing: true)
+        check("empty-workspace badge reserves the gutter", wEmpty > wEmptyBare)
+
+        // Releasing (stop managing) on an empty workspace drops the badge.
+        emptyBadgeView.apply(state: emptyStack, managing: false, now: vt)
+        check("no badge once released", !emptyBadgeView.debugShowsBadge)
+
         print("\n[animtest] \(passed) passed, \(failed) failed")
         return failed == 0
     }
