@@ -293,6 +293,12 @@ case "sandbox":
         .compactMap { (i, a) in i == sandboxDisplayValueIdx ? nil : Int(a) }
         .first ?? 4
     runSandbox(windowCount: n, displayIndex: sandboxDisplay)
+case "indicatorprobe":
+    // Live, non-destructive visual check of the floating per-display indicator:
+    // shows a real indicator panel on each menu-bar-less display for a few
+    // seconds, then removes it. Never touches a real window.
+    let secs = args.dropFirst().compactMap { Double($0) }.first ?? 6
+    runIndicatorProbe(seconds: secs)
 case "displaytest":
     args.contains("--live") ? runDisplayTest() : runHeadlessDisplayTest()
 case "dragofftest":
