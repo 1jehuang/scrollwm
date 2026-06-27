@@ -113,12 +113,22 @@ Compatibility policy:
   "workspaceCount": 1,
   "floatingCount": 0,
   "floating": [{ "app": "...", "title": "...", "canTile": true }],
+  // one entry per managed monitor (one entry on a single-display setup):
+  "displays": [
+    { "index": 1, "displayID": 1, "managing": true, "active": true,
+      "windowCount": 3, "workspace": 1, "workspaceCount": 1 }
+  ],
   "columns": [
     { "index": 1, "app": "Ghostty", "title": "🛰 jcode/aqua main",
       "width": 800, "focused": true, "healthy": true }
   ]
 }
 ```
+
+`columns`/`focusedColumn`/`workspace` describe the ACTIVE strip (the monitor that
+currently owns hotkeys). `displays` describes every monitor's strip; exactly one
+has `"active": true`. Fields are additive: clients that ignore `displays` keep
+working, and it is absent while dormant.
 
 Columns are identified by `app` + `title` (there is no per-column PID). Clients
 that need to focus a specific window should set a unique, stable window title and

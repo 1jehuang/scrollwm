@@ -275,6 +275,27 @@ and every keybinding.
 The menu bar icon is a live mini-map: columns are windows, the outline is
 your viewport, blue is the focused window.
 
+### Multiple monitors
+
+ScrollWM runs an independent scrolling strip per monitor (`layout.multiDisplay`),
+each with its own columns, vertical workspaces, and viewport. The seams are
+handled for you:
+
+- **Focus follows display.** Click a window (or Cmd-Tab) on another monitor and
+  navigation/width/move/workspace hotkeys switch to that monitor's strip
+  automatically.
+- **Indicator on every monitor.** macOS only draws the menu bar on one display,
+  so on the others ScrollWM floats a small mini-map of that monitor's strip at
+  the top-center (the active monitor's is highlighted). Toggle with
+  `menuBar.showExternalDisplayIndicator`. See it now:
+  `scrollwm`'s dev binary has `WindowLab indicatorprobe`.
+- **No background windows.** While managing, a window that opens on a managed
+  monitor is tiled onto that monitor's strip, so nothing is left floating behind
+  it (`layout.autoTileNewWindows`, default on; dialogs/panels stay floating).
+  Release restores everything; dormant never touches anything.
+- **Parking stays on its own display**, and unplug/replug migrates the strip to a
+  surviving monitor without stranding windows.
+
 ## Architecture
 
 ```
