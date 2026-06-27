@@ -357,6 +357,14 @@ case "displaymovetest":
     // controller's per-display strips against the sim. Never touches a real
     // window/monitor/keyboard.
     runHeadlessDisplayMoveTest()
+case "autotiletest":
+    // Headless test of the no-background-windows guarantee
+    // (layout.autoTileNewWindows): a standard window left floating while
+    // managing is auto-tiled onto the strip; a dialog/panel is not; Release
+    // restores everything; the flag-off path leaves floats alone. Drives the
+    // REAL controller + lifecycle monitor against the sim; never touches a real
+    // window.
+    runHeadlessAutoTileTest()
 case "clamshelltest":
     // Headless CLAMSHELL / equal-display repro: drives the REAL controller's
     // settled-display-change path through a laptop-lid-close transition (built-in

@@ -80,6 +80,17 @@ final class LifecycleMonitor {
     /// bar / status item can refresh.
     var onFloatingChange: (() -> Void)?
 
+    /// When true (default), windows that appear on this strip's display + Space
+    /// are AUTO-TILED onto the strip (the standard PaperWM behavior, and the
+    /// "no un-arranged window left in the background" guarantee). When false, a
+    /// newly-opened / newly-revealed window is left floating instead of being
+    /// pulled onto the strip; the user tiles it on demand from the menu. Pushed
+    /// from `config.layout.autoTileNewWindows`. Only the ADD path is gated:
+    /// removals, eviction, size-reconcile and fullscreen suspension of EXISTING
+    /// columns always run, so managed windows still behave correctly. Dialogs /
+    /// panels are never adopted regardless (they are not standard windows).
+    var autoTileEnabled = true
+
     init(engine: TeleportEngine, interval: TimeInterval = 2.0) {
         self.engine = engine
         self.interval = interval
@@ -325,7 +336,14 @@ final class LifecycleMonitor {
         let addAdoptable = addExisting.filter { candidate in
             standardAdoptable.contains { CFEqual($0.element, candidate.element) }
         }
-        let newWindows = engine.filterByAdoptScope(addAdoptable) { $0.frame }
+        // Auto-tile gate: when disabled, a window that appears un-managed is left
+        // FLOATING instead of being pulled onto the strip (the user tiles it on
+        // demand). Default on = the standard "no un-arranged window in the
+        // background" behavior. Removals/eviction/size-reconcile of EXISTING
+        // columns below are unaffected, so managed windows still behave.
+        let newWindows = autoTileEnabled
+            ? engine.filterByAdoptScope(addAdoptable) { $0.frame }
+            : []
         var lastInsertedIndex: Int?
         var insertedIndices: [Int] = []
         if !newWindows.isEmpty {
@@ -422,6 +440,10 @@ final class LifecycleMonitor {
     /// ambiguous it simply does nothing and lets the poll converge.
     private func fastAdopt(pids: [pid_t], attempt: Int = 0) {
         guard Self.sessionIsActive() else { return }
+        // Auto-tile gate: when disabled, do not pull newly-opened windows onto
+        // the strip from the fast path either - they stay floating until the
+        // user tiles them. (The poll path's add is gated identically.)
+        guard autoTileEnabled else { return }
         if ProcessInfo.processInfo.environment["SCROLLWM_TRACE_ADOPT"] != nil {
             FileHandle.standardError.write("[trace] fastAdopt ENTER pids=\(pids) attempt=\(attempt) enumerating=\(enumerating)\n".data(using: .utf8)!)
         }

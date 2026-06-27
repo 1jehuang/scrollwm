@@ -804,6 +804,13 @@ final class ScrollWMController: NSObject {
             // the next menu build reflect reality.
             self?.menuBar.refresh()
         }
+        // No-background-windows guarantee: when on (default), the monitor's add
+        // path auto-tiles any window that appears on THIS strip's display + Space
+        // so nothing is left un-arranged behind the strip. Off leaves new windows
+        // floating until the user tiles them. Per-display strips (multiDisplay)
+        // give EVERY monitor its own auto-adopting strip, so this guarantee holds
+        // on external monitors too, not just the strip's own display.
+        monitor.autoTileEnabled = config.layout.autoTileNewWindows
         monitor.start()
         strip.lifecycle = monitor
     }
@@ -1369,8 +1376,27 @@ final class ScrollWMController: NSObject {
     // MARK: - Debug accessors (for the e2e keybinding test)
 
     var debugSlotCount: Int { engine.slots.count }
-    var debugSlotTitles: [String] { engine.slots.map { $0.window.title } }
     var debugFocusIndex: Int { engine.focusIndex }
+    var debugSlotTitles: [String] { engine.slots.map { $0.window.title } }
+    /// Count of current-Space windows the active strip is NOT tiling (the
+    /// "floating" set). Headless-test introspection for the auto-tile invariant.
+    var debugFloatingCount: Int { floatingWindows.count }
+    /// Force a synchronous resync of the active strip's lifecycle monitor (the
+    /// 2s safety-net poll, but now). Headless tests use it to drive the
+    /// floating-recompute + auto-tile sweep deterministically instead of waiting
+    /// on the timer. No-op while dormant.
+    func debugTriggerResync() { lifecycle?.resync() }
+    /// Widen/replace the active strip lifecycle monitor's PID filter at runtime.
+    /// Headless tests use it to bring a stray sim window (opened after arrange,
+    /// with a different PID) into the monitor's scope so the auto-tile sweep can
+    /// see it. No-op while dormant.
+    func debugSetLifecyclePIDFilter(_ pids: Set<pid_t>?) { lifecycle?.pidFilter = pids }
+    /// Toggle the active strip's auto-tile flag live (headless test of the
+    /// flag-off path). Mirrors what `reloadConfig` would push from config.
+    func debugSetAutoTile(_ enabled: Bool) {
+        config.layout.autoTileNewWindows = enabled
+        for strip in strips { strip.lifecycle?.autoTileEnabled = enabled }
+    }
     /// Titles of the columns the engine has SUSPENDED (native fullscreen or
     /// diverged to another Space): kept in the strip but excluded from layout +
     /// every AX write. For the Space/fullscreen integration tests.

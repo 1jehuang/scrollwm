@@ -274,6 +274,47 @@ final class MenuBarStripView: NSView {
     /// Bold monospaced-digit font for the workspace-number badge.
     private static let badgeFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .bold)
 
+    // MARK: - Multi-display overview
+
+    /// One physical display's strip, as the menu-bar overview consumes it. When
+    /// the user runs a per-monitor strip on more than one display, the icon draws
+    /// EVERY display's strip side-by-side (the focused/active one highlighted)
+    /// instead of only the monitor the keyboard is currently on.
+    struct DisplayPanelState {
+        /// 1-based display number, drawn as a small badge on each panel.
+        let index: Int
+        /// That display's live strip (its active vertical workspace's columns).
+        let state: TeleportEngine.StripState
+        /// Whether that display's strip is actively managing windows.
+        let managing: Bool
+        /// Whether this is the strip global hotkeys act on (focus follows display).
+        let isActive: Bool
+    }
+
+    /// The displays drawn in the side-by-side overview. Empty in the ordinary
+    /// single-display case, where the rich animated single-strip path is used
+    /// instead (see `apply`). Populated only by `applyDisplays` with >1 display.
+    private var displayPanels: [DisplayPanelState] = []
+    /// True while the icon is drawing the multi-display overview rather than the
+    /// single animated strip.
+    private var multiDisplay: Bool { displayPanels.count > 1 }
+
+    /// Smallest map width (points) one display's strip ever shrinks to in the
+    /// overview, so an empty/one-window display still reads as a panel.
+    private let multiPanelMinWidth: CGFloat = 22
+    /// Largest map width a single display's strip grows to in the overview,
+    /// before its own strip compresses to fit (keeps any one busy monitor from
+    /// eating the whole icon).
+    private let multiPanelMaxWidth: CGFloat = 130
+    /// Left-gutter width per panel for the display-number badge.
+    private let multiBadgeGutter: CGFloat = 11
+    /// Width reserved for the hairline divider drawn between adjacent panels.
+    private let multiDivider: CGFloat = 8
+    /// How much WIDER than `maxContentWidth` the icon may grow to host the
+    /// side-by-side multi-display overview. The host adds this to its length
+    /// ceiling so several displays fit without being clipped.
+    static let maxMultiDisplayExtraWidth: CGFloat = 260
+
     /// Called when the icon's desired CONTENT width changes (points, excluding
     /// the host's horizontal padding). The host resizes its status item to fit.
     var onDesiredContentWidthChange: ((CGFloat) -> Void)?
