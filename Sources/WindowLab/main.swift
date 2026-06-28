@@ -374,6 +374,18 @@ case "autotiletest":
     // REAL controller + lifecycle monitor against the sim; never touches a real
     // window.
     runHeadlessAutoTileTest()
+case "perspacetest":
+    // Headless per-NATIVE-Space strips test (Model B): each macOS Desktop gets
+    // its own strip; switching Spaces re-points the live strip, a window opened
+    // on any Space tiles there (no cross-Space freeze), and returning restores
+    // the layout. Drives the REAL controller + monitor + engine + the read-only
+    // Space-id probe against the sim. Never touches a real window/Space/keyboard.
+    runHeadlessPerSpaceStripsTest()
+case "perspacefallbacktest":
+    // Headless graceful-degradation test: with the read-only Space-id probe
+    // UNAVAILABLE, the per-Space feature silently falls back to the single-strip
+    // model (never crashes, still arranges). Always headless.
+    runHeadlessPerSpaceFallbackTest()
 case "clamshelltest":
     // Headless CLAMSHELL / equal-display repro: drives the REAL controller's
     // settled-display-change path through a laptop-lid-close transition (built-in
