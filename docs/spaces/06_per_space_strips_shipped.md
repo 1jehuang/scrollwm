@@ -55,13 +55,33 @@ stable Space identity that `02`/`README` said it would require.
   returning restores Space 1 intact, Release ends tracking.
 - `perspacefallbacktest` (4 checks): probe unavailable → arrange still works,
   engine stays single-strip, never crashes.
+- `multidisplayperspacetest` (13 checks): multi-display "Displays have separate
+  Spaces" — switching display 1's Desktop re-points ONLY display 1's strip, a
+  window opened there tiles on it, display 0 stays constant, round-trips restore.
+
+## Multi-display ("Displays have separate Spaces") — SHIPPED
+
+`SpaceProbe.currentSpaceID(forDisplay:)` resolves a `CGDirectDisplayID` to its
+CGS "Display Identifier" (the literal `"Main"` for the main display, else the
+display UUID string via `CGDisplayCreateUUIDFromDisplayID`) and reads THAT
+display's `Current Space`. Each strip's `LifecycleMonitor` carries its
+`stripDisplayID` and keys per-Space tracking on its own monitor, so switching one
+monitor's Desktop re-points only that monitor's strip. `SimWindowWorld` models a
+separate active Space per display (`registerDisplays` + `setActiveSpace(forDisplay:)`)
+and filters the on-screen list by the active Space of each window's own display,
+so the whole multi-display path is headless-testable.
+
+## Hermeticity note
+
+A headless `ScrollWMController` still loads the user's real on-disk config, so the
+controller forces `perSpaceStrips` OFF whenever a test backend is installed
+(`AXSource.backend != nil`); the per-Space suites opt in via
+`debugEnablePerSpaceStrips()`. This keeps suites like `fullscreentest` (which
+assert the single-strip strand/freeze behavior) independent of whether the
+developer enabled the feature in their own config.
 
 ## Not yet (future)
 
-- Per-display Space keys for multi-strip setups under "Displays have separate
-  Spaces" (read each `CGSCopyManagedDisplaySpaces` entry by display UUID; today
-  we key on the MAIN display's Space, which is correct for the single live strip
-  we bind).
 - Space-aware `RestoreStore` (entries still carry no Space tag; `allSpacesManagedSlots`
   makes them all persist, but recover() does not yet defer off-current-Space
   windows — `02` §3).
