@@ -1890,6 +1890,11 @@ final class ScrollWMController: NSObject {
     // MARK: - Debug accessors (for the e2e keybinding test)
 
     var debugSlotCount: Int { engine.slots.count }
+    /// Total managed columns across EVERY strip (one per monitor in multiDisplay
+    /// mode). `debugSlotCount` reports only the ACTIVE strip, which under-counts
+    /// when other monitors also manage windows, so user-facing CLI replies that
+    /// mean "everything I just arranged" use this cross-strip total instead.
+    var totalSlotCount: Int { strips.reduce(0) { $0 + $1.engine.slots.count } }
     var debugFocusIndex: Int { engine.focusIndex }
     var debugSlotTitles: [String] { engine.slots.map { $0.window.title } }
     /// Count of current-Space windows the active strip is NOT tiling (the

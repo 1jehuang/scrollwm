@@ -75,10 +75,10 @@ extension ScrollWMController {
                 let n = setAllWidthsFraction(widthArg)
                 let pct = Int((widthArg * 100).rounded())
                 let verb = wasManaging ? "re-arranged" : "arranged"
-                return "ok: \(verb) \(debugSlotCount) windows, set \(n) to \(pct)% width" + revealSuffix
+                return "ok: \(verb) \(totalSlotCount) windows, set \(n) to \(pct)% width" + revealSuffix
             }
-            if wasManaging { return "ok: re-arranged \(debugSlotCount) windows" + revealSuffix }
-            return "ok: arranged \(debugSlotCount) windows" + revealSuffix
+            if wasManaging { return "ok: re-arranged \(totalSlotCount) windows" + revealSuffix }
+            return "ok: arranged \(totalSlotCount) windows" + revealSuffix
 
         case "release":
             if !isManaging { return "ok: already released (dormant)" }
@@ -87,7 +87,7 @@ extension ScrollWMController {
 
         case "toggle":
             toggle()
-            return isManaging ? "ok: arranged \(debugSlotCount) windows" : "ok: released"
+            return isManaging ? "ok: arranged \(totalSlotCount) windows" : "ok: released"
 
         case "focus":
             guard isManaging else { return "error: not managing; run `scrollwm arrange` first" }
