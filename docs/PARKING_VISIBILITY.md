@@ -51,21 +51,33 @@ peek lane just stopped on-screen columns from covering it.
    up. Too disruptive. Reject as the default.
 
 2. **Cover the sliver via z-order + edge-to-edge layout** — set `peekInset = 0`
-   so on-screen columns span to the screen edge, and raise on-screen columns
-   above parked ones each teleport (AXRaise, no focus theft). Zero new chrome,
-   cheap. Hides the sliver **whenever an on-screen column reaches that edge**
-   (the common case: content fills the viewport). Gap case (few columns, a
-   narrow focused column floating with empty viewport on a side that also has a
-   parked column) can still expose a sliver.
+   and raise on-screen columns above parked ones each teleport. **MEASURED
+   UNRELIABLE — rejected.** macOS z-orders windows *per app*, and `NSApp.activate`
+   is all-or-nothing. ScrollWM MUST activate the focused column's app to route
+   keyboard focus, which raises *every* window of that app — including any PARKED
+   ones — above other apps' on-screen columns. So in the common "several windows
+   of one app" case, focusing one column pops the others' parked slivers in front
+   of the covering columns. Verified with a 2-app experiment: after the parked
+   app is activated, its sliver sits in front of the other app's edge column.
+   AXRaise has no "lower" counterpart, so we cannot push one app's window below
+   another's reliably.
 
-3. **Owned opaque edge scrim** — ScrollWM draws a thin borderless window over the
-   sliver region on each side that has parked columns. Robust regardless of
-   viewport gaps (always sits exactly over the sliver). Cost: a visible solid bar
-   at the edge; can be styled as an intentional "more windows that way"
-   affordance instead of a confusing window sliver.
+3. **Owned opaque edge scrim** — ScrollWM draws a thin borderless `.floating`
+   window IT owns over the sliver region on each side that has parked columns.
+   **MEASURED RELIABLE.** A `.floating`-level borderless window composites ABOVE
+   every normal app window (including a just-activated parked app), and
+   `orderFrontRegardless` from the long-running accessory agent does NOT change
+   the frontmost app (no focus theft). Verified: `frontAtRightEdge=SCRIM` across
+   samples including right after the parked app re-activates, with the real app
+   staying frontmost. Cost: a solid bar at the very edge; style it as an
+   intentional "more windows that way" affordance (subtle gradient/handle), which
+   turns the OS artifact into a deliberate signal. Preserves the on-screen-list
+   invariant (parked windows still report on-screen), so `ResyncPlanner` is
+   unaffected.
 
-### Recommended
-Layered: **(2) as the default** (no chrome, kills the confusing sliver in the
-normal case) + **(3) as an opt-in/fallback** for a hard "never, ever a pixel"
-guarantee. Both preserve the on-screen-list invariant so `ResyncPlanner` is
-unaffected. Minimize stays rejected for the scroll path.
+### Recommended (decided)
+**Ship (3): the owned edge scrim + `peekInset = 0`.** This is the only approach
+that guarantees the user never sees a confusing window sliver, in every layout,
+without minimize's animation/Dock cost. (2) is rejected on measured evidence;
+minimize stays rejected for the scroll path. The scrim is shown per-side ONLY
+when at least one column is parked off that side and reaches the display edge.
