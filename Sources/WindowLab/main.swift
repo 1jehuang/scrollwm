@@ -272,6 +272,16 @@ case "opstest":
     args.contains("--live") ? runStripOpsIntegrationTest() : runHeadlessOpsTest()
 case "spawnlatency":
     args.contains("--live") ? runSpawnLatencyTest() : runHeadlessSpawnLatencyTest()
+case "coldstartbench":
+    // Headless A/B benchmark of COLD-START adoption latency: how fast a
+    // brand-NEW app's first window lands in its strip slot, with the launch
+    // fast path OFF (baseline: launch-resync/poll) vs ON (the optimization).
+    runColdStartBench(args: Array(args))
+case "coldstarttest":
+    // Headless regression guard for the cold-start fast path: a brand-NEW app's
+    // FIRST window is adopted fast (and lands right of focus) with the launch
+    // fast path on, and is markedly slower with it off. Always headless.
+    runHeadlessColdStartTest()
 case "spawnvalidate":
     // Headless property validator: EVERY spawn (across a named edge-case matrix
     // + randomized fuzz) must land in the column right of focus, at its exact
@@ -366,6 +376,13 @@ case "displaymovetest":
     // controller's per-display strips against the sim. Never touches a real
     // window/monitor/keyboard.
     runHeadlessDisplayMoveTest()
+case "statusicontest":
+    // Headless test that the menu-bar status icon (live mini-map) + floating
+    // per-display indicators refresh on EVERY user-visible event: focus/width/
+    // move/close/workspace/resync/floating (G3), a native macOS Space switch
+    // (G1), and a monitor hotplug/rearrange/resolution change (G2). Drives the
+    // REAL controller against the sim; never touches a real window/monitor/Space.
+    runHeadlessStatusIconTest()
 case "autotiletest":
     // Headless test of the no-background-windows guarantee
     // (layout.autoTileNewWindows): a standard window left floating while
@@ -485,6 +502,10 @@ func scrollwmHelpText() -> String {
                                check GitHub Releases for a newer ScrollWM
       WindowLab fuzz | fuzzmodel | fuzzctrl | fuzzdisp | fuzzconc | statespace
                                headless property/state-space checkers (see source)
+      WindowLab coldstartbench [trials]
+                               headless A/B latency: a brand-new app's first
+                               window landing in the strip, launch fast path
+                               OFF (baseline) vs ON (optimized)
       WindowLab sandbox [n] [--display M]
                                drive the REAL controller on n disposable windows
                                it spawns (your real windows are untouched)
