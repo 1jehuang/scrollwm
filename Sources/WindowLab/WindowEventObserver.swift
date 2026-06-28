@@ -40,6 +40,14 @@ final class WindowEventObserver {
     /// Called (coalesced) when a UI element was destroyed, so the monitor can
     /// reconcile removals promptly instead of waiting for the poll.
     private let onWindowDestroyed: () -> Void
+    /// Called the instant a brand-NEW app (process) launches, BEFORE its
+    /// `kAXWindowCreated` observer could ever have been attached. This is the
+    /// cold-start fast path: a new process's first window never fires our
+    /// per-app create observer (it does not exist yet at window-creation time),
+    /// so without this the first window waited for the slow launch-resync / poll.
+    /// The monitor responds by kicking off a bounded progressive fast-adopt for
+    /// that pid, landing the first window as fast as a warm one.
+    private let onAppLaunched: (pid_t) -> Void
     private var coalesceScheduled = false
     private var destroyScheduled = false
     /// Firing PIDs accumulated for the next coalesced delivery, kept in fire
@@ -74,10 +82,12 @@ final class WindowEventObserver {
 
     init(coalesceDelay: TimeInterval = 0.008,
          onWindowCreated: @escaping ([pid_t]) -> Void,
-         onWindowDestroyed: @escaping () -> Void) {
+         onWindowDestroyed: @escaping () -> Void,
+         onAppLaunched: @escaping (pid_t) -> Void = { _ in }) {
         self.coalesceDelay = coalesceDelay
         self.onWindowCreated = onWindowCreated
         self.onWindowDestroyed = onWindowDestroyed
+        self.onAppLaunched = onAppLaunched
     }
 
     func start() {
@@ -103,6 +113,18 @@ final class WindowEventObserver {
                 },
                 destroyed: { [weak self] in
                     DispatchQueue.main.async { self?.windowMaybeDestroyed() }
+                },
+                launched: { [weak self] pid in
+                    guard let self else { return }
+                    DispatchQueue.main.async {
+                        // The cold-start launch stand-in: a brand-new process's
+                        // FIRST window never fired a per-app create observer
+                        // (none was attached yet), exactly like real macOS. Route
+                        // it through the launch fast path, honoring an explicit
+                        // pid filter (sandbox/test mode).
+                        if let f = self.pidFilter, !f.contains(pid) { return }
+                        self.onAppLaunched(pid)
+                    }
                 }
             )
             return
@@ -120,10 +142,24 @@ final class WindowEventObserver {
             guard let self,
                   let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             else { return }
-            // A launching app needs a beat before its AX element is ready.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                self?.register(app: app)
-            }
+            let pid = app.processIdentifier
+            if let f = self.pidFilter, !f.contains(pid) { return }
+            // COLD-START FAST PATH. A brand-new app's very FIRST window is created
+            // before we could ever attach its `kAXWindowCreated` observer, so that
+            // first window never fires the warm create path - it used to wait for
+            // the slow launch-resync / 2s poll (the visible "new app floats, then
+            // snaps in late"). Two fixes here:
+            //  1. Register the AX observer IMMEDIATELY (not after a flat 0.4s), so
+            //     any SUBSEQUENT window of this app rides the warm fast path. The
+            //     app element exists the instant the process is running; adding a
+            //     notification to a not-yet-ready element simply no-ops and the
+            //     re-register below (when its first window adopts) covers it.
+            //  2. Drive a bounded progressive fast-adopt for this pid right now,
+            //     which polls AX every few ms until the first window is published
+            //     and adopts it - landing a cold-start window as fast as a warm
+            //     one instead of paying the launch-resync latency.
+            self.register(app: app)
+            self.onAppLaunched(pid)
         })
         workspaceObservers.append(center.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main

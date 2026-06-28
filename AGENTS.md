@@ -48,6 +48,9 @@ anytime, even while you work. Pass `--live` to exercise the old real-window path
 .build/debug/WindowLab e2etest        # real controller + synthetic chords (headless; --live = real keys)
 .build/debug/WindowLab revealtest     # "Arrange All" reveals + adopts hidden/minimized (headless; --live)
 .build/debug/WindowLab spawnlatency   # new-window adoption latency (headless; --live = real AX)
+.build/debug/WindowLab coldstarttest  # cold-start (brand-new app's first window) adoption latency (headless)
+.build/debug/WindowLab coldstartbench [trials]
+                                      # headless A/B: cold-start latency, launch fast path OFF vs ON
 .build/debug/WindowLab displaytest    # multi-display placement/parking/rebind (headless 2-display; --live)
 .build/debug/WindowLab sandbox [n] [--display M]
                                       # live, interactive, isolated to spawned windows

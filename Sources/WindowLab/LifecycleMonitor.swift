@@ -56,7 +56,22 @@ final class LifecycleMonitor {
     /// through to the poll harmlessly.
     private let fastAdoptRetryDelays: [TimeInterval] =
         [0.004, 0.008, 0.012, 0.02, 0.03, 0.04, 0.06, 0.08, 0.1]
-    private var maxFastAdoptRetries: Int { fastAdoptRetryDelays.count }
+
+    /// COLD-START retry cadence, used by the app-launch fast path (`onAppLaunched`
+    /// -> `fastAdopt(pids:coldStart:true)`). A brand-new process's FIRST window
+    /// never fired a per-app create observer (none was attached at creation), so
+    /// the launch notification is our only early signal - but the window may not
+    /// be readable/published for noticeably longer than the warm publish race
+    /// (the process is still spinning up: code-sign check, framework load, first
+    /// frame). The warm schedule (~0.36s) can lapse before a cold window appears,
+    /// dumping it on the 2s poll. This schedule keeps the same aggressive head
+    /// (adopt the instant the window lands, so a fast app is still ~instant) but
+    /// extends the tail to ~1.8s total - comfortably covering a slow launch while
+    /// staying under the safety-net poll, so a genuinely foreign-Space window
+    /// still falls through harmlessly.
+    private let coldStartRetryDelays: [TimeInterval] =
+        [0.004, 0.008, 0.012, 0.02, 0.03, 0.04, 0.06, 0.08, 0.1,
+         0.12, 0.15, 0.2, 0.25, 0.3, 0.4]
 
     /// Restrict adoption to these PIDs (test mode). Nil = all regular apps.
     var pidFilter: Set<pid_t>? {
@@ -79,6 +94,13 @@ final class LifecycleMonitor {
     /// Fired (main thread) whenever the floating-window set changes, so the menu
     /// bar / status item can refresh.
     var onFloatingChange: (() -> Void)?
+
+    /// BENCHMARK-ONLY: when false, the app-launch fast path (`onAppLaunched`) is
+    /// suppressed, so a brand-new app's first window is adopted ONLY by the
+    /// slower launch-resync / safety-net poll - reproducing the pre-optimization
+    /// cold-start behavior for an A/B latency comparison. Always true in
+    /// production; the `coldstartbench` harness flips it to measure the baseline.
+    var coldStartFastPathEnabled = true
 
     /// When true (default), windows that appear on this strip's display + Space
     /// are AUTO-TILED onto the strip (the standard PaperWM behavior, and the
@@ -103,7 +125,11 @@ final class LifecycleMonitor {
         // (cheap, off-main) resync so a closed window's gap closes promptly.
         let events = WindowEventObserver(
             onWindowCreated: { [weak self] pids in self?.fastAdopt(pids: pids) },
-            onWindowDestroyed: { [weak self] in self?.resync() }
+            onWindowDestroyed: { [weak self] in self?.resync() },
+            onAppLaunched: { [weak self] pid in
+                guard let self, self.coldStartFastPathEnabled else { return }
+                self.fastAdopt(pids: [pid], coldStart: true)
+            }
         )
         events.pidFilter = pidFilter
         events.start()
@@ -438,7 +464,7 @@ final class LifecycleMonitor {
     /// the current Space AND the strip itself is currently on the current Space
     /// (so we never mix windows from different Spaces). If anything is
     /// ambiguous it simply does nothing and lets the poll converge.
-    private func fastAdopt(pids: [pid_t], attempt: Int = 0) {
+    private func fastAdopt(pids: [pid_t], attempt: Int = 0, coldStart: Bool = false) {
         guard Self.sessionIsActive() else { return }
         // Auto-tile gate: when disabled, do not pull newly-opened windows onto
         // the strip from the fast path either - they stay floating until the
@@ -472,7 +498,7 @@ final class LifecycleMonitor {
             if ProcessInfo.processInfo.environment["SCROLLWM_TRACE_ADOPT"] != nil {
                 FileHandle.standardError.write("[trace] fastAdopt unmanaged EMPTY attempt=\(attempt) appWindows=\(appWindows.count) targets=\(targets)\n".data(using: .utf8)!)
             }
-            scheduleFastAdoptRetry(pids: pids, attempt: attempt)
+            scheduleFastAdoptRetry(pids: pids, attempt: attempt, coldStart: coldStart)
             return
         }
 
@@ -506,7 +532,7 @@ final class LifecycleMonitor {
             // so retry a bounded number of times: a real same-Space window shows
             // up within a few frames, while a foreign-Space window simply keeps
             // missing and is correctly left to the poll once the retries lapse.
-            scheduleFastAdoptRetry(pids: pids, attempt: attempt)
+            scheduleFastAdoptRetry(pids: pids, attempt: attempt, coldStart: coldStart)
             return
         }
 
@@ -557,7 +583,7 @@ final class LifecycleMonitor {
                     && !engine.isManaged($0.element)
             }
         }
-        if !pending.isEmpty { scheduleFastAdoptRetry(pids: pending, attempt: attempt) }
+        if !pending.isEmpty { scheduleFastAdoptRetry(pids: pending, attempt: attempt, coldStart: coldStart) }
     }
 
     /// Re-run `fastAdopt` for the same firing pids after a short delay, up to
@@ -566,15 +592,18 @@ final class LifecycleMonitor {
     /// frames instead of waiting for the 2s safety-net poll. A window that keeps
     /// missing (genuinely on another Space / display) exhausts the retries
     /// harmlessly and is left to the poll, preserving the Space-freeze contract.
-    private func scheduleFastAdoptRetry(pids: [pid_t], attempt: Int) {
-        guard attempt < maxFastAdoptRetries else { return }
+    private func scheduleFastAdoptRetry(pids: [pid_t], attempt: Int, coldStart: Bool = false) {
+        // Cold-start launches use a longer-tailed schedule (the first window of a
+        // spinning-up process can take longer to publish than a warm window).
+        let delays = coldStart ? coldStartRetryDelays : fastAdoptRetryDelays
+        guard attempt < delays.count else { return }
         // Progressive back-off: tight probes first (adopt the instant the window
         // is published, ~1-2 frames in the common case), widening toward a coarse
         // interval for slow apps. `attempt` is the count of retries already done,
         // so it indexes the delay to wait before the NEXT attempt.
-        let delay = fastAdoptRetryDelays[min(attempt, fastAdoptRetryDelays.count - 1)]
+        let delay = delays[min(attempt, delays.count - 1)]
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.fastAdopt(pids: pids, attempt: attempt + 1)
+            self?.fastAdopt(pids: pids, attempt: attempt + 1, coldStart: coldStart)
         }
     }
 

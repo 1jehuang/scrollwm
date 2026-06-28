@@ -142,6 +142,23 @@ final class SimWindowWorld: WindowBackend {
     /// window created/destroyed AFTER subscription drives the fast-adopt path.
     private var onCreated: ((Set<pid_t>) -> Void)?
     private var onDestroyed: (() -> Void)?
+    /// App-LAUNCH sink: fired the first time a window is created for a pid the
+    /// observer has never seen, modeling `NSWorkspace.didLaunchApplication` for a
+    /// brand-new process. Only used when `coldStartModel` is on (see below).
+    private var onLaunched: ((pid_t) -> Void)?
+
+    /// When true, the FIRST `notify:true` window of a never-before-seen pid fires
+    /// the LAUNCH sink (`onLaunched`) instead of the create sink (`onCreated`),
+    /// faithfully modeling a brand-NEW app: in real macOS the `kAXWindowCreated`
+    /// observer for that process does not exist yet (it is registered off the
+    /// `didLaunchApplication` notification), so the window's create event is NOT
+    /// delivered the way a window opened in an already-observed app would be.
+    /// Subsequent windows of that now-known pid fire the create sink (the warm
+    /// path). Off by default, so every existing suite keeps its exact behavior
+    /// (every `notify:true` window fires `onCreated`).
+    var coldStartModel = false
+    /// Pids the sim has already treated as launched under `coldStartModel`.
+    private var coldStartLaunchedPIDs: Set<pid_t> = []
 
     // MARK: - Test-facing mutation
 
@@ -184,10 +201,23 @@ final class SimWindowWorld: WindowBackend {
             win.cgPublishAt = Date().timeIntervalSinceReferenceDate + cgPublishDelay
         }
         wins.append(win)
-        let sink = onCreated
+        // Cold-start modeling: a brand-NEW process's first window is delivered to
+        // the LAUNCH sink (the `didLaunchApplication` stand-in), not the create
+        // sink, because in real macOS the `kAXWindowCreated` observer for that pid
+        // is not registered yet. Any later window of that now-known pid is a warm
+        // create. With `coldStartModel` off (default) EVERY notify window fires
+        // the create sink, so existing suites are byte-for-byte unchanged.
+        let isColdStartLaunch = coldStartModel && !coldStartLaunchedPIDs.contains(pid)
+        if isColdStartLaunch { coldStartLaunchedPIDs.insert(pid) }
+        let createdSink = onCreated
+        let launchedSink = onLaunched
         lock.unlock()
-        if notify, let sink {
-            DispatchQueue.main.async { sink([pid]) }
+        if notify {
+            if isColdStartLaunch, let launchedSink {
+                DispatchQueue.main.async { launchedSink(pid) }
+            } else if let createdSink {
+                DispatchQueue.main.async { createdSink([pid]) }
+            }
         }
         return win.element
     }
@@ -231,6 +261,21 @@ final class SimWindowWorld: WindowBackend {
 
     /// The native Space the user is currently VIEWING (read-only). Defaults to 1.
     var activeSpace: Int { lock.lock(); defer { lock.unlock() }; return activeSpaceID }
+
+    /// `WindowBackend` Space-id probe: the modeled active Space, so the per-Space
+    /// strip logic runs against the sim exactly as it would against the live CGS
+    /// query. Set `spaceIDProbeUnavailable` to model a machine/OS where the
+    /// private symbol is missing (the controller must then stay single-strip).
+    func currentSpaceID() -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return spaceIDProbeUnavailable ? nil : activeSpaceID
+    }
+
+    /// Test lever: when true, `currentSpaceID()` returns nil, modeling a host
+    /// where the read-only CGS Space-id symbol could not be resolved. Lets a
+    /// headless test prove the graceful single-strip fallback.
+    var spaceIDProbeUnavailable = false
+
 
     /// The native Space a window currently lives on, or nil if unknown.
     func nativeSpace(of element: AXUIElement) -> Int? {
@@ -316,11 +361,12 @@ final class SimWindowWorld: WindowBackend {
     // MARK: - Event subscription (used by WindowEventObserver headless path)
 
     func subscribeEvents(created: @escaping (Set<pid_t>) -> Void,
-                         destroyed: @escaping () -> Void) {
-        lock.lock(); onCreated = created; onDestroyed = destroyed; lock.unlock()
+                         destroyed: @escaping () -> Void,
+                         launched: ((pid_t) -> Void)? = nil) {
+        lock.lock(); onCreated = created; onDestroyed = destroyed; onLaunched = launched; lock.unlock()
     }
     func unsubscribeEvents() {
-        lock.lock(); onCreated = nil; onDestroyed = nil; lock.unlock()
+        lock.lock(); onCreated = nil; onDestroyed = nil; onLaunched = nil; lock.unlock()
     }
 
     // MARK: - WindowBackend (read)
