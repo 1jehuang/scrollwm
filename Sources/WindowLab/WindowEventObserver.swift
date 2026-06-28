@@ -34,11 +34,23 @@ final class WindowEventObserver {
     /// it per-pid means a retry only re-adds the MISSING notifications, never
     /// double-registering one that already took.
     private var pendingNotes: [pid_t: [String]] = [:]
-    /// The notifications we attach to every observed app element: a created
-    /// window (warm fast-adopt) and any element teardown (fast removal).
+    /// The notifications we attach to every observed app element. Each gives the
+    /// strip a fast, event-driven reconcile instead of waiting for the 2s poll:
+    ///   - created window   -> warm fast-adopt (a new column),
+    ///   - element destroyed -> fast removal (a closed window's gap closes),
+    ///   - de/miniaturized   -> a managed window left/returned from the Dock, so
+    ///     its column re-fits (and the menu mini-map updates) immediately,
+    ///   - app shown/hidden  -> Cmd-H and its undo re-fit the affected columns at
+    ///     once instead of lingering a poll interval.
+    /// All but `created` route through the coalesced general resync, which no-ops
+    /// when nothing actually changed, so the extra notifications are cheap.
     private static let observedNotifications: [String] = [
         kAXWindowCreatedNotification as String,
         kAXUIElementDestroyedNotification as String,
+        kAXWindowMiniaturizedNotification as String,
+        kAXWindowDeminiaturizedNotification as String,
+        kAXApplicationShownNotification as String,
+        kAXApplicationHiddenNotification as String,
     ]
     private var workspaceObservers: [NSObjectProtocol] = []
     /// Called with the PIDs that fired a window-created event since the last

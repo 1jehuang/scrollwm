@@ -313,6 +313,10 @@ case "coldstartflashheadless":
     // visible at its native spot before we move it into the strip. The objective
     // metric the cold-start retry-cadence fix is optimized against.
     runHeadlessColdStartFlashBench()
+case "adoptlatency":
+    // AUDIT: which re-adoption paths (warm new window, un-minimize, exit
+    // fullscreen, un-hide app, Space switch) are event-fast vs poll-slow.
+    runAdoptionLatencyAudit()
 case "spawnvalidate":
     // Headless property validator: EVERY spawn (across a named edge-case matrix
     // + randomized fuzz) must land in the column right of focus, at its exact
