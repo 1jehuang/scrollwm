@@ -2,27 +2,40 @@ import Foundation
 import ApplicationServices
 import AppKit
 
-/// Reveal windows that are hidden from the current Space so "Arrange All
+/// Reveal windows that are hidden from view so `arrange` / "Arrange All
 /// Windows" can adopt EVERYTHING, not just what is already on-screen.
 ///
-/// Two kinds of "hidden" are handled, both of which bring the window back onto
-/// the user's CURRENT Space (so the Space-safety contract in `arrange`/`resync`
-/// is preserved - we never reach into another Space and teleport the user):
+/// Two kinds of "hidden" are handled:
 ///
 ///   1. App hidden (Cmd+H): every window of the app is off-screen. We `unhide()`
 ///      the running application.
 ///   2. Window minimized (to the Dock): the AX `kAXMinimizedAttribute` is true.
-///      We clear it, which de-miniaturizes the window onto the current Space.
+///      We clear it, which de-miniaturizes the window.
 ///
 /// The reveal is a precondition step: after the windows materialize on-screen,
 /// the ordinary (Space-aware) adopt path in `arrange`/`resync` picks them up
-/// with no special-casing - they are simply no longer hidden or minimized.
+/// with no special-casing - they are simply no longer hidden or minimized. The
+/// adopt step is itself current-Space-scoped (it intersects AX with the
+/// WindowServer on-screen list), so a revealed window that macOS restores onto
+/// ANOTHER Space is simply not adopted; it is the adopt gate, not this reveal,
+/// that enforces Space safety.
+///
+/// SCOPE CAVEAT: AX is not Space-scoped, so an UNFILTERED reveal (a plain
+/// `arrange` with no sandbox/pid filter) un-hides / de-miniaturizes matching
+/// windows across the whole machine, including ones whose home Space is not the
+/// one the user is viewing. macOS restores a de-miniaturized window onto its
+/// ORIGIN Space, so such a window un-minimizes there (and is then not adopted by
+/// the current-Space arrange). This is a deliberate, documented limitation: a
+/// per-window "is this on the current Space?" gate would need private
+/// per-window Space plumbing beyond the single read-only `SpaceProbe`. The
+/// common case (windows on the Space you are arranging) is unaffected.
 ///
 /// The pure predicates are factored out so the policy is unit-testable without
 /// Accessibility permission or real windows.
 enum WindowReveal {
 
-    /// PURE: from each app's hidden flag, the pids that should be unhidden.
+    /// PURE: from each app's hidden flag, the pids that should be unhidden. Used
+    /// by `reveal` (below) so the shipping unhide decision IS the tested policy.
     static func appsToUnhide(_ apps: [(pid: pid_t, isHidden: Bool)]) -> [pid_t] {
         apps.filter { $0.isHidden }.map { $0.pid }
     }
@@ -62,10 +75,13 @@ enum WindowReveal {
         if let backend = AXSource.backend {
             let pids: [pid_t] = pidFilter.map { Array($0) } ?? backend.regularAppPIDs()
             var result = Result()
+            // Unhide via the PURE `appsToUnhide` policy, so the shipping decision
+            // is exactly the unit-tested one (no inlined, untested duplicate).
+            let toUnhide = appsToUnhide(pids.map { (pid: $0, isHidden: backend.appIsHidden(pid: $0)) })
+            for pid in toUnhide where backend.unhideApp(pid: pid) {
+                result.unhiddenApps += 1
+            }
             for pid in pids {
-                if backend.appIsHidden(pid: pid), backend.unhideApp(pid: pid) {
-                    result.unhiddenApps += 1
-                }
                 for w in backend.windows(forPID: pid)
                 where shouldUnminimize(role: w.role, isMinimized: w.isMinimized) {
                     if AXSource.setBool(w.element, kAXMinimizedAttribute as String, false) == .success {
@@ -87,10 +103,15 @@ enum WindowReveal {
         }
 
         var result = Result()
+        // Unhide via the PURE `appsToUnhide` policy (same tested decision as the
+        // headless path), keyed by pid so the unhide list IS the shipping one.
+        let unhidePIDs = Set(appsToUnhide(apps.map {
+            (pid: $0.processIdentifier, isHidden: $0.isHidden)
+        }))
         for app in apps {
             // Unhide the whole app first (a hidden app's windows are all off the
             // current Space). `unhide()` is a no-op + false when not hidden.
-            if app.isHidden, app.unhide() {
+            if unhidePIDs.contains(app.processIdentifier), app.unhide() {
                 result.unhiddenApps += 1
             }
             // De-miniaturize any minimized top-level windows.

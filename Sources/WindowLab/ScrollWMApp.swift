@@ -2253,6 +2253,20 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private unowned let controller: ScrollWMController
 
+    // Shared menu titles + tooltips for the two arrange actions, hoisted so the
+    // managing and dormant menus never drift. BOTH reveal hidden (Cmd+H) apps
+    // and minimized windows first; the ONLY difference is that "Arrange All"
+    // additionally fits every column on screen at once (an overview), where the
+    // plain item keeps each window at its natural width.
+    fileprivate static let arrangeTitle = "Arrange Windows into Strip"
+    fileprivate static let arrangeTooltip =
+        "Tile every window on this Space into the strip, revealing hidden (⌘H) "
+        + "and minimized windows first. Keeps each window's current width."
+    fileprivate static let arrangeAllTitle = "Arrange All Windows + Fit on Screen"
+    fileprivate static let arrangeAllTooltip =
+        "Same as Arrange, but also shrinks every column so they all fit on screen "
+        + "at once (an overview). Reveals hidden (⌘H) and minimized windows too."
+
     /// The live mini-map state to draw: always the controller's ACTIVE strip,
     /// read fresh (NOT a captured engine, which the multi-display arrange path
     /// swaps out). This kept the external-monitor indicator stale before.
@@ -2690,15 +2704,18 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             showAllItem.target = self
             menu.addItem(showAllItem)
 
-            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (reveal + fit on screen)", action: #selector(arrangeAllAction), keyEquivalent: "")
+            let arrangeAllItem = NSMenuItem(title: Self.arrangeAllTitle, action: #selector(arrangeAllAction), keyEquivalent: "")
             arrangeAllItem.target = self
+            arrangeAllItem.toolTip = Self.arrangeAllTooltip
             menu.addItem(arrangeAllItem)
 
             // Same verb as the `scrollwm arrange` CLI: re-adopt the current
-            // Space's windows into the strip (idempotent while managing). Kept
-            // enabled so the menu item and the command always do the same thing.
-            let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip (incl. hidden & minimized)", action: #selector(arrangeAction), keyEquivalent: "")
+            // Space's windows into the strip (idempotent while managing), also
+            // revealing hidden/minimized windows. Kept enabled so the menu item
+            // and the command always do the same thing.
+            let arrangeItem = NSMenuItem(title: Self.arrangeTitle, action: #selector(arrangeAction), keyEquivalent: "")
             arrangeItem.target = self
+            arrangeItem.toolTip = Self.arrangeTooltip
             menu.addItem(arrangeItem)
         } else {
             let header = NSMenuItem(title: "ScrollWM — dormant (not touching any window)", action: nil, keyEquivalent: "")
@@ -2706,12 +2723,14 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             menu.addItem(header)
             menu.addItem(.separator())
 
-            let arrangeItem = NSMenuItem(title: "Arrange Windows into Strip (incl. hidden & minimized)", action: #selector(arrangeAction), keyEquivalent: "")
+            let arrangeItem = NSMenuItem(title: Self.arrangeTitle, action: #selector(arrangeAction), keyEquivalent: "")
             arrangeItem.target = self
+            arrangeItem.toolTip = Self.arrangeTooltip
             menu.addItem(arrangeItem)
 
-            let arrangeAllItem = NSMenuItem(title: "Arrange All Windows (reveal + fit on screen)", action: #selector(arrangeAllAction), keyEquivalent: "")
+            let arrangeAllItem = NSMenuItem(title: Self.arrangeAllTitle, action: #selector(arrangeAllAction), keyEquivalent: "")
             arrangeAllItem.target = self
+            arrangeAllItem.toolTip = Self.arrangeAllTooltip
             menu.addItem(arrangeAllItem)
 
             let showAllItem = NSMenuItem(title: "Show All Windows (fit on screen)", action: nil, keyEquivalent: "")

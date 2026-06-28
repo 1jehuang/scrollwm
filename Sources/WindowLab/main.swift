@@ -488,8 +488,10 @@ func scrollwmHelpText() -> String {
     Control a running ScrollWM from your shell (the app must be running):
       scrollwm status              print strip state as JSON
       scrollwm arrange [25|50|75|100|0.0-1.0]
-                                   adopt current-Space windows (launches app if
-                                   needed); optional width sizes EVERY column
+                                   adopt current-Space windows, INCLUDING hidden
+                                   (Cmd+H) apps + minimized windows, which it
+                                   reveals first (launches app if needed);
+                                   optional width sizes EVERY column
       scrollwm release             restore all windows, go dormant
       scrollwm toggle              arrange <-> release
       scrollwm focus <next|prev|left|right|N>
