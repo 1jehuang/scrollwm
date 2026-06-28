@@ -1768,6 +1768,63 @@ enum StripOpsTests {
               RestoreStore.safeTarget(for: liveEntry, displays: builtinOnly)
                 == CGRect(x: 100, y: 100, width: 600, height: 400))
 
+        // RestoreStore.mayActivate: the PURE Space-safety gate that stops crash
+        // recovery from `activate`-ing (and thus TELEPORTING the user to) a
+        // window on a Desktop they are not viewing. Refuse ONLY on a known
+        // different Space; allow whenever either id is unknown (legacy file /
+        // tracking off / probe unavailable) so the historical behavior is exact.
+        let e_noTag = RestoreStore.Entry(pid: 1, appName: "A", title: "W", x: 0, y: 0, w: 1, h: 1)
+        let e_s1 = RestoreStore.Entry(pid: 1, appName: "A", title: "W", x: 0, y: 0, w: 1, h: 1, space: 1)
+        let e_s2 = RestoreStore.Entry(pid: 1, appName: "A", title: "W", x: 0, y: 0, w: 1, h: 1, space: 2)
+        check("restore: untagged entry may activate (legacy / tracking off)",
+              RestoreStore.mayActivate(for: e_noTag, currentSpace: 1))
+        check("restore: untagged entry may activate even when current Space is nil",
+              RestoreStore.mayActivate(for: e_noTag, currentSpace: nil))
+        check("restore: same-Space entry may activate",
+              RestoreStore.mayActivate(for: e_s1, currentSpace: 1))
+        check("restore: DIFFERENT-Space entry is refused (no startup teleport)",
+              !RestoreStore.mayActivate(for: e_s2, currentSpace: 1))
+        check("restore: tagged entry may activate when current Space is unknown",
+              RestoreStore.mayActivate(for: e_s2, currentSpace: nil))
+
+        // RestoreStore tagged save: with per-Space tracking each saved entry
+        // carries the native Space its window lived on (active Space + every
+        // stashed Space), so recovery can apply the gate above. Build the strip
+        // PURELY (no AX / sim): arrange 2 columns on Space 1, switch to Space 2,
+        // open 1 column there, persist, and assert the entries' Space tags.
+        do {
+            let sub = "ScrollWM-Sandbox"
+            let priorSub = RestoreStore.subdirectory
+            RestoreStore.subdirectory = sub
+            RestoreStore.clear()
+            defer { RestoreStore.clear(); RestoreStore.subdirectory = priorSub }
+
+            let eng = StripOpsTests.makeEngine(count: 2)   // Space 1: Win0, Win1
+            eng.beginSpaceTracking(spaceID: 1)
+            eng.switchToSpace(2)                            // Space 2: empty
+            let s2win = AXWindowInfo(
+                pid: 91234, appName: "S2App", element: AXUIElementCreateApplication(91234),
+                title: "S2Only", role: kAXWindowRole as String,
+                subrole: kAXStandardWindowSubrole as String,
+                frame: CGRect(x: 0, y: 0, width: 400, height: 300),
+                isMinimized: false, isFullscreen: false)
+            eng.append(window: s2win)
+
+            RestoreStore.save(engine: eng)
+            let saved = RestoreStore.pendingEntries()
+            check("restore: tagged save persists every Space's windows (2 + 1)",
+                  saved.count == 3)
+            check("restore: Space-1 columns are tagged space==1",
+                  saved.filter { $0.space == 1 }.map { $0.title }.sorted() == ["Win0", "Win1"])
+            check("restore: Space-2 column is tagged space==2",
+                  saved.filter { $0.space == 2 }.map { $0.title } == ["S2Only"])
+            // The gate then refuses to teleport: standing on Space 1, the Space-2
+            // entry must NOT be activated during recovery.
+            let onS1 = saved.first { $0.space == 2 }!
+            check("restore: standing on Space 1, recovery refuses to activate the Space-2 window",
+                  !RestoreStore.mayActivate(for: onS1, currentSpace: 1))
+        }
+
         // --- AdoptionScope: which displays' windows the strip adopts ----------
         // Ground the policy in the user's REAL hardware so the test proves the
         // multi-display "yank" fix: built-in primary 1470x956 at AX (0,0); the

@@ -174,6 +174,22 @@ final class TeleportEngine {
         return out
     }
 
+    /// Like `allSpacesManagedSlots`, but each slot is paired with the native
+    /// Space id it belongs to (`nil` for the active Space when per-Space tracking
+    /// is OFF). Order matches `allSpacesManagedSlots` exactly: the active Space's
+    /// slots first (tagged with `activeSpaceID`), then each stashed Space in
+    /// sorted-id order. Crash-recovery persistence uses this so each saved frame
+    /// carries the Desktop it lives on, letting recovery refuse to teleport the
+    /// user onto an off-current-Space window.
+    var allSpacesManagedSlotsTagged: [(slot: Slot, space: Int?)] {
+        var out: [(slot: Slot, space: Int?)] = allManagedSlots.map { ($0, activeSpaceID) }
+        for id in spaceLayers.keys.sorted() {
+            guard let layer = spaceLayers[id] else { continue }
+            for ws in layer.workspaces { out += ws.slots.map { ($0, id) } }
+        }
+        return out
+    }
+
     /// Begin per-Space strip tracking, binding the CURRENT live strip to native
     /// Space `id`. Called by the controller right after the initial arrange, once
     /// the Space id is known. Idempotent; safe to call repeatedly with the same

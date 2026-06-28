@@ -80,8 +80,26 @@ controller forces `perSpaceStrips` OFF whenever a test backend is installed
 assert the single-strip strand/freeze behavior) independent of whether the
 developer enabled the feature in their own config.
 
+## Space-aware `RestoreStore` — SHIPPED
+
+Crash-recovery entries are now tagged with the native Space their window was
+managed on (`RestoreStore.Entry.space`, persisted from
+`TeleportEngine.allSpacesManagedSlotsTagged`; `nil` when per-Space tracking is
+off, so legacy restore files and the single-strip model decode/behave
+unchanged). On recovery, the PURE gate `RestoreStore.mayActivate(for:currentSpace:)`
+refuses to `activate` (and thus teleport the user to) a window known to live on
+a Desktop other than the one being viewed; `recover()` defaults `currentSpace`
+to the live `SpaceProbe`, so an off-Space window's activation poke is withheld
+and it is re-adopted later by the live monitor when the user visits that Desktop.
+An off-Space window the app already exposes is still repositioned (position/size
+writes are safe AX no-ops for the active Space). Tests: `unittest` →
+`StripOpsTests` restore section (`mayActivate` truth table + a per-Space tagged
+`save` round-trip).
+
 ## Not yet (future)
 
-- Space-aware `RestoreStore` (entries still carry no Space tag; `allSpacesManagedSlots`
-  makes them all persist, but recover() does not yet defer off-current-Space
-  windows — `02` §3).
+- Per-Space tagging keys recovery's *activation* decision; it does not yet
+  re-file a recovered window into a specific stashed Space-layer of a fresh
+  engine (recovery restores frames, and the live monitor re-tiles on Space
+  visit). A full "rebuild every Desktop's strip from the restore file at launch"
+  pass is the remaining polish.
