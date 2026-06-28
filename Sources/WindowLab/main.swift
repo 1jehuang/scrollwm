@@ -301,6 +301,18 @@ case "coldstartlive":
     // pids + a deliberately slow 5s poll, so any sub-second adoption proves the
     // launch fast path, not the poll. Never touches the user's real windows.
     runColdStartLiveTest()
+case "coldstartflash":
+    // LIVE measurement of the USER-PERCEIVED flash: how long a brand-new app's
+    // first window is VISIBLE at its native spawn spot before we teleport it
+    // into the strip (publish-on-screen -> moved), the honest "it spawns where
+    // macOS puts it, then jumps" metric. Isolated to spawned pids; slow 5s poll.
+    runColdStartFlashTest()
+case "coldstartflashheadless":
+    // HEADLESS model of the cold-start flash (runs anywhere, no AX): a heavy
+    // app whose first window appears LATE after launch, timing how long it is
+    // visible at its native spot before we move it into the strip. The objective
+    // metric the cold-start retry-cadence fix is optimized against.
+    runHeadlessColdStartFlashBench()
 case "spawnvalidate":
     // Headless property validator: EVERY spawn (across a named edge-case matrix
     // + randomized fuzz) must land in the column right of focus, at its exact

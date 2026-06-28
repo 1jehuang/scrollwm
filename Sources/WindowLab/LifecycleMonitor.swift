@@ -49,13 +49,15 @@ final class LifecycleMonitor {
     /// case is that the WindowServer publishes the window within ~1-2 frames, so
     /// we probe aggressively at first (next runloop turn, then a few ms apart)
     /// to adopt as soon as it lands - shaving the visible "floating then snaps"
-    /// gap - and only back off toward a coarse interval for the rare app that
-    /// takes longer. The total budget (`fastAdoptRetryDelays.reduce(+)` ~0.36s)
-    /// still comfortably exceeds any real publish lag while staying well under
-    /// the 2s safety-net poll, so a genuinely foreign-Space window still falls
-    /// through to the poll harmlessly.
-    private let fastAdoptRetryDelays: [TimeInterval] =
-        [0.004, 0.008, 0.012, 0.02, 0.03, 0.04, 0.06, 0.08, 0.1]
+    /// gap. CRUCIALLY the tail is FLAT and frame-paced (~16ms), not a widening
+    /// geometric back-off: a window that lands LATE (a busy app lagging the
+    /// WindowServer publish) is still adopted within ~1 frame of appearing,
+    /// never left sitting at its native spot for a coarse back-off gap. The total
+    /// budget (~0.36s) still comfortably exceeds any real publish lag while
+    /// staying well under the 2s safety-net poll, so a genuinely foreign-Space
+    /// window still falls through to the poll harmlessly.
+    private static let fastAdoptRetryDelays: [TimeInterval] =
+        framePacedRetryCadence(budget: 0.36)
 
     /// COLD-START retry cadence, used by the app-launch fast path (`onAppLaunched`
     /// -> `fastAdopt(pids:coldStart:true)`). A brand-new process's FIRST window
@@ -63,15 +65,35 @@ final class LifecycleMonitor {
     /// the launch notification is our only early signal - but the window may not
     /// be readable/published for noticeably longer than the warm publish race
     /// (the process is still spinning up: code-sign check, framework load, first
-    /// frame). The warm schedule (~0.36s) can lapse before a cold window appears,
-    /// dumping it on the 2s poll. This schedule keeps the same aggressive head
-    /// (adopt the instant the window lands, so a fast app is still ~instant) but
-    /// extends the tail to ~1.8s total - comfortably covering a slow launch while
-    /// staying under the safety-net poll, so a genuinely foreign-Space window
-    /// still falls through harmlessly.
-    private let coldStartRetryDelays: [TimeInterval] =
-        [0.004, 0.008, 0.012, 0.02, 0.03, 0.04, 0.06, 0.08, 0.1,
-         0.12, 0.15, 0.2, 0.25, 0.3, 0.4]
+    /// frame). Same shape as the warm cadence (tight head + FLAT ~16ms tail) so a
+    /// window that appears at ANY point is moved within ~1 frame of becoming
+    /// visible - the fix for the visible "a new app spawns where macOS puts it,
+    /// then jumps into the strip" that the old widening tail (gaps up to 400ms)
+    /// caused for a slow-spinning app. The tail extends to ~1.8s total to cover a
+    /// slow launch while staying under the 2s safety-net poll.
+    private static let coldStartRetryDelays: [TimeInterval] =
+        framePacedRetryCadence(budget: 1.8)
+
+    /// Build a fast-adopt retry cadence: a tight HEAD (catch a window published
+    /// within a frame or two essentially instantly) followed by a FLAT,
+    /// frame-paced (~16ms) tail until `budget` is spent. The flat tail is the key
+    /// property: a window that appears LATE (a slow-spinning app's first window,
+    /// or a busy app lagging the WindowServer publish) is adopted within ~1 frame
+    /// of becoming visible, instead of waiting out a coarse exponential back-off
+    /// gap (the visible "spawns at its native spot, then jumps" the old geometric
+    /// tail caused). Each tail probe is one cheap scoped `windows(forPID:)` call
+    /// and the loop stops the instant the window is adopted, so the full budget
+    /// is only ever spent on an app that never produces a window (a hung launch),
+    /// which then falls through to the poll. `budget` stays under the 2s poll so
+    /// a genuinely foreign-Space window still degrades to the poll harmlessly.
+    private static func framePacedRetryCadence(budget: TimeInterval) -> [TimeInterval] {
+        let head: [TimeInterval] = [0.004, 0.008, 0.012]
+        let frame: TimeInterval = 0.016
+        var delays = head
+        var total = head.reduce(0, +)
+        while total < budget { delays.append(frame); total += frame }
+        return delays
+    }
 
     /// Restrict adoption to these PIDs (test mode). Nil = all regular apps.
     var pidFilter: Set<pid_t>? {
@@ -619,12 +641,13 @@ final class LifecycleMonitor {
     private func scheduleFastAdoptRetry(pids: [pid_t], attempt: Int, coldStart: Bool = false) {
         // Cold-start launches use a longer-tailed schedule (the first window of a
         // spinning-up process can take longer to publish than a warm window).
-        let delays = coldStart ? coldStartRetryDelays : fastAdoptRetryDelays
+        let delays = coldStart ? Self.coldStartRetryDelays : Self.fastAdoptRetryDelays
         guard attempt < delays.count else { return }
-        // Progressive back-off: tight probes first (adopt the instant the window
-        // is published, ~1-2 frames in the common case), widening toward a coarse
-        // interval for slow apps. `attempt` is the count of retries already done,
-        // so it indexes the delay to wait before the NEXT attempt.
+        // Frame-paced cadence: tight probes first (adopt the instant the window is
+        // published, ~1-2 frames in the common case), then a FLAT ~16ms tail so a
+        // window that appears late is still caught within ~1 frame, never left at
+        // its native spot for a coarse back-off gap. `attempt` is the count of
+        // retries already done, so it indexes the delay to wait before the NEXT.
         let delay = delays[min(attempt, delays.count - 1)]
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.fastAdopt(pids: pids, attempt: attempt + 1, coldStart: coldStart)

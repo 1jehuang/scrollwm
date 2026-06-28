@@ -232,6 +232,23 @@ final class SimWindowWorld: WindowBackend {
         if notify, let sink { DispatchQueue.main.async { sink() } }
     }
 
+    /// Fire the LAUNCH sink for `pid` WITHOUT creating a window, modeling the
+    /// real gap between a process launching (`didLaunchApplication`) and its
+    /// first window actually existing in AX (process spin-up: code-sign check,
+    /// framework load, first frame). Pair with a later `addWindow(notify:false)`
+    /// to model a heavy app whose window appears `appearDelay` after launch -
+    /// the case where the cold-start fast-adopt retry loop, not a create event,
+    /// is the only thing that can catch the window. Only meaningful with
+    /// `coldStartModel` on (mirrors the launch stand-in); marks the pid launched
+    /// so a subsequent window of it is a warm create.
+    func fireColdLaunch(pid: pid_t) {
+        lock.lock()
+        coldStartLaunchedPIDs.insert(pid)
+        let sink = onLaunched
+        lock.unlock()
+        if let sink { DispatchQueue.main.async { sink(pid) } }
+    }
+
     /// Programmatically focus a window (models a user click / Cmd-Tab landing on
     /// it) without going through the engine, so focus-sync logic can be tested.
     func setSystemFocus(_ element: AXUIElement) {
