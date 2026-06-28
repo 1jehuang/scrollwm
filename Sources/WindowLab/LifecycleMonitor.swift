@@ -27,6 +27,16 @@ final class LifecycleMonitor {
     /// Coalesces overlapping poll/event triggers into one enumeration.
     private var enumerating = false
 
+    /// Set once `stop()` runs. A `resync()` dispatches its heavy enumeration to a
+    /// background queue and hops BACK to main to mutate the engine; if `stop()`
+    /// (release / display teardown) lands in that window, the queued main-thread
+    /// `applyResync` would re-adopt windows into an engine the controller just
+    /// cleared - the "strip not empty after release()" desync. Every deferred
+    /// closure (the resync apply, fast-adopt retries, debounced Space resync)
+    /// checks this and no-ops once stopped, so a monitor that has been torn down
+    /// never touches the engine again.
+    private var stopped = false
+
     /// Settle delay applied to a native Space change before resyncing, so a
     /// burst of `activeSpaceDidChange` edges (rapid Ctrl-arrow, or the
     /// notification firing before the WindowServer on-screen list reflects the
@@ -220,6 +230,7 @@ final class LifecycleMonitor {
     }
 
     func stop() {
+        stopped = true
         timer?.invalidate()
         timer = nil
         windowEvents?.stop()
@@ -257,6 +268,8 @@ final class LifecycleMonitor {
     /// diff + engine mutation (sub-millisecond) runs on main. So hotkeys,
     /// teleport, and the menu stay responsive even during a slow enumeration.
     func resync() {
+        // Guard 0: a stopped (released / torn-down) monitor never enumerates.
+        guard !stopped else { return }
         // Guard 1: never resync while the session is locked/inactive.
         guard Self.sessionIsActive() else { return }
         // Coalesce: never run two enumerations at once. A pending poll/event
@@ -303,6 +316,11 @@ final class LifecycleMonitor {
             // --- Main: cheap diff + apply against the live engine ---
             DispatchQueue.main.async {
                 self.enumerating = false
+                // The monitor may have been stopped (release / teardown) while
+                // this enumeration ran on the background queue. Applying now would
+                // re-adopt windows into an engine the controller already cleared
+                // (the "strip not empty after release()" desync), so bail.
+                guard !self.stopped else { return }
                 self.applyResync(existing: existing,
                                  standardAdoptable: standard,
                                  cg: cg)
@@ -526,6 +544,7 @@ final class LifecycleMonitor {
     /// (so we never mix windows from different Spaces). If anything is
     /// ambiguous it simply does nothing and lets the poll converge.
     private func fastAdopt(pids: [pid_t], attempt: Int = 0, coldStart: Bool = false) {
+        guard !stopped else { return }
         guard Self.sessionIsActive() else { return }
         // Auto-tile gate: when disabled, do not pull newly-opened windows onto
         // the strip from the fast path either - they stay floating until the

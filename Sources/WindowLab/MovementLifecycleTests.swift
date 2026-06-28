@@ -342,6 +342,56 @@ func runHeadlessMovementTest() {
         for w in world.snapshot() where pids.contains(w.pid) { world.destroyWindow(w.element, notify: false) }
     }
 
+    // =====================================================================
+    // Section 6. Release race: a resync enumeration in flight when the monitor
+    // is STOPPED must NOT re-adopt into the just-cleared engine.
+    //
+    // `resync()` runs the heavy AX/CG enumeration on a background queue and hops
+    // back to main to mutate the engine. If the controller releases (stops the
+    // monitor + clears the engine) in that window, the queued main-thread apply
+    // would re-populate an engine the controller already emptied - the
+    // "strip not empty after release()" desync the fuzz caught under load.
+    // `LifecycleMonitor.stop()` now sets a `stopped` flag every deferred closure
+    // checks, so a torn-down monitor never touches the engine again.
+    // =====================================================================
+    do {
+        let f = Headless.defaultVisibleFrame
+        let engine = TeleportEngine(screenFrame: f)
+        let pidA: pid_t = 7600, pidB: pid_t = 7601
+        _ = world.addWindow(pid: pidA, title: "RelA",
+                            frame: CGRect(x: f.minX + 40, y: f.minY + 40, width: 360, height: 420))
+        _ = world.addWindow(pid: pidB, title: "RelB",
+                            frame: CGRect(x: f.minX + 440, y: f.minY + 40, width: 360, height: 420))
+        let pids: [pid_t] = [pidA, pidB]
+        Headless.arrangeCurrentSpace(engine, pids: pids)
+        t.check("S6 arranged 2 columns", engine.slots.count == 2)
+
+        let monitor = LifecycleMonitor(engine: engine, interval: 30.0)
+        monitor.pidFilter = Set(pids)
+        monitor.start()
+
+        // Kick off a resync (dispatches the enumeration to the background queue),
+        // then IMMEDIATELY stop the monitor and clear the engine - exactly the
+        // release ordering. The queued main-thread apply must observe `stopped`
+        // and bail rather than re-adopting RelA/RelB.
+        monitor.resync()
+        monitor.stop()
+        _ = engine.releaseAll(displays: [f])
+        t.check("S6 engine cleared right after release", engine.slots.isEmpty)
+
+        // Drain well past the background enumeration + its main hop.
+        Headless.pump(0.3)
+        t.check("S6 stopped monitor did NOT re-adopt after release (strip stays empty)",
+                engine.slots.isEmpty)
+
+        // A further resync on the stopped monitor is also inert.
+        monitor.resync()
+        Headless.pump(0.2)
+        t.check("S6 resync on a stopped monitor is a no-op", engine.slots.isEmpty)
+
+        for w in world.snapshot() where pids.contains(w.pid) { world.destroyWindow(w.element, notify: false) }
+    }
+
     print("\n[headless-movetest] \(t.passed) passed, \(t.failed) failed")
     exit(t.summaryExitCode)
 }
