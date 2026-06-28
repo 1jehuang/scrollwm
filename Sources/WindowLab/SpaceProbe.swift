@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ColorSync
 
 /// READ-ONLY native-Space identity probe.
 ///
@@ -27,21 +28,28 @@ import CoreGraphics
 ///     production.
 ///
 /// The id we return is the WindowServer's `ManagedSpaceID` for the Space
-/// currently shown on the MAIN display. It is stable for the lifetime of a Space
+/// currently shown on a given display. It is stable for the lifetime of a Space
 /// (it survives switching away and back) which is all the per-Space strip map
-/// needs as a key.
+/// needs as a key. With "Displays have separate Spaces" ON each display shows its
+/// own Space, so the probe is PER-DISPLAY: each strip keys on its OWN monitor's
+/// current Space (`currentSpaceID(forDisplay:)`), and a switch on one monitor
+/// never re-points another monitor's strip.
 enum SpaceProbe {
 
-    /// The active native-Space id, or `nil` when it cannot be determined (the
-    /// private symbol is unavailable, the call returned nothing, or a headless
-    /// backend without a modeled Space is installed). A `nil` return is the
-    /// caller's signal to stay on the single-strip model.
+    /// The active native-Space id for the MAIN display, or `nil` when it cannot
+    /// be determined. Convenience for the single-display / spans-displays case.
+    static func currentSpaceID() -> Int? { currentSpaceID(forDisplay: nil) }
+
+    /// The active native-Space id for `displayID` (nil = main display), or `nil`
+    /// when it cannot be determined (the private symbol is unavailable, the call
+    /// returned nothing, or the display has no CGS entry). A `nil` return is the
+    /// caller's signal to keep that strip on the single-strip model.
     ///
     /// Routes through `AXSource.backend` when one is installed (headless tests),
     /// so the production CGS path is exercised ONLY on a real machine.
-    static func currentSpaceID() -> Int? {
-        if let backend = AXSource.backend { return backend.currentSpaceID() }
-        return liveCurrentSpaceID()
+    static func currentSpaceID(forDisplay displayID: CGDirectDisplayID?) -> Int? {
+        if let backend = AXSource.backend { return backend.currentSpaceID(forDisplay: displayID) }
+        return liveCurrentSpaceID(forDisplay: displayID)
     }
 
     // MARK: - Live (production) CGS path
@@ -67,23 +75,37 @@ enum SpaceProbe {
         mainConnection != nil && copyManagedDisplaySpaces != nil
     }
 
-    /// Query the WindowServer for the active Space id on the main display.
+    /// Query the WindowServer for the active Space id on `displayID` (nil = main).
     /// Returns `nil` on any shortfall so the caller degrades gracefully.
-    private static func liveCurrentSpaceID() -> Int? {
+    private static func liveCurrentSpaceID(forDisplay displayID: CGDirectDisplayID?) -> Int? {
         guard let mainConnection, let copyManagedDisplaySpaces else { return nil }
         let cid = mainConnection()
         guard let raw = copyManagedDisplaySpaces(cid) as? [[String: Any]] else { return nil }
-        // Each element describes one display: its "Current Space" dict holds the
-        // active Space's id under "ManagedSpaceID" (with "id64" as a fallback on
-        // older systems). With "Displays have separate Spaces" ON each display has
-        // its OWN active Space, so prefer the MAIN display (identifier "Main");
-        // fall back to the first entry for the single-display / spans-displays
-        // case. The strip we key today lives on the main display, so the main
-        // display's Space is the right key. (A future per-display-Space refinement
-        // for multi-strip setups can read each entry by its display UUID.)
-        let display = raw.first { ($0["Display Identifier"] as? String) == "Main" } ?? raw.first
+
+        // Each element describes one display, identified by "Display Identifier":
+        // the MAIN display is the literal string "Main"; every secondary display
+        // is its display UUID string. Under "Displays have separate Spaces" each
+        // entry carries its OWN "Current Space", so we match the requested
+        // display's identifier and read THAT entry's active Space.
+        let wantIdentifier = displayIdentifier(for: displayID)
+        let display = raw.first { ($0["Display Identifier"] as? String) == wantIdentifier }
+            // Fall back to the main entry, then the first entry, so a display we
+            // cannot resolve (or the single-shared-Space case) still yields a
+            // sensible id rather than nil.
+            ?? raw.first { ($0["Display Identifier"] as? String) == "Main" }
+            ?? raw.first
         guard let display, let current = display["Current Space"] as? [String: Any] else { return nil }
         return spaceID(from: current)
+    }
+
+    /// The CGS "Display Identifier" string for a `CGDirectDisplayID`: "Main" for
+    /// the main display (CGS labels it that way), otherwise the display's UUID
+    /// string. `nil` display -> "Main".
+    private static func displayIdentifier(for displayID: CGDirectDisplayID?) -> String {
+        guard let displayID, CGDisplayIsMain(displayID) == 0 else { return "Main" }
+        guard let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue(),
+              let s = CFUUIDCreateString(nil, uuid) as String? else { return "Main" }
+        return s
     }
 
     /// Pull the managed Space id out of a "Current Space" dict, tolerating the

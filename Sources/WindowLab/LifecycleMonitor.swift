@@ -101,21 +101,28 @@ final class LifecycleMonitor {
     /// strip freeze/thaw behavior is unchanged.
     var perSpaceStripsEnabled = false
 
+    /// The physical display this monitor's strip is bound to, so per-Space
+    /// tracking keys on the active Space of THIS monitor (not always the main
+    /// display) under "Displays have separate Spaces". `nil` falls back to the
+    /// main display's Space (single-display / spans-displays). Set by the
+    /// controller from the strip's `displayID` when management starts.
+    var stripDisplayID: CGDirectDisplayID?
+
     init(engine: TeleportEngine, interval: TimeInterval = 2.0) {
         self.engine = engine
         self.interval = interval
     }
 
-    /// Re-point the engine's live strip to the native Space the user is now
-    /// viewing, if per-Space strips are on and the Space actually changed. Runs
-    /// on the main thread (mutates engine state). Returns true if it switched, so
-    /// a caller can force a layout-changing resync follow-up. A `nil` Space id
-    /// (probe unavailable, or tracking not yet started) is a safe no-op: the
-    /// engine simply stays on its current strip, degrading to single-strip.
+    /// Re-point the engine's live strip to the native Space THIS monitor's
+    /// display is now showing, if per-Space strips are on and the Space actually
+    /// changed. Runs on the main thread (mutates engine state). Returns true if it
+    /// switched, so a caller can force a layout-changing resync follow-up. A `nil`
+    /// Space id (probe unavailable, or tracking not yet started) is a safe no-op:
+    /// the engine simply stays on its current strip, degrading to single-strip.
     @discardableResult
     func switchActiveSpaceIfNeeded() -> Bool {
         guard perSpaceStripsEnabled, engine.activeSpaceID != nil,
-              let id = SpaceProbe.currentSpaceID() else { return false }
+              let id = SpaceProbe.currentSpaceID(forDisplay: stripDisplayID) else { return false }
         return engine.switchToSpace(id)
     }
 

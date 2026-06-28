@@ -944,7 +944,14 @@ final class ScrollWMController: NSObject {
         // unavailable, `beginSpaceTracking` is never called, so `switchToSpace`
         // is inert and the engine behaves exactly as the single-strip model.
         monitor.perSpaceStripsEnabled = config.layout.perSpaceStrips
-        if config.layout.perSpaceStrips, let id = SpaceProbe.currentSpaceID() {
+        // Key per-Space tracking on THIS strip's own display, so under "Displays
+        // have separate Spaces" each monitor follows its own Desktop (a switch on
+        // one monitor never re-points another monitor's strip). `displayID` is
+        // nil on a single-display setup, which the probe treats as the main
+        // display.
+        monitor.stripDisplayID = strip.displayID
+        if config.layout.perSpaceStrips,
+           let id = SpaceProbe.currentSpaceID(forDisplay: strip.displayID) {
             strip.engine.beginSpaceTracking(spaceID: id)
         }
         monitor.start()
@@ -1634,6 +1641,14 @@ final class ScrollWMController: NSObject {
     var debugActiveStripColumnTitles: [String] { engine.slots.map { $0.window.title } }
     /// Total managed windows across every native Space the active strip tracks.
     var debugAllSpacesManagedCount: Int { engine.allSpacesManagedSlots.count }
+    /// Per-strip bound native-Space id (display order); -1 where a strip is not
+    /// tracking. Lets the multi-display per-Space test assert each monitor
+    /// follows its OWN Desktop.
+    var debugStripSpaceIDs: [Int] { strips.map { $0.engine.activeSpaceID ?? -1 } }
+    /// Per-strip count of windows managed across ALL of that strip's native
+    /// Spaces (display order). Proves a Desktop switch on one monitor stashes
+    /// rather than drops the other Desktop's windows.
+    var debugStripAllSpacesCounts: [Int] { strips.map { $0.engine.allSpacesManagedSlots.count } }
 
     /// Headless seam: turn on the multi-display arrange path and inject a
     /// synthetic set of displays, so the per-monitor strip routing (and the

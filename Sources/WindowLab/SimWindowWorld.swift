@@ -232,19 +232,91 @@ final class SimWindowWorld: WindowBackend {
     /// The native Space the user is currently VIEWING (read-only). Defaults to 1.
     var activeSpace: Int { lock.lock(); defer { lock.unlock() }; return activeSpaceID }
 
-    /// `WindowBackend` Space-id probe: the modeled active Space, so the per-Space
-    /// strip logic runs against the sim exactly as it would against the live CGS
-    /// query. Set `spaceIDProbeUnavailable` to model a machine/OS where the
-    /// private symbol is missing (the controller must then stay single-strip).
-    func currentSpaceID() -> Int? {
+    /// `WindowBackend` Space-id probe: the modeled active Space for a display, so
+    /// the per-Space strip logic runs against the sim exactly as it would against
+    /// the live CGS query. Under "Displays have separate Spaces" each display has
+    /// its own active Space (`displayActiveSpaces`); when a display has no entry
+    /// (the default, single-shared-Space case) it falls back to the global
+    /// `activeSpaceID`, so any test that never models per-display Spaces is
+    /// unaffected. Set `spaceIDProbeUnavailable` to model a host where the private
+    /// symbol is missing (the controller must then stay single-strip).
+    func currentSpaceID(forDisplay displayID: CGDirectDisplayID?) -> Int? {
         lock.lock(); defer { lock.unlock() }
-        return spaceIDProbeUnavailable ? nil : activeSpaceID
+        if spaceIDProbeUnavailable { return nil }
+        if let displayID, let s = displayActiveSpaces[displayID] { return s }
+        return activeSpaceID
     }
 
     /// Test lever: when true, `currentSpaceID()` returns nil, modeling a host
     /// where the read-only CGS Space-id symbol could not be resolved. Lets a
     /// headless test prove the graceful single-strip fallback.
     var spaceIDProbeUnavailable = false
+
+    // MARK: - Per-display native Spaces ("Displays have separate Spaces")
+
+    /// Active native Space per physical display id. Empty (the default) means
+    /// every display shares the single global `activeSpaceID` - byte-identical to
+    /// the pre-multi-display-Space behavior. A multi-display test populates this
+    /// (via `setActiveSpace(forDisplay:_:)`) plus `displayGeometry` so each
+    /// monitor's strip keys on its OWN Desktop and the on-screen list hides a
+    /// window whose display is showing a different Space.
+    private var displayActiveSpaces: [CGDirectDisplayID: Int] = [:]
+
+    /// Full AX frames keyed by display id, so `cgWindows` can map a window to the
+    /// display it sits on and apply THAT display's active Space. Only consulted
+    /// when non-empty; registered by a multi-display test (`registerDisplays`).
+    private var displayGeometry: [(id: CGDirectDisplayID, full: CGRect)] = []
+
+    /// Register the physical displays (id + full AX frame) for the per-display
+    /// Space model. With this set, the on-screen list filters each window by the
+    /// active Space of the display it best overlaps. Empty resets to the single
+    /// shared-Space behavior.
+    func registerDisplays(_ displays: [(id: CGDirectDisplayID, full: CGRect)]) {
+        lock.lock(); displayGeometry = displays; lock.unlock()
+    }
+
+    /// Switch the active native Space of ONE display (Ctrl-arrow / Mission Control
+    /// on that monitor under "Displays have separate Spaces"). Windows on that
+    /// display whose `nativeSpace` is `space` become on-screen; the rest drop out.
+    /// Fires the same public `activeSpaceDidChange` notification a real switch
+    /// would, so EVERY strip's monitor re-checks its own display's Space (and only
+    /// the switched display's strip actually re-points). No-op if unchanged.
+    func setActiveSpace(forDisplay displayID: CGDirectDisplayID, _ space: Int) {
+        lock.lock()
+        guard displayActiveSpaces[displayID] != space else { lock.unlock(); return }
+        displayActiveSpaces[displayID] = space
+        let hook = onActiveSpaceChanged
+        lock.unlock()
+        DispatchQueue.main.async {
+            NSWorkspace.shared.notificationCenter.post(
+                name: NSWorkspace.activeSpaceDidChangeNotification,
+                object: NSWorkspace.shared)
+            hook?(space)
+        }
+    }
+
+    /// The display id whose full frame best overlaps `frame`, or nil if no
+    /// registered display overlaps it. Used by the per-display on-screen filter.
+    private func bestDisplayID(for frame: CGRect) -> CGDirectDisplayID? {
+        var best: (id: CGDirectDisplayID, area: CGFloat)?
+        for d in displayGeometry {
+            let inter = d.full.intersection(frame)
+            let area = inter.isNull ? 0 : inter.width * inter.height
+            if area > 0, area > (best?.area ?? 0) { best = (d.id, area) }
+        }
+        return best?.id
+    }
+
+    /// Whether `w` is on the active Space of ITS display (the per-display model)
+    /// or, when no per-display geometry/Space is modeled, the global active Space.
+    /// This is the single fidelity that drives per-display Space freeze/adoption.
+    private func windowIsOnActiveSpace(_ w: Win) -> Bool {
+        if !displayGeometry.isEmpty, let id = bestDisplayID(for: w.frame),
+           let s = displayActiveSpaces[id] {
+            return w.nativeSpace == s
+        }
+        return w.nativeSpace == activeSpaceID
+    }
 
     /// The native Space a window currently lives on, or nil if unknown.
     func nativeSpace(of element: AXUIElement) -> Int? {
@@ -364,7 +436,12 @@ final class SimWindowWorld: WindowBackend {
         return wins.compactMap { w -> CGWindowInfo? in
             if onscreenOnly && (w.minimized || hiddenApps.contains(w.pid)) { return nil }
             if onscreenOnly && w.cgPublishAt > now { return nil }
-            if onscreenOnly && w.nativeSpace != activeSpaceID { return nil }
+            // A window on a NON-ACTIVE native Space is absent from the on-screen
+            // list (it still exists in AX). With per-display Spaces modeled this
+            // is judged against the active Space of the window's OWN display
+            // ("Displays have separate Spaces"); otherwise the single global
+            // active Space - byte-identical to the pre-multi-display behavior.
+            if onscreenOnly && !windowIsOnActiveSpace(w) { return nil }
             nextCGID += 1
             // Apply the test-only AX-vs-CG divergence: the reported CG bounds are
             // the AX frame shifted by `cgFrameOffset` (origin + size), modeling a

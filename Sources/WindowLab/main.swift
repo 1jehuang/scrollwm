@@ -401,6 +401,14 @@ case "perspacefallbacktest":
     // UNAVAILABLE, the per-Space feature silently falls back to the single-strip
     // model (never crashes, still arranges). Always headless.
     runHeadlessPerSpaceFallbackTest()
+case "multidisplayperspacetest":
+    // Headless MULTI-display per-native-Space strips test ("Displays have
+    // separate Spaces"): each monitor follows ITS OWN Desktop - switching one
+    // monitor's Desktop re-points only that monitor's strip, a window opened on
+    // it tiles there, and the other monitor is untouched. Drives the REAL multi-
+    // display controller + per-strip monitors + per-display Space probe vs the
+    // sim. Never touches a real window/monitor/Space/keyboard.
+    runHeadlessMultiDisplayPerSpaceTest()
 case "clamshelltest":
     // Headless CLAMSHELL / equal-display repro: drives the REAL controller's
     // settled-display-change path through a laptop-lid-close transition (built-in
