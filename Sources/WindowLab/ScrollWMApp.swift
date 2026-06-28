@@ -109,6 +109,24 @@ final class ScrollWMController: NSObject {
     /// swapped every engine out from under the menu bar.
     var menuBarStripState: TeleportEngine.StripState { activeStrip.engine.stripState }
 
+    /// Side-by-side overview for the menu-bar icon: ONE panel per managed strip
+    /// (one per monitor), so the icon draws EVERY display's strip rather than
+    /// only the focused one. Returns an empty array when there is a single strip
+    /// or the feature is off, so the menu bar keeps the rich animated single-
+    /// strip presentation; the menu bar only switches into the overview when
+    /// this has more than one entry. Read fresh on every refresh so it tracks
+    /// the engine-swapping multi-display arrange path.
+    var menuBarDisplayPanels: [MenuBarStripView.DisplayPanelState] {
+        guard config.menuBar.showAllDisplays, strips.count > 1 else { return [] }
+        return strips.enumerated().map { (i, strip) in
+            MenuBarStripView.DisplayPanelState(
+                index: i + 1,
+                state: strip.engine.stripState,
+                managing: strip.isManaging,
+                isActive: i == activeStripIndex)
+        }
+    }
+
     /// Sandbox lock. When set, the controller can ONLY ever adopt/manage these
     /// PIDs: `toggle()` and the menu/hotkey arrange path force this filter, so
     /// no code path can touch the user's real windows. Used by `sandbox` mode
@@ -2062,10 +2080,12 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     /// hosted view animates the new geometry smoothly.
     private func setContentWidth(_ width: CGFloat) {
         // The strip self-limits to maxContentWidth; the key-hint HUD may append
-        // text to its right and request a wider icon. Allow that extra room so
-        // the hint is never clipped, but still cap the total so a runaway width
+        // text to its right and request a wider icon, and the multi-display
+        // overview lays several monitors' strips side by side. Allow that extra
+        // room so neither is clipped, but still cap the total so a runaway width
         // can't eat the menu bar.
-        let ceiling = stripView.maxContentWidth + MenuBarStripView.maxHintExtraWidth
+        let ceiling = stripView.maxContentWidth
+            + max(MenuBarStripView.maxHintExtraWidth, MenuBarStripView.maxMultiDisplayExtraWidth)
         let clamped = max(stripView.minContentWidth, min(width, ceiling))
         guard abs(clamped - contentWidth) >= 0.5 else { return }
         contentWidth = clamped
@@ -2138,7 +2158,16 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         // Feed the live engine state into the animated view; it diffs against
         // the previous state and animates the change at the display's refresh
         // rate, then idles its display link once everything settles.
-        stripView.apply(state: stripState, managing: controller.isManaging)
+        //
+        // With more than one managed display (and the feature on), draw EVERY
+        // display's strip side by side instead of only the focused one; the view
+        // routes single/zero-panel cases back to the animated single-strip path.
+        let panels = controller.menuBarDisplayPanels
+        if panels.count > 1 {
+            stripView.applyDisplays(panels, managing: controller.isManaging)
+        } else {
+            stripView.apply(state: stripState, managing: controller.isManaging)
+        }
         updateIndicators()
         refreshCount &+= 1
     }

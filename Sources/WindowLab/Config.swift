@@ -137,6 +137,12 @@ struct ScrollWMConfig: Equatable {
         /// `FloatingStripIndicator`. Set false to keep the status only in the
         /// real menu bar.
         var showExternalDisplayIndicator: Bool = true
+        /// Draw EVERY managed display's strip side by side in the one menu-bar
+        /// icon (the focused/active monitor highlighted), instead of only the
+        /// strip the keyboard is currently on. On by default; only ever changes
+        /// the icon when more than one display is being managed. With a single
+        /// display the icon keeps its rich animated single-strip presentation.
+        var showAllDisplays: Bool = true
     }
 
     /// In-app updater behavior. ScrollWM checks GitHub Releases for a newer
@@ -256,6 +262,7 @@ struct ScrollWMConfig: Equatable {
                 "showWorkspaceNumber": menuBar.showWorkspaceNumber,
                 "showAllWorkspaces": menuBar.showAllWorkspaces,
                 "showExternalDisplayIndicator": menuBar.showExternalDisplayIndicator,
+                "showAllDisplays": menuBar.showAllDisplays,
             ],
             "update": [
                 "enabled": update.enabled,
@@ -334,6 +341,7 @@ struct ScrollWMConfig: Equatable {
             if let n = mb["showWorkspaceNumber"] as? Bool { config.menuBar.showWorkspaceNumber = n }
             if let a = mb["showAllWorkspaces"] as? Bool { config.menuBar.showAllWorkspaces = a }
             if let e = mb["showExternalDisplayIndicator"] as? Bool { config.menuBar.showExternalDisplayIndicator = e }
+            if let d = mb["showAllDisplays"] as? Bool { config.menuBar.showAllDisplays = d }
             // Keep the clamps sane regardless of what's in the file.
             config.menuBar.pointsPerScreen = max(8, config.menuBar.pointsPerScreen)
             config.menuBar.minWidth = max(12, config.menuBar.minWidth)
@@ -520,7 +528,8 @@ struct ScrollWMConfig: Equatable {
         "pinHighPriority": true,  // keep ScrollWM in the highest-priority menu-bar slot so it stays visible even when the bar is crowded
         "showWorkspaceNumber": true, // show the active vertical-workspace number on the icon (only when >1 workspace)
         "showAllWorkspaces": false,   // stack EVERY workspace's strip on the icon, not just the active one (only when >1 workspace)
-        "showExternalDisplayIndicator": true // also float a small mini-map on monitors that have no system menu bar (only with >1 display)
+        "showExternalDisplayIndicator": true, // also float a small mini-map on monitors that have no system menu bar (only with >1 display)
+        "showAllDisplays": true  // draw EVERY monitor's strip side by side in the icon (only with >1 managed display)
       },
 
       // In-app updates. ScrollWM checks GitHub Releases so you actually receive

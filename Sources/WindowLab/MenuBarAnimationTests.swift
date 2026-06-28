@@ -282,6 +282,57 @@ enum MenuBarAnimationTests {
         emptyBadgeView.apply(state: emptyStack, managing: false, now: vt)
         check("no badge once released", !emptyBadgeView.debugShowsBadge)
 
+        // MARK: Multi-display side-by-side overview
+
+        // Build per-display panels: 3 monitors, the 2nd active, with different
+        // window counts (incl. a dormant/empty one).
+        func panel(_ index: Int, ids: [UInt64], focus: Int, managing: Bool, active: Bool)
+            -> MenuBarStripView.DisplayPanelState {
+            MenuBarStripView.DisplayPanelState(
+                index: index, state: state(ids, focus: focus), managing: managing, isActive: active)
+        }
+        let disp = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 200, height: 22))
+
+        // Single panel: keep the rich single-strip path (NOT the overview).
+        disp.applyDisplays([panel(1, ids: [1, 2], focus: 0, managing: true, active: true)],
+                           managing: true, now: vt)
+        check("one display -> single-strip path", !disp.debugMultiDisplay)
+        check("one display -> no panels held", disp.debugDisplayPanelCount == 0)
+
+        // Two+ panels: the icon switches into the side-by-side overview.
+        let threeUp = [panel(1, ids: [1, 2, 3], focus: 1, managing: true, active: false),
+                       panel(2, ids: [4, 5], focus: 0, managing: true, active: true),
+                       panel(3, ids: [], focus: 0, managing: false, active: false)]
+        disp.applyDisplays(threeUp, managing: true, now: vt)
+        check("multi display -> overview mode", disp.debugMultiDisplay)
+        check("overview holds every display panel", disp.debugDisplayPanelCount == 3)
+
+        // The overview is WIDER than any single panel (it hosts them all) but is
+        // still capped so it never overruns the menu bar.
+        let wOverview = disp.debugDesiredContentWidth(forDisplays: threeUp)
+        let wOnePanel = disp.debugDesiredContentWidth(
+            forDisplays: [panel(1, ids: [1, 2, 3], focus: 1, managing: true, active: false),
+                          panel(2, ids: [4, 5], focus: 0, managing: true, active: true)])
+        check("3-display overview wider than 2-display", wOverview > wOnePanel)
+        let ceiling = MenuBarStripView.maxMultiDisplayExtraWidth + 220 // maxContentWidth default
+        check("overview width capped", wOverview <= ceiling + 0.5)
+
+        // A busy overview (many windows on several displays) stays capped.
+        let busy = (1...4).map { panel($0, ids: Array(UInt64(($0)*10)..<UInt64($0*10 + 8)),
+                                       focus: 0, managing: true, active: $0 == 1) }
+        check("busy overview width capped", disp.debugDesiredContentWidth(forDisplays: busy) <= ceiling + 0.5)
+
+        // Returning to a single display drops the overview (back to animated).
+        disp.applyDisplays([panel(1, ids: [1, 2], focus: 0, managing: true, active: true)],
+                           managing: true, now: vt)
+        check("back to one display leaves overview", !disp.debugMultiDisplay)
+        check("back to one display drops panels", disp.debugDisplayPanelCount == 0)
+
+        // A plain single-strip `apply` also clears any overview panels.
+        disp.applyDisplays(threeUp, managing: true, now: vt)
+        disp.apply(state: state([1, 2], focus: 0), managing: true, now: vt)
+        check("apply() clears overview panels", disp.debugDisplayPanelCount == 0)
+
         print("\n[animtest] \(passed) passed, \(failed) failed")
         return failed == 0
     }

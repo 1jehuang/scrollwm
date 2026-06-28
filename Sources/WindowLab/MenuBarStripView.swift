@@ -543,6 +543,9 @@ final class MenuBarStripView: NSView {
     /// `now` is injectable so the offscreen render harness can drive a virtual
     /// clock; in production it defaults to the real media clock.
     func apply(state: TeleportEngine.StripState, managing: Bool, now: CFTimeInterval = CACurrentMediaTime()) {
+        // Leaving the multi-display overview (back to a single monitor): drop the
+        // panels so `draw` resumes the animated single-strip presentation.
+        displayPanels = []
         let actions = MenuBarDiff.infer(
             old: lastState, oldManaging: lastManaging,
             new: state, newManaging: managing
@@ -596,6 +599,86 @@ final class MenuBarStripView: NSView {
         ensureAnimating()
         needsDisplay = true
     }
+
+    // MARK: - Public entry: apply EVERY display's strip (multi-monitor overview)
+
+    /// Drive the side-by-side multi-display overview: draw EVERY managed
+    /// display's strip in the one menu-bar icon (the focused/active one
+    /// highlighted) instead of only the monitor the keyboard is currently on.
+    ///
+    /// Routes to the rich single-strip `apply` path when there are fewer than
+    /// two panels (so a single-display setup, or a fallback, keeps the animated
+    /// presentation). With two or more it switches the icon into the static
+    /// overview, sizes the status item to fit, and redraws. The key-hint HUD
+    /// still overlays on top in either mode.
+    func applyDisplays(_ panels: [DisplayPanelState], managing: Bool,
+                       now: CFTimeInterval = CACurrentMediaTime()) {
+        guard panels.count > 1 else {
+            // One (or zero) display: keep the lively single-strip presentation.
+            displayPanels = []
+            let single = panels.first?.state
+                ?? TeleportEngine.StripState(slots: [], viewportX: 0, viewportWidth: 1,
+                                             focusIndex: 0, lastTeleportMs: 0)
+            apply(state: single, managing: managing, now: now)
+            return
+        }
+        displayPanels = panels
+        // The overview is static (no per-column springs): like the stacked-
+        // workspaces overview it is redrawn whole on each apply. Clear the
+        // single-strip diff bookkeeping + animated slots so a later return to
+        // single mode re-enters clean, and the display link can settle (the
+        // overview draws straight from `displayPanels`, never from `slots`).
+        slots = []
+        lastState = nil
+        lastManaging = managing
+        manageFade.target = managing ? 1 : 0
+        // Size the icon to host all panels, then report so the host resizes the
+        // status item (the HUD, if up, still appends to the right).
+        lastStripContentWidth = multiDisplayContentWidth(panels)
+        reportDesiredWidthIfChanged()
+        ensureAnimating()
+        needsDisplay = true
+    }
+
+    /// The icon's desired CONTENT width (points) for the multi-display overview:
+    /// each panel's own strip map (clamped to the per-panel bounds) plus its
+    /// display-number badge gutter, with a hairline divider between panels. The
+    /// whole thing is capped so several busy monitors never overrun the bar.
+    private func multiDisplayContentWidth(_ panels: [DisplayPanelState]) -> CGFloat {
+        guard panels.count > 1 else { return minContentWidth }
+        let mapsAndBadges = panels.reduce(CGFloat(0)) { acc, p in
+            acc + multiBadgeGutter + panelMapWidth(p.state)
+        }
+        let dividers = multiDivider * CGFloat(panels.count - 1)
+        let total = mapsAndBadges + dividers + hInset * 2
+        return min(max(total, minContentWidth), maxContentWidth + Self.maxMultiDisplayExtraWidth)
+    }
+
+    /// One display's strip-map width (points) in the overview: its canvas span
+    /// mapped at the shared density, clamped to the per-panel min/max so an
+    /// empty monitor still reads as a panel and a busy one never eats the icon.
+    private func panelMapWidth(_ state: TeleportEngine.StripState) -> CGFloat {
+        var minX = state.viewportX
+        var maxX = state.viewportX + state.viewportWidth
+        for s in state.slots {
+            minX = min(minX, s.canvasX)
+            maxX = max(maxX, s.canvasX + s.width)
+        }
+        let span = max(maxX - minX, 1)
+        return MenuBarMetrics.contentWidth(
+            span: span, screenWidth: max(state.viewportWidth, 1),
+            pointsPerScreen: pointsPerScreen,
+            minWidth: multiPanelMinWidth, maxWidth: multiPanelMaxWidth)
+    }
+
+    /// The icon's desired CONTENT width for `panels` (pure; headless tests).
+    func debugDesiredContentWidth(forDisplays panels: [DisplayPanelState]) -> CGFloat {
+        multiDisplayContentWidth(panels)
+    }
+    /// Whether the last `applyDisplays` selected the side-by-side overview.
+    var debugMultiDisplay: Bool { multiDisplay }
+    /// Number of display panels the overview is currently holding.
+    var debugDisplayPanelCount: Int { displayPanels.count }
 
     /// Measured size of the chord glyphs in the keycap font (zero if no chord).
     private func chordTextSize() -> CGSize {
@@ -837,6 +920,20 @@ final class MenuBarStripView: NSView {
         let mapW = trailing > 0 ? max(bounds.width - trailing, 0) : bounds.width
         let mapRect = NSRect(x: bounds.minX, y: bounds.minY, width: mapW, height: bounds.height)
 
+        // Multi-display overview: draw EVERY managed display's strip side by
+        // side (focused one highlighted) instead of the single animated strip.
+        // The key-hint HUD still overlays to the right below.
+        if multiDisplay {
+            drawDisplayPanels(in: mapRect, alpha: CGFloat(max(manageFade.value, 0.001)))
+            if hud > 0.01, hintActive {
+                let hintRect = NSRect(x: mapRect.maxX, y: bounds.minY,
+                                      width: max(bounds.maxX - mapRect.maxX, 0),
+                                      height: bounds.height)
+                drawKeyHint(in: hintRect, alpha: hud)
+            }
+            return
+        }
+
         // Carve a left gutter for the workspace-number badge (drawn last, on
         // top of nothing else, so it never overlaps a column). The strip/dormant
         // graphic uses the remaining region to its right. The gutter tracks the
@@ -1065,6 +1162,144 @@ final class MenuBarStripView: NSView {
         sep.lineWidth = 0.75
         NSColor.labelColor.withAlphaComponent(0.18 * alpha).setStroke()
         sep.stroke()
+    }
+
+    /// Draw EVERY managed display's strip side by side in the one menu-bar icon:
+    /// each panel is a small display-number badge followed by that monitor's
+    /// strip map (its active vertical workspace's columns), with a hairline
+    /// divider between panels. The ACTIVE display (the one global hotkeys act on)
+    /// gets a subtle backing + full brightness; the others are dimmed. Static
+    /// (no per-column springs): an at-a-glance "where is everything" overview,
+    /// redrawn whole on each `applyDisplays`.
+    private func drawDisplayPanels(in contentRect: NSRect, alpha: CGFloat) {
+        guard displayPanels.count > 1 else { return }
+        let rect = contentRect.insetBy(dx: hInset, dy: 0)
+        guard rect.width > 4, rect.height > 4 else { return }
+
+        // Lay panels left-to-right at their own desired widths, scaled to fit
+        // the icon if the sum (plus badges + dividers) overflows the region.
+        let mapWidths = displayPanels.map { panelMapWidth($0.state) }
+        let badges = multiBadgeGutter * CGFloat(displayPanels.count)
+        let dividers = multiDivider * CGFloat(displayPanels.count - 1)
+        let wantMaps = mapWidths.reduce(0, +)
+        let avail = max(rect.width - badges - dividers, 1)
+        let fit = wantMaps > avail ? avail / wantMaps : 1   // compress if needed
+
+        var x = rect.minX
+        for (i, panel) in displayPanels.enumerated() {
+            let mapW = mapWidths[i] * fit
+            let panelW = multiBadgeGutter + mapW
+            let panelRect = NSRect(x: x, y: rect.minY, width: panelW, height: rect.height)
+            drawDisplayPanel(panel, in: panelRect, alpha: alpha)
+            x += panelW
+
+            // Hairline divider between adjacent panels.
+            if i < displayPanels.count - 1 {
+                let dividerX = x + multiDivider / 2
+                let sep = NSBezierPath()
+                sep.move(to: NSPoint(x: dividerX, y: rect.minY + 3))
+                sep.line(to: NSPoint(x: dividerX, y: rect.maxY - 3))
+                sep.lineWidth = 0.75
+                NSColor.labelColor.withAlphaComponent(0.18 * alpha).setStroke()
+                sep.stroke()
+                x += multiDivider
+            }
+        }
+    }
+
+    /// Draw ONE display's panel: the display-number badge in a left gutter, then
+    /// its strip map (columns + viewport outline). The active display reads at
+    /// full brightness with a faint backing; inactive ones are dimmed.
+    private func drawDisplayPanel(_ panel: DisplayPanelState, in rect: NSRect, alpha: CGFloat) {
+        let active = panel.isActive
+        let panelAlpha = (active ? 1.0 : 0.55) * alpha
+
+        // Active backing so the eye finds "the monitor I'm on" instantly.
+        if active {
+            let bg = NSBezierPath(roundedRect: rect.insetBy(dx: 0, dy: 1), xRadius: 2, yRadius: 2)
+            NSColor.labelColor.withAlphaComponent(0.06 * alpha).setFill()
+            bg.fill()
+        }
+
+        // 1. Display-number badge in the left gutter.
+        let badgeRect = NSRect(x: rect.minX, y: rect.minY,
+                               width: multiBadgeGutter, height: rect.height)
+        let label = "\(panel.index)"
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        para.lineBreakMode = .byClipping
+        let badgeAttrs: [NSAttributedString.Key: Any] = [
+            .font: Self.badgeFont,
+            .foregroundColor: NSColor.labelColor.withAlphaComponent((active ? 0.95 : 0.6) * alpha),
+            .paragraphStyle: para,
+        ]
+        let size = (label as NSString).size(withAttributes: badgeAttrs)
+        let tRect = NSRect(x: badgeRect.minX, y: badgeRect.minY + (badgeRect.height - size.height) / 2,
+                           width: badgeRect.width, height: size.height)
+        (label as NSString).draw(in: tRect, withAttributes: badgeAttrs)
+
+        // 2. Strip map to the right of the badge.
+        let mapRect = NSRect(x: rect.minX + multiBadgeGutter, y: rect.minY,
+                             width: max(rect.width - multiBadgeGutter, 0), height: rect.height)
+        guard mapRect.width > 2 else { return }
+
+        if !panel.managing || panel.state.slots.isEmpty {
+            // Dormant / empty monitor: a faint placeholder so the panel reads.
+            let dashH = max(mapRect.height * 0.4, 1.5)
+            let r = NSRect(x: mapRect.minX, y: mapRect.midY - dashH / 2,
+                           width: min(mapRect.width, 9), height: dashH)
+            let p = NSBezierPath(roundedRect: r, xRadius: 1, yRadius: 1)
+            p.setLineDash([2, 1.5], count: 2, phase: 0)
+            p.lineWidth = 0.75
+            NSColor.secondaryLabelColor.withAlphaComponent(0.5 * panelAlpha).setStroke()
+            p.stroke()
+            return
+        }
+
+        let state = panel.state
+        let band = mapRect.insetBy(dx: 0, dy: vInset)
+        var minX = state.viewportX
+        var maxX = state.viewportX + state.viewportWidth
+        for s in state.slots {
+            minX = min(minX, s.canvasX)
+            maxX = max(maxX, s.canvasX + s.width)
+        }
+        let span = max(maxX - minX, 1)
+        let scale = band.width / CGFloat(span)
+        func mapX(_ v: CGFloat) -> CGFloat { band.minX + (v - minX) * scale }
+
+        for (i, s) in state.slots.enumerated() {
+            let x = mapX(s.canvasX)
+            let w = max(s.width * scale - 1, 1.5)
+            let r = NSRect(x: x, y: band.minY, width: w, height: band.height)
+            let path = NSBezierPath(roundedRect: r, xRadius: 1.4, yRadius: 1.4)
+            let focused = i == state.focusIndex
+            let tint = AppColors.color(appName: s.appName, title: s.title)
+
+            let bodyWhite = (focused ? 0.7 : 0.42)
+            NSColor(white: CGFloat(bodyWhite), alpha: 1)
+                .withAlphaComponent(panelAlpha).setFill()
+            path.fill()
+
+            NSGraphicsContext.saveGraphicsState()
+            path.addClip()
+            let half = NSRect(x: r.minX, y: r.minY, width: r.width, height: r.height * 0.55)
+            let gradient = NSGradient(colors: [tint.withAlphaComponent(CGFloat(0.8) * panelAlpha),
+                                               tint.withAlphaComponent(0)])
+            gradient?.draw(in: half, angle: 90)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+
+        // Viewport outline (brighter on the active display).
+        let vx = mapX(state.viewportX) + 0.5
+        let vw = max(state.viewportWidth * scale - 1, 3)
+        let vRect = NSRect(x: vx, y: band.minY + 0.5,
+                           width: min(vw, band.maxX - vx - 0.5),
+                           height: band.height - 1)
+        let vPath = NSBezierPath(roundedRect: vRect, xRadius: 1.6, yRadius: 1.6)
+        vPath.lineWidth = 0.75
+        NSColor.labelColor.withAlphaComponent((active ? 0.9 : 0.5) * alpha).setStroke()
+        vPath.stroke()
     }
 
     /// Draw EVERY workspace's strip stacked top-to-bottom: index 0 (the topmost

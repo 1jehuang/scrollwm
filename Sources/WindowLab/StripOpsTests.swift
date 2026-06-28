@@ -619,6 +619,17 @@ enum StripOpsTests {
             check("config menuBar.pinHighPriority defaults when unset", pUnset.menuBar.pinHighPriority == true)
         } catch { check("config menuBar.pinHighPriority parses", false) }
 
+        // menuBar.showAllDisplays: defaults on, parses an explicit override,
+        // and defaults back on when unset.
+        check("config menuBar.showAllDisplays defaults on",
+              ScrollWMConfig.default.menuBar.showAllDisplays == true)
+        do {
+            let p = try ScrollWMConfig.parse(jsonc: #"{ "menuBar": { "showAllDisplays": false } }"#)
+            check("config menuBar.showAllDisplays false parsed", p.menuBar.showAllDisplays == false)
+            let pUnset = try ScrollWMConfig.parse(jsonc: #"{ "menuBar": { } }"#)
+            check("config menuBar.showAllDisplays defaults when unset", pUnset.menuBar.showAllDisplays == true)
+        } catch { check("config menuBar.showAllDisplays parses", false) }
+
         // Malformed JSON throws (caller falls back to defaults).
         var threw = false
         do { _ = try ScrollWMConfig.parse(jsonc: "{ not json ]") } catch { threw = true }

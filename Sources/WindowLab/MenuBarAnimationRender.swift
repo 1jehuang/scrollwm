@@ -145,6 +145,28 @@ enum MenuBarAnimationRender {
                 view.showAllWorkspaces = false; view.showWorkspaceNumber = true
                 view.apply(state: state([1,2,3,4], focus: 1), managing: true, now: vt)
             }, holdFrames: 18),
+            // Multi-display overview: every monitor's strip side by side, the
+            // active one (display 2 here) highlighted.
+            Step(label: "displays-2up", apply: {
+                view.applyDisplays([
+                    .init(index: 1, state: state([1,2,3], focus: 0), managing: true, isActive: false),
+                    .init(index: 2, state: state([4,5], focus: 1), managing: true, isActive: true),
+                ], managing: true, now: vt)
+            }, holdFrames: 20),
+            Step(label: "displays-3up", apply: {
+                view.applyDisplays([
+                    .init(index: 1, state: state([1,2,3], focus: 0), managing: true, isActive: false),
+                    .init(index: 2, state: state([4,5], focus: 1), managing: true, isActive: true),
+                    .init(index: 3, state: state([], focus: 0), managing: false, isActive: false),
+                ], managing: true, now: vt)
+            }, holdFrames: 20),
+            Step(label: "displays-focus", apply: {
+                view.applyDisplays([
+                    .init(index: 1, state: state([1,2,3], focus: 2), managing: true, isActive: true),
+                    .init(index: 2, state: state([4,5], focus: 1), managing: true, isActive: false),
+                    .init(index: 3, state: state([6], focus: 0), managing: true, isActive: false),
+                ], managing: true, now: vt)
+            }, holdFrames: 20),
             Step(label: "release",   apply: { view.apply(state: state([], focus: 0), managing: false, now: vt) }, holdFrames: 18),
         ]
 
