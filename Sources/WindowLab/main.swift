@@ -293,6 +293,14 @@ case "coldstartbursttest":
     // adopts EVERY first window fast, in strip order, exactly once (no
     // double-adopt / no drop), ending with the strip == seed + N. Always headless.
     runHeadlessColdStartBurstTest()
+case "coldstartlive":
+    // LIVE (real-AX) cold-start latency proof: launch a BRAND-NEW disposable
+    // process and time until its FIRST window lands in its strip slot, via the
+    // real didLaunchApplication -> immediate-register -> onAppLaunched ->
+    // fastAdopt(coldStart:true) path. Hard-scoped (pidFilter) to the spawned
+    // pids + a deliberately slow 5s poll, so any sub-second adoption proves the
+    // launch fast path, not the poll. Never touches the user's real windows.
+    runColdStartLiveTest()
 case "spawnvalidate":
     // Headless property validator: EVERY spawn (across a named edge-case matrix
     // + randomized fuzz) must land in the column right of focus, at its exact
@@ -517,6 +525,9 @@ func scrollwmHelpText() -> String {
                                headless A/B latency: a brand-new app's first
                                window landing in the strip, launch fast path
                                OFF (baseline) vs ON (optimized)
+      WindowLab coldstartlive  LIVE cold-start latency: launch a brand-new
+                               disposable process, time its first window into the
+                               strip (real AX; isolated to spawned pids)
       WindowLab sandbox [n] [--display M]
                                drive the REAL controller on n disposable windows
                                it spawns (your real windows are untouched)
