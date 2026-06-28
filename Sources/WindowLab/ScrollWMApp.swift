@@ -74,11 +74,35 @@ final class ScrollWMController: NSObject {
     /// hotplug burst, short enough to feel instant.
     private let displayChangeDebounceInterval: TimeInterval = 0.25
 
+    /// Pending coalesced menu-bar refresh after a native macOS Space (Desktop)
+    /// switch. The `LifecycleMonitor` already observes `activeSpaceDidChange` to
+    /// resync the STRIP, but on a Space where the strip FREEZES (its windows are
+    /// off the active Space) that resync mutates nothing, so the engine's
+    /// `onLayoutChange` never fires and the menu-bar mini-map / floating-indicator
+    /// "active" highlight + active-workspace number stay stale until the next
+    /// hotkey. The controller therefore observes the SAME public, permission-free
+    /// edge and unconditionally re-paints the icon after the switch settles,
+    /// regardless of whether the strip itself changed. Debounced so a burst of
+    /// rapid Ctrl-arrow switches collapses into one repaint.
+    private var spaceChangeDebounce: DispatchWorkItem?
+    /// Debounce window for `activeSpaceDidChange`: a touch longer than the
+    /// monitor's own Space-resync debounce (0.05s) so the icon repaints AFTER the
+    /// strip has reconciled to the new Space, painting the settled state once.
+    private let spaceChangeDebounceInterval: TimeInterval = 0.12
+
     /// Observer for app-activation, used to drive focus-follows-display: when the
     /// user activates an app on another monitor, the active strip switches so
     /// hotkeys act on that monitor. Removed on deinit. nil in tests that never
     /// install it.
     private var focusFollowObserver: NSObjectProtocol?
+
+    /// Observer for native macOS Space (Desktop) switches. Drives an
+    /// unconditional, debounced menu-bar refresh so the icon re-evaluates its
+    /// active-workspace number + per-display "active" highlight on every Space
+    /// change, even when the strip itself freezes (and so its `onLayoutChange`
+    /// never fires). Removed on deinit. nil in tests that never install it (they
+    /// drive `debugHandleActiveSpaceChange()` directly).
+    private var spaceChangeObserver: NSObjectProtocol?
 
     /// Stable `CGDirectDisplayID` of the display the ACTIVE strip is bound to.
     /// Tracked per strip (see `DisplayStrip.displayID`) so `applySettledDisplayChange`
@@ -190,6 +214,21 @@ final class ScrollWMController: NSObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 self?.syncActiveStripToFocus()
             }
+        }
+
+        // Native macOS Space (Desktop) switch -> repaint the menu-bar icon. The
+        // `LifecycleMonitor` already resyncs the strip on this same edge, but a
+        // resync only fires `onLayoutChange` (-> refresh) when the strip actually
+        // mutates; on a Space where the strip freezes it stays inert and the icon
+        // would keep a stale active-workspace number / per-display highlight until
+        // the next hotkey. Observing the edge HERE too guarantees an unconditional,
+        // debounced refresh regardless of whether the strip changed. Public,
+        // permission-free signal; the same one the monitor uses (no new permission).
+        spaceChangeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.handleActiveSpaceChange()
         }
 
         menuBar = ProductionMenuBar(controller: self)
@@ -395,21 +434,53 @@ final class ScrollWMController: NSObject {
         let displayIDs: [CGDirectDisplayID]? = ids.allSatisfy { $0 != nil }
             ? ids.compactMap { $0 } : nil
 
-        // Pure policy: same display (by stable id, else resized/overlap) -> follow
-        // it; strip display gone -> migrate to the best survivor; none -> keep put.
-        let decision = StripDisplayResolver.resolve(
-            stripFrame: engine.screenFrame,
-            displays: visibleFrames,
-            stripDisplayID: stripDisplayID,
-            displayIDs: displayIDs)
-        guard let idx = decision.displayIndex else { return }
-
-        if decision.migrated {
-            print("display change: strip's display gone; migrating strip to "
-                  + "\(displays[idx].name)")
+        // Rebind EVERY strip to its resolved display, not just the active one. On
+        // a multi-display setup a BACKGROUND monitor's strip must also follow its
+        // own physical display (by stable id) across a hotplug / rearrange /
+        // resolution change, or its geometry (and parking) goes stale until it
+        // happens to become active. Each strip resolves independently from its own
+        // frame + displayID via the same pure `StripDisplayResolver`.
+        for strip in strips {
+            let decision = StripDisplayResolver.resolve(
+                stripFrame: strip.engine.screenFrame,
+                displays: visibleFrames,
+                stripDisplayID: strip.displayID,
+                displayIDs: displayIDs)
+            guard let idx = decision.displayIndex else { continue }
+            if decision.migrated {
+                print("display change: strip's display gone; migrating strip to "
+                      + "\(displays[idx].name)")
+            }
+            refreshDisplayGeometry(for: strip, displays: displays,
+                                   stripIndex: idx, relayout: true)
         }
-        refreshDisplayGeometry(for: activeStrip, displays: displays,
-                               stripIndex: idx, relayout: true)
+
+        // ALWAYS repaint the menu bar at the end, even when nothing relaid out
+        // (dormant, or a change that moved no strip). The floating per-display
+        // indicators are keyed off the live `NSScreen.screens` set, so a
+        // plug/unplug/resolution change must reconcile their panels (create new,
+        // tear down gone) regardless of whether any strip mutated - which
+        // `refreshDisplayGeometry`'s relayout+managing-gated refresh does not
+        // guarantee. Idempotent and cheap.
+        menuBar.refresh()
+    }
+
+    /// React to a native macOS Space (Desktop) switch by repainting the menu-bar
+    /// icon + floating indicators after the switch settles. Debounced so a burst
+    /// of rapid Ctrl-arrow / Mission Control switches collapses into one repaint.
+    /// Unconditional: unlike the `LifecycleMonitor`'s Space-driven resync (which
+    /// only repaints when the strip actually mutates), this guarantees the icon's
+    /// active-workspace number + per-display "active" highlight re-evaluate even
+    /// when the strip freezes on the new Space. The headless `debugHandleActiveSpaceChange()`
+    /// drives this same path.
+    private func handleActiveSpaceChange() {
+        spaceChangeDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.menuBar?.refresh()
+        }
+        spaceChangeDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + spaceChangeDebounceInterval,
+                                      execute: work)
     }
 
     /// AppKit-free snapshot of one connected display, captured at a single point
@@ -1663,6 +1734,24 @@ final class ScrollWMController: NSObject {
         guard strips.indices.contains(s) else { return }
         strips[s].engine.debugFireLayoutChange()
     }
+
+    /// Headless seam for G1: drive the controller's native-Space-switch reaction
+    /// synchronously (the production code path observes
+    /// `NSWorkspace.activeSpaceDidChangeNotification`; headless tests call this so
+    /// they need not depend on the notification actually being delivered). Runs
+    /// the SAME debounced `handleActiveSpaceChange` the observer triggers, so a
+    /// test then pumps the run loop past the debounce and asserts the icon
+    /// repainted (`debugMenuBarRefreshCount` bumped) even on a frozen-Space switch.
+    func debugHandleActiveSpaceChange() { handleActiveSpaceChange() }
+
+    /// Per-strip live usable (visible) AX frames, in display order. Lets the
+    /// status-icon/display tests assert that a settled display change rebound
+    /// EVERY strip (not just the active one) to its resolved display geometry.
+    var debugStripScreenFrames: [CGRect] { strips.map { $0.engine.screenFrame } }
+    /// Per-strip full display (parking-reference) AX frames, in display order
+    /// (nil where a strip was never bound to a display). The companion to
+    /// `debugStripScreenFrames` for the per-strip rebind assertions.
+    var debugStripDisplayFrames: [CGRect?] { strips.map { $0.engine.stripDisplayFrame } }
 
     /// Headless test seam: deliver a key chord exactly as a real keypress would
     /// route through ScrollWM, with NO CGEvent injected (so nothing leaks to the
