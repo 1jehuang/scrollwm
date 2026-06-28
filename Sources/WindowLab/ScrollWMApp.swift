@@ -43,6 +43,11 @@ final class ScrollWMController: NSObject {
         set { activeStrip.lifecycle = newValue }
     }
     private var menuBar: ProductionMenuBar!
+    /// Opaque edge scrims that cover the unavoidable macOS clamp sliver of a
+    /// parked column, so the user never sees a stray window slice at a screen
+    /// edge. Updated on every layout change; hidden on release/quit. Creates no
+    /// real window under a headless backend. See `EdgeScrim`.
+    private let edgeScrim = EdgeScrim()
     private let hotkeys = HotkeyManager()
     /// CLI control plane (Unix socket). Started only by the production `run`
     /// path via `startControlServer()`; sandbox/tests never expose it.
@@ -288,9 +293,31 @@ final class ScrollWMController: NSObject {
     private func wireStripLayoutCallbacks() {
         for strip in strips {
             strip.engine.onLayoutChange = { [weak self] in
-                DispatchQueue.main.async { self?.menuBar?.refresh() }
+                DispatchQueue.main.async {
+                    self?.menuBar?.refresh()
+                    self?.updateEdgeScrims()
+                }
             }
         }
+    }
+
+    /// Recompute and place the opaque edge scrims that cover parked-column
+    /// slivers across EVERY managing strip. Called after any layout change (the
+    /// engine's `onLayoutChange`) and on release. Pure geometry comes from each
+    /// engine (`edgeScrimRects`); here we only flip AX rects to AppKit frames and
+    /// hand them to the `EdgeScrim` window pool. No-op (and hides all) while
+    /// dormant, so a released ScrollWM leaves no chrome.
+    private func updateEdgeScrims() {
+        guard isManaging else { edgeScrim.hideAll(); return }
+        let primaryHeight = DisplayGeometry.primaryHeight(of: NSScreen.screens)
+        var frames: [CGRect] = []
+        for strip in strips where strip.isManaging {
+            guard let axStrip = strip.engine.stripDisplayFrame else { continue }
+            for axRect in strip.engine.edgeScrimRects(stripDisplay: axStrip) {
+                frames.append(DisplayGeometry.appKitFrame(axFrame: axRect, primaryHeight: primaryHeight))
+            }
+        }
+        edgeScrim.show(frames: frames)
     }
 
     /// Feed the multi-display layout (in AX top-left global coordinates) to the
@@ -1419,6 +1446,7 @@ final class ScrollWMController: NSObject {
             strip.isManaging = false
         }
         RestoreStore.clear()
+        edgeScrim.hideAll()
         menuBar.refresh()
         if failures > 0 {
             Log.warn("released: all windows placed (\(failures) failures)", "release")

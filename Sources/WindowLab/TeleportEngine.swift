@@ -750,6 +750,73 @@ final class TeleportEngine {
     /// side a column scrolled off, so the nub lands where the content went.
     enum ParkSide { case left, right }
 
+    /// Which strip-display edges currently have at least one healthy, non-suspended
+    /// column PARKED off that side (scrolled fully past the usable content region).
+    /// macOS forces a ~`peekInset`-wide sliver of every parked window to stay
+    /// visible at the strip-display edge (it refuses to move a window fully off
+    /// screen); that sliver is what users misread as a stray/broken window. The
+    /// controller paints an opaque "edge scrim" over exactly these sides to cover
+    /// the sliver, so a parked column is never visible. Pure (reads only the model)
+    /// so the policy is unit-testable without AX.
+    ///
+    /// A side counts as parked only when a column is fully past that edge of the
+    /// CONTENT region (the same boundary `onScreenTarget`/`commitOrder` use), so a
+    /// column merely peeking into the viewport never triggers a scrim. Suspended
+    /// (fullscreen / off-Space) columns are OS-owned and never parked by us, so
+    /// they are ignored.
+    func parkedEdges() -> (left: Bool, right: Bool) {
+        var left = false, right = false
+        for slot in slots {
+            guard slot.window.healthy, !slot.window.suspended else { continue }
+            let l = slot.canvasX - viewportX
+            let r = l + slot.width
+            if r <= 0 { left = true }
+            else if l >= contentWidth { right = true }
+            if left && right { break }
+        }
+        return (left, right)
+    }
+
+    /// AX-coordinate rects (top-left origin) of the opaque edge scrims that should
+    /// be shown to cover parked-column slivers, given the live strip-display frame.
+    /// Returns 0, 1, or 2 rects (left edge, right edge). Each scrim is a thin
+    /// full-display-height band pinned to the strip display's left/right edge,
+    /// exactly as wide as the reserved peek lane (`peekInset`) - precisely the
+    /// region macOS keeps a parked window's sliver in, and which on-screen columns
+    /// (laid out INSIDE the content region) never occupy. So the scrim covers the
+    /// sliver without ever clipping real window content.
+    ///
+    /// Empty when nothing is parked OR when the peek lane is too narrow to fully
+    /// contain the ~40px macOS clamp sliver (`peekInset < minSliverCover`,
+    /// including the `peekInset == 0` "edge-to-edge, no lane" opt-out): widening
+    /// the scrim past the lane would paint over a real on-screen column, so we
+    /// rather leave the (now user-accepted) sliver than clip content. Pure; the
+    /// controller flips these to AppKit frames and positions its scrim windows.
+    func edgeScrimRects(stripDisplay: CGRect) -> [CGRect] {
+        // Need a reserved lane at least as wide as the sliver to cover it without
+        // overlapping content. With no/with-too-thin a lane, do not scrim.
+        guard peekInset >= TeleportEngine.minSliverCover else { return [] }
+        let edges = parkedEdges()
+        guard edges.left || edges.right else { return [] }
+        let w = peekInset
+        var rects: [CGRect] = []
+        if edges.left {
+            rects.append(CGRect(x: stripDisplay.minX, y: stripDisplay.minY,
+                                width: w, height: stripDisplay.height))
+        }
+        if edges.right {
+            rects.append(CGRect(x: stripDisplay.maxX - w, y: stripDisplay.minY,
+                                width: w, height: stripDisplay.height))
+        }
+        return rects
+    }
+
+    /// Minimum peek-lane width that can fully contain the ~40px sliver macOS keeps
+    /// visible for an off-screen window (plus a few px of slop). A scrim is only
+    /// drawn when `peekInset >= minSliverCover`, so it never has to extend past the
+    /// reserved lane (and thus over real content) to hide the sliver.
+    static let minSliverCover: CGFloat = 44
+
     /// Off-screen X a window scrolled off `side` is shoved to. A parked window
     /// keeps its natural vertical band (its slot `y`) and only slides sideways,
     /// so macOS clamps it into a thin FULL-HEIGHT sliver at one side edge of the

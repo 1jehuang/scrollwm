@@ -781,6 +781,78 @@ enum StripOpsTests {
                   pe.onScreenTarget(for: edgeCol).x == pe.parkingX(prefer: .right))
         }
 
+        // --- Edge scrim: cover the parked sliver so it is never seen -----------
+        // The unavoidable macOS clamp sliver is what users misread as a stray
+        // window. ScrollWM paints an opaque scrim over the reserved peek lane on
+        // any side that has a parked column. `parkedEdges()`/`edgeScrimRects()`
+        // are PURE (model-only) so the policy is unit-tested with no AX.
+        do {
+            // 4 columns of 400 on a 1000-wide screen with a 48px peek lane: the
+            // content region is 904 wide. `makeEngine` packs canvasX = 0,412,824,
+            // 1236, so at viewportX 0 the last column (left edge 1236 >= 904) is
+            // parked off the RIGHT while the leading columns are on-screen.
+            let se = makeEngine(count: 4, width: 400, screenWidth: 1000)
+            se.peekInset = 48
+            se.focusIndex = 0
+            se.setViewportXForTest(0)
+            let strip = CGRect(x: 0, y: 0, width: 1000, height: 800)
+
+            let edgesR = se.parkedEdges()
+            check("scrim: trailing columns park off the RIGHT", edgesR.right && !edgesR.left)
+            let rectsR = se.edgeScrimRects(stripDisplay: strip)
+            check("scrim: exactly one (right) scrim shown", rectsR.count == 1)
+            if let r = rectsR.first {
+                check("scrim: pinned to the right edge, peek-lane wide",
+                      abs(r.maxX - strip.maxX) < 0.5 && abs(r.width - 48) < 0.5)
+                check("scrim: full display height", abs(r.height - strip.height) < 0.5)
+                // Must NOT overlap any on-screen column: on-screen columns live
+                // inside the content region, whose right edge is
+                // strip.maxX - peekInset. The scrim starts exactly there, so they
+                // only touch, never overlap.
+                check("scrim: starts at/after the content region's right edge",
+                      r.minX >= strip.maxX - se.peekInset - 0.5)
+            }
+
+            // Scroll fully to the right end: now the LEADING columns park left.
+            se.setViewportXForTest(se.maxViewportX)
+            se.focusIndex = se.slots.count - 1
+            check("scrim: leading columns park off the LEFT after scrolling right",
+                  se.parkedEdges().left)
+
+            // No parked column -> no scrim. One narrow column that fits entirely.
+            let none = makeEngine(count: 1, width: 200, screenWidth: 1000)
+            none.peekInset = 48
+            none.setViewportXForTest(0)
+            check("scrim: nothing parked -> no edges",
+                  !none.parkedEdges().left && !none.parkedEdges().right)
+            check("scrim: nothing parked -> no rects",
+                  none.edgeScrimRects(stripDisplay: strip).isEmpty)
+
+            // peekInset too small to contain the sliver -> no scrim (covering it
+            // would mean painting over real content). This is also the
+            // edge-to-edge (peekInset 0) opt-out.
+            let thin = makeEngine(count: 4, width: 400, screenWidth: 1000)
+            thin.peekInset = 20            // < minSliverCover (44)
+            thin.setViewportXForTest(0)
+            check("scrim: parked but lane too thin -> no rects (never clip content)",
+                  thin.parkedEdges().right && thin.edgeScrimRects(stripDisplay: strip).isEmpty)
+            thin.peekInset = 0
+            check("scrim: peekInset 0 (edge-to-edge) -> no rects",
+                  thin.edgeScrimRects(stripDisplay: strip).isEmpty)
+
+            // Suspended (fullscreen / off-Space) columns are OS-owned, never our
+            // parked columns: the ONLY parked-right column being suspended must
+            // drop the right edge (no scrim for a window we do not position).
+            let susp = makeEngine(count: 4, width: 400, screenWidth: 1000)
+            susp.peekInset = 48
+            susp.focusIndex = 0
+            susp.setViewportXForTest(0)
+            check("scrim: precondition - right edge parked", susp.parkedEdges().right)
+            susp.slots[susp.slots.count - 1].window.suspended = true
+            check("scrim: suspending the only parked-right column clears the right scrim",
+                  !susp.parkedEdges().right)
+        }
+
         // --- Display-aware parking edge (multi-monitor "peeking" fix) ---------
         // macOS clamps a window to keep ~40px on screen, so a parked column
         // always leaves one sliver. The side edge must be chosen so that sliver
