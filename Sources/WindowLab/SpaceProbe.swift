@@ -75,13 +75,22 @@ enum SpaceProbe {
         guard let raw = copyManagedDisplaySpaces(cid) as? [[String: Any]] else { return nil }
         // Each element describes one display: its "Current Space" dict holds the
         // active Space's id under "ManagedSpaceID" (with "id64" as a fallback on
-        // older systems). The main display is the first entry; for the
-        // single-shared-Space model that is the Space the user is viewing.
-        guard let display = raw.first,
-              let current = display["Current Space"] as? [String: Any] else { return nil }
+        // older systems). With "Displays have separate Spaces" ON each display has
+        // its OWN active Space, so prefer the MAIN display (identifier "Main");
+        // fall back to the first entry for the single-display / spans-displays
+        // case. The strip we key today lives on the main display, so the main
+        // display's Space is the right key. (A future per-display-Space refinement
+        // for multi-strip setups can read each entry by its display UUID.)
+        let display = raw.first { ($0["Display Identifier"] as? String) == "Main" } ?? raw.first
+        guard let display, let current = display["Current Space"] as? [String: Any] else { return nil }
+        return spaceID(from: current)
+    }
+
+    /// Pull the managed Space id out of a "Current Space" dict, tolerating the
+    /// `Int` vs `NSNumber` bridging differences across macOS versions.
+    private static func spaceID(from current: [String: Any]) -> Int? {
         if let id = current["ManagedSpaceID"] as? Int { return id }
         if let id = current["id64"] as? Int { return id }
-        // Some macOS versions vend these as NSNumber rather than a bridged Int.
         if let n = current["ManagedSpaceID"] as? NSNumber { return n.intValue }
         if let n = current["id64"] as? NSNumber { return n.intValue }
         return nil

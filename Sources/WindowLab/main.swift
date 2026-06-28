@@ -326,6 +326,21 @@ case "exthotplugtest":
     runHeadlessExternalHotplugTest()
 case "displaybindcheck":
     runDisplayBindCheck()
+case "spaceprobe":
+    // Dev helper: print the LIVE read-only native-Space id (the one thing the
+    // headless sim cannot prove - that the real CGS query works on this host).
+    // Switch Desktops between runs and confirm the number changes. Read-only:
+    // creates/moves/destroys nothing.
+    if SpaceProbe.isLiveProbeAvailable {
+        if let id = SpaceProbe.currentSpaceID() {
+            print("spaceprobe: active native-Space id = \(id) (per-Space strips supported)")
+            exit(0)
+        }
+        print("spaceprobe: probe symbols resolved but returned no id; per-Space strips will stay single-strip")
+        exit(1)
+    }
+    print("spaceprobe: read-only CGS Space-id symbols unavailable on this host; per-Space strips will stay single-strip")
+    exit(1)
 case "e2etest":
     args.contains("--live") ? runE2EKeybindingTest() : runHeadlessE2ETest()
 case "revealtest":
