@@ -937,6 +937,16 @@ final class ScrollWMController: NSObject {
         // give EVERY monitor its own auto-adopting strip, so this guarantee holds
         // on external monitors too, not just the strip's own display.
         monitor.autoTileEnabled = config.layout.autoTileNewWindows
+        // Per-native-Space strips (Model B): when enabled and the read-only Space
+        // probe works on this host, bind THIS strip's engine to the Space it is
+        // being arranged on, and let its monitor re-point the live strip whenever
+        // the user switches Desktops. With the flag off (default) or the probe
+        // unavailable, `beginSpaceTracking` is never called, so `switchToSpace`
+        // is inert and the engine behaves exactly as the single-strip model.
+        monitor.perSpaceStripsEnabled = config.layout.perSpaceStrips
+        if config.layout.perSpaceStrips, let id = SpaceProbe.currentSpaceID() {
+            strip.engine.beginSpaceTracking(spaceID: id)
+        }
         monitor.start()
         strip.lifecycle = monitor
     }
@@ -1607,6 +1617,23 @@ final class ScrollWMController: NSObject {
         guard strips.indices.contains(s) else { return nil }
         return strips[s].engine.slots.first { $0.window.title == title }?.window.element
     }
+
+    // --- Per-native-Space strip debug accessors (for `perspacetest`) ---
+
+    /// Turn the per-native-Space strip model on for a headless test, BEFORE
+    /// arrange (so `startLifecycle` binds the live strip to the sim's active
+    /// Space and each monitor reacts to Space switches).
+    func debugEnablePerSpaceStrips() { config.layout.perSpaceStrips = true }
+    /// The active-strip engine's currently-bound native Space id (nil = not
+    /// tracking). Reads the same engine production drives.
+    var debugActiveSpaceID: Int? { engine.activeSpaceID }
+    /// Native-Space ids the active strip currently has a strip for (active +
+    /// stashed). Lets a test assert each visited Desktop kept its own strip.
+    var debugTrackedSpaceIDs: Set<Int> { engine.trackedSpaceIDs }
+    /// Column titles on the active strip (the live Space's strip), in order.
+    var debugActiveStripColumnTitles: [String] { engine.slots.map { $0.window.title } }
+    /// Total managed windows across every native Space the active strip tracks.
+    var debugAllSpacesManagedCount: Int { engine.allSpacesManagedSlots.count }
 
     /// Headless seam: turn on the multi-display arrange path and inject a
     /// synthetic set of displays, so the per-monitor strip routing (and the
