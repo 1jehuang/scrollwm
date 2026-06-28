@@ -218,7 +218,19 @@ struct ScrollWMConfig: Equatable {
 
     /// Load the config from disk, writing a documented default file first if
     /// none exists. Never throws: malformed input falls back to defaults.
+    ///
+    /// Headless tests install a `SimWindowWorld` as `AXSource.backend` and build
+    /// the REAL `ScrollWMController`, whose `init` calls this. Reading the user's
+    /// on-disk `config.json` there would leak real machine state into the
+    /// headless run - e.g. a multi-display dev box with `multiDisplay: true`
+    /// flips the single-strip display/clamshell suites to a per-monitor arrange
+    /// they never intended to exercise, so they pass in CI but fail locally. The
+    /// suites are meant to run against a deterministic baseline, so under a test
+    /// backend we always return the documented defaults (and never touch the
+    /// user's file), matching the "tests never touch the user's real state"
+    /// contract the rest of the controller already follows.
     static func load() -> ScrollWMConfig {
+        if AXSource.backend != nil { return .default }
         let url = fileURL
         if !FileManager.default.fileExists(atPath: url.path) {
             writeDefaultFile()
