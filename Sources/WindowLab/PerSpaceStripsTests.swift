@@ -46,8 +46,12 @@ func runHeadlessPerSpaceStripsTest() {
     Headless.pump(0.2)
 
     // --- Arrange binds the live strip to the Space it ran on (Space 1). ---
+    // Capture the arranged order: arrange enumerates `sandboxPIDs` (a Set), so
+    // the column order is whatever that yields - the round-trip must restore
+    // THAT exact order, so we compare against it rather than a hardcoded order.
+    let space1Order = controller.debugActiveStripColumnTitles
     t.check("arrange adopted the 2 Space-1 windows",
-            Set(controller.debugActiveStripColumnTitles) == ["A1", "B1"])
+            Set(space1Order) == ["A1", "B1"])
     t.check("live strip is bound to native Space 1",
             controller.debugActiveSpaceID == 1)
     t.check("only Space 1 is tracked so far",
@@ -84,7 +88,7 @@ func runHeadlessPerSpaceStripsTest() {
     t.check("back on Space 1, the live strip is bound to Space 1",
             controller.debugActiveSpaceID == 1)
     t.check("Space 1's original 2 columns are restored, in order",
-            controller.debugActiveStripColumnTitles == ["A1", "B1"])
+            controller.debugActiveStripColumnTitles == space1Order)
     t.check("the Space-2 window stays on Space 2 (no bleed onto Space 1)",
             !controller.debugActiveStripColumnTitles.contains("C2"))
     t.check("all three windows still managed across the two Spaces",
