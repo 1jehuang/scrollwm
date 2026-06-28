@@ -85,11 +85,14 @@ protocol WindowBackend: AnyObject {
     func appIsHidden(pid: pid_t) -> Bool
     func unhideApp(pid: pid_t) -> Bool
 
-    /// The active native-Space id (read-only), mirroring `SpaceProbe`'s live CGS
-    /// query. Headless backends answer from their modeled Spaces so the per-Space
-    /// strip logic is fully testable; `nil` means "no stable Space id available"
-    /// (the caller then stays on the single-strip model).
-    func currentSpaceID() -> Int?
+    /// The active native-Space id (read-only) for a given physical display,
+    /// mirroring `SpaceProbe`'s live CGS query. `nil` display means "the main
+    /// display" (the single-display / spans-displays case). Per-display ids
+    /// matter under "Displays have separate Spaces", where each monitor shows its
+    /// own Space independently. Headless backends answer from their modeled
+    /// Spaces; a `nil` result means "no stable Space id available" (the caller
+    /// then stays on the single-strip model).
+    func currentSpaceID(forDisplay displayID: CGDirectDisplayID?) -> Int?
 }
 
 /// Thin, timeout-protected wrapper over the AXUIElement C API.

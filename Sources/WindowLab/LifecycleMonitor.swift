@@ -154,9 +154,39 @@ final class LifecycleMonitor {
     /// panels are never adopted regardless (they are not standard windows).
     var autoTileEnabled = true
 
+    /// When true, this monitor drives the engine's per-native-Space strips: on a
+    /// native Space change it asks `SpaceProbe` for the active Space id and tells
+    /// the engine to `switchToSpace` BEFORE resyncing, so each Desktop keeps its
+    /// own columns/viewport and a window opened on any Space tiles on that Space.
+    /// Pushed from `config.layout.perSpaceStrips`; the engine must already be
+    /// tracking a Space (`beginSpaceTracking`) for the switch to do anything.
+    /// When false (default) the engine ignores Spaces and the historical single-
+    /// strip freeze/thaw behavior is unchanged.
+    var perSpaceStripsEnabled = false
+
+    /// The physical display this monitor's strip is bound to, so per-Space
+    /// tracking keys on the active Space of THIS monitor (not always the main
+    /// display) under "Displays have separate Spaces". `nil` falls back to the
+    /// main display's Space (single-display / spans-displays). Set by the
+    /// controller from the strip's `displayID` when management starts.
+    var stripDisplayID: CGDirectDisplayID?
+
     init(engine: TeleportEngine, interval: TimeInterval = 2.0) {
         self.engine = engine
         self.interval = interval
+    }
+
+    /// Re-point the engine's live strip to the native Space THIS monitor's
+    /// display is now showing, if per-Space strips are on and the Space actually
+    /// changed. Runs on the main thread (mutates engine state). Returns true if it
+    /// switched, so a caller can force a layout-changing resync follow-up. A `nil`
+    /// Space id (probe unavailable, or tracking not yet started) is a safe no-op:
+    /// the engine simply stays on its current strip, degrading to single-strip.
+    @discardableResult
+    func switchActiveSpaceIfNeeded() -> Bool {
+        guard perSpaceStripsEnabled, engine.activeSpaceID != nil,
+              let id = SpaceProbe.currentSpaceID(forDisplay: stripDisplayID) else { return false }
+        return engine.switchToSpace(id)
     }
 
     func start() {
@@ -225,6 +255,13 @@ final class LifecycleMonitor {
         let generation = spaceResyncGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + spaceResyncDebounce) { [weak self] in
             guard let self, generation == self.spaceResyncGeneration else { return }
+            // Per-Space strips: re-point the live strip to the Desktop the user
+            // just switched to BEFORE resyncing, so the resync samples that
+            // Space's windows against that Space's strip (no cross-Space freeze).
+            // The switch already re-commits the destination layout; the resync
+            // then adopts anything opened there while we were away and drops
+            // anything closed. A no-op when per-Space strips are off.
+            self.switchActiveSpaceIfNeeded()
             self.resync()
         }
     }

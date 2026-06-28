@@ -37,8 +37,11 @@ enum RestoreStore {
     /// thin wrapper, so existing callers are unchanged.
     static func save(engines: [TeleportEngine]) {
         // Persist EVERY workspace's windows (not just the visible strip) so a
-        // crash restores windows parked in inactive vertical workspaces too.
-        let entries = engines.flatMap { $0.allManagedSlots }.map { slot in
+        // crash restores windows parked in inactive vertical workspaces too, AND
+        // every NATIVE-Space strip (`allSpacesManagedSlots`) so a window managed
+        // on a Desktop the user is not currently viewing is saved as well. With
+        // per-Space strips off this equals the old `allManagedSlots`.
+        let entries = engines.flatMap { $0.allSpacesManagedSlots }.map { slot in
             Entry(
                 pid: slot.window.pid,
                 appName: slot.window.appName,

@@ -89,6 +89,17 @@ struct ScrollWMConfig: Equatable {
         /// decision lives in `AutoTilePolicy`; `adoptScope` still bounds which
         /// displays a strip will adopt from.
         var autoTileNewWindows: Bool = true
+        /// Give each native macOS Space (Mission Control "Desktop") its OWN strip
+        /// on each display, instead of a single strip that freezes/thaws as you
+        /// switch Desktops. Switching Spaces re-points the live strip to that
+        /// Space's columns + viewport; opening a window on any Space tiles it on
+        /// THAT Space; returning restores the layout you left. Windows are never
+        /// moved across Spaces (macOS owns that). Requires a read-only query of
+        /// the active Space id (`SpaceProbe`); if that is unavailable on the host,
+        /// ScrollWM silently stays on the single-strip model. Off by default (the
+        /// historical behavior); the per-(display,Space) model is Model B in
+        /// docs/spaces. See `ScrollWMController` Space wiring.
+        var perSpaceStrips: Bool = false
     }
 
     /// Menu-bar mini-map sizing. The icon grows with the strip instead of being
@@ -264,6 +275,7 @@ struct ScrollWMConfig: Equatable {
                 "adoptScope": layout.adoptScope.rawValue,
                 "stripDisplay": layout.stripDisplay,  // [md-select]
                 "autoTileNewWindows": layout.autoTileNewWindows,
+                "perSpaceStrips": layout.perSpaceStrips,
             ],
             "menuBar": [
                 "pointsPerScreen": Double(menuBar.pointsPerScreen),
@@ -333,6 +345,7 @@ struct ScrollWMConfig: Equatable {
             if let fh = layout["fillHeight"] as? Bool { config.layout.fillHeight = fh }
             if let md = layout["multiDisplay"] as? Bool { config.layout.multiDisplay = md }
             if let at = layout["autoTileNewWindows"] as? Bool { config.layout.autoTileNewWindows = at }
+            if let ps = layout["perSpaceStrips"] as? Bool { config.layout.perSpaceStrips = ps }
             if let s = layout["adoptScope"] as? String {
                 if let scope = AdoptionScope.Scope(configValue: s) {
                     config.layout.adoptScope = scope

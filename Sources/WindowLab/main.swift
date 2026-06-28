@@ -367,6 +367,21 @@ case "exthotplugtest":
     runHeadlessExternalHotplugTest()
 case "displaybindcheck":
     runDisplayBindCheck()
+case "spaceprobe":
+    // Dev helper: print the LIVE read-only native-Space id (the one thing the
+    // headless sim cannot prove - that the real CGS query works on this host).
+    // Switch Desktops between runs and confirm the number changes. Read-only:
+    // creates/moves/destroys nothing.
+    if SpaceProbe.isLiveProbeAvailable {
+        if let id = SpaceProbe.currentSpaceID() {
+            print("spaceprobe: active native-Space id = \(id) (per-Space strips supported)")
+            exit(0)
+        }
+        print("spaceprobe: probe symbols resolved but returned no id; per-Space strips will stay single-strip")
+        exit(1)
+    }
+    print("spaceprobe: read-only CGS Space-id symbols unavailable on this host; per-Space strips will stay single-strip")
+    exit(1)
 case "e2etest":
     args.contains("--live") ? runE2EKeybindingTest() : runHeadlessE2ETest()
 case "revealtest":
@@ -427,6 +442,26 @@ case "autotiletest":
     // REAL controller + lifecycle monitor against the sim; never touches a real
     // window.
     runHeadlessAutoTileTest()
+case "perspacetest":
+    // Headless per-NATIVE-Space strips test (Model B): each macOS Desktop gets
+    // its own strip; switching Spaces re-points the live strip, a window opened
+    // on any Space tiles there (no cross-Space freeze), and returning restores
+    // the layout. Drives the REAL controller + monitor + engine + the read-only
+    // Space-id probe against the sim. Never touches a real window/Space/keyboard.
+    runHeadlessPerSpaceStripsTest()
+case "perspacefallbacktest":
+    // Headless graceful-degradation test: with the read-only Space-id probe
+    // UNAVAILABLE, the per-Space feature silently falls back to the single-strip
+    // model (never crashes, still arranges). Always headless.
+    runHeadlessPerSpaceFallbackTest()
+case "multidisplayperspacetest":
+    // Headless MULTI-display per-native-Space strips test ("Displays have
+    // separate Spaces"): each monitor follows ITS OWN Desktop - switching one
+    // monitor's Desktop re-points only that monitor's strip, a window opened on
+    // it tiles there, and the other monitor is untouched. Drives the REAL multi-
+    // display controller + per-strip monitors + per-display Space probe vs the
+    // sim. Never touches a real window/monitor/Space/keyboard.
+    runHeadlessMultiDisplayPerSpaceTest()
 case "clamshelltest":
     // Headless CLAMSHELL / equal-display repro: drives the REAL controller's
     // settled-display-change path through a laptop-lid-close transition (built-in
