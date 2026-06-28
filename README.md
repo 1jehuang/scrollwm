@@ -284,6 +284,11 @@ handled for you:
 - **Focus follows display.** Click a window (or Cmd-Tab) on another monitor and
   navigation/width/move/workspace hotkeys switch to that monitor's strip
   automatically.
+- **Every strip in the menu bar.** The menu-bar icon draws EVERY managed
+  monitor's strip side by side (numbered per display, the active one
+  highlighted), so you see all your displays at a glance instead of only the one
+  your keyboard is on. Toggle with `menuBar.showAllDisplays` (default on; only
+  changes the icon with more than one managed display).
 - **Indicator on every monitor.** macOS only draws the menu bar on one display,
   so on the others ScrollWM floats a small mini-map of that monitor's strip at
   the top-center (the active monitor's is highlighted). Toggle with
