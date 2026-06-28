@@ -2329,6 +2329,7 @@ enum StripOpsTests {
         lanesOK = TileabilityTests.run() && lanesOK
         lanesOK = IdentityMatcherFusionTests.run() && lanesOK
         lanesOK = ResyncFreezeTests.run() && lanesOK
+        lanesOK = ObserverRegistrationTests.run() && lanesOK
 
         // --- Tutorial suites: the paged content spec (the shortcut reference is
         // generated from it) + the goal-oriented interactive practice drill.

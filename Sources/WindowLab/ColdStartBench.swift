@@ -212,3 +212,141 @@ func runHeadlessColdStartTest() {
     exit(t.summaryExitCode)
 }
 
+// MARK: - coldstartwarmtest (headless): a cold app's SECOND window rides WARM
+//
+// The cold-start fix registers the per-app `kAXWindowCreated` observer the
+// INSTANT the process launches, so the app's FIRST window goes through the
+// launch fast path (no observer existed at its creation) but every SUBSEQUENT
+// window rides the WARM create observer. This test proves that contract end to
+// end against the REAL engine + `LifecycleMonitor`:
+//   1. a brand-new pid's first `notify:true` window fires the LAUNCH sink
+//      (`coldStartModel`) and is adopted, then
+//   2. a SECOND `notify:true` window for the SAME pid fires the CREATE sink
+//      (the warm path) and is adopted fast (well under the cold tail / poll),
+//      landing right of focus, with the strip having grown by 2 in total.
+//
+// Why this matters: if `register(app:)` recorded a FAILED `AXObserverAddNotification`
+// as if it succeeded (the bug this hardening fixes), the warm create observer
+// would be silently dead and the second window would only be adopted by the
+// slow safety-net poll. The sim models the second window through the create
+// sink precisely so a regression there shows up as a slow / missing adoption.
+
+/// One headless trial: launch a brand-new app (first window via the launch
+/// sink), adopt it, then open a SECOND window in that now-known app (via the
+/// warm create sink) and measure how fast it reaches its strip slot.
+private struct ColdStartWarmResult {
+    var firstAdopted: Bool
+    var secondAdopted: Bool
+    var secondRightOfFocus: Bool
+    var secondPlacedMs: Double?
+    var finalSlotCount: Int
+}
+
+private func runColdStartWarmTrial(publishDelay: TimeInterval) -> ColdStartWarmResult {
+    let world = SimWindowWorld()
+    world.coldStartModel = true
+    AXSource.backend = world
+    defer { AXSource.backend = nil }
+
+    let visible = Headless.defaultVisibleFrame
+    let engine = TeleportEngine(screenFrame: visible)
+    let seedPID: pid_t = 7100
+    let coldPID: pid_t = 7101
+
+    // Seed + adopt one existing-app window so the strip is populated and
+    // confirmed on the current Space (the fast-adopt Space-freeze gate needs at
+    // least one on-screen managed column to pass for a non-empty strip).
+    _ = world.addWindow(pid: seedPID, title: "Seed",
+                        frame: CGRect(x: 40, y: 80, width: 360, height: 420))
+    let matched = IdentityMatcher.match(
+        axWindows: AXSource.windows(forPID: seedPID),
+        cgWindows: CGWindowSource.listWindows(onscreenOnly: true)
+    ).filter { $0.cg != nil }
+    engine.adopt(matched: matched)
+    engine.focus(index: 0)
+    // Narrow the seed so the newcomers have room to the right (no scroll needed).
+    _ = engine.setFocusedWidth(fraction: 0.25)
+
+    let monitor = LifecycleMonitor(engine: engine, interval: 2.0)
+    monitor.pidFilter = [seedPID, coldPID]
+    monitor.start()
+    Headless.pump(0.1) // let the observer subscribe
+
+    let startCount = engine.slots.count
+
+    // 1) COLD launch: brand-new pid -> the LAUNCH sink (not the warm create
+    //    sink), exactly like a real process whose observer is not attached yet.
+    let firstEl = world.addWindow(pid: coldPID, title: "ColdApp-1",
+                                  frame: CGRect(x: 460, y: 80, width: 360, height: 420),
+                                  notify: true, cgPublishDelay: publishDelay)
+    NSWorkspace.shared.notificationCenter.post(
+        name: NSWorkspace.didLaunchApplicationNotification, object: NSWorkspace.shared)
+
+    // Wait for the first (cold) window to land before opening the second.
+    let firstDeadline = Clock.nowAbsNs() + 2_500_000_000
+    while Clock.nowAbsNs() < firstDeadline {
+        Headless.pump(0.005)
+        if engine.slots.count > startCount, world.frame(of: firstEl) != nil,
+           engine.isManaged(firstEl) { break }
+    }
+    let firstAdopted = engine.slots.count > startCount && engine.isManaged(firstEl)
+    let countAfterFirst = engine.slots.count
+    let focusedXBefore = world.frame(of: engine.slots[engine.focusIndex].window.element)?.minX ?? 0
+
+    // 2) WARM second window in the SAME (now-known) pid. Under `coldStartModel`
+    //    the pid has already "launched", so this fires the CREATE sink - the warm
+    //    fast path that ONLY works if the per-app observer attached successfully.
+    let t0 = Clock.nowAbsNs()
+    let secondEl = world.addWindow(pid: coldPID, title: "ColdApp-2",
+                                   frame: CGRect(x: 860, y: 80, width: 360, height: 420),
+                                   notify: true, cgPublishDelay: publishDelay)
+
+    var placedNs: UInt64?
+    let deadline = Clock.nowAbsNs() + 2_000_000_000
+    while Clock.nowAbsNs() < deadline {
+        Headless.pump(0.005)
+        if engine.slots.count > countAfterFirst,
+           let f = world.frame(of: secondEl), f.minX > focusedXBefore + 1,
+           engine.isManaged(secondEl) {
+            placedNs = Clock.nowAbsNs(); break
+        }
+    }
+
+    let result = ColdStartWarmResult(
+        firstAdopted: firstAdopted,
+        secondAdopted: engine.slots.count > countAfterFirst && engine.isManaged(secondEl),
+        secondRightOfFocus: (world.frame(of: secondEl)?.minX ?? 0) > focusedXBefore + 1,
+        secondPlacedMs: placedNs.map { Double($0 &- t0) / 1e6 },
+        finalSlotCount: engine.slots.count
+    )
+    monitor.stop()
+    return result
+}
+
+func runHeadlessColdStartWarmSecondTest() {
+    var t = TestCounter()
+
+    // Small publish lag, like a real second window: AX-readable a couple frames
+    // before the WindowServer lists it on-screen.
+    let r = runColdStartWarmTrial(publishDelay: 0.03)
+
+    t.check("cold app's first window adopted (launch fast path)", r.firstAdopted)
+    t.check("cold app's SECOND window adopted (warm create path)", r.secondAdopted)
+    t.check("second window landed right of focus", r.secondRightOfFocus)
+    t.check("strip grew by 2 total (seed + 2 cold-app windows = 3)", r.finalSlotCount == 3)
+    if let ms = r.secondPlacedMs {
+        print(String(format: "[headless-coldstartwarm] second window reached final position in %.0f ms", ms))
+        // The warm create observer adopts within a few frames of publish. Assert
+        // well under 200ms - if the observer's notification had silently failed
+        // to attach, only the 2s poll would adopt it and this would blow past.
+        t.check(String(format: "second window adopted FAST via warm path (< 200ms, got %.0fms)", ms), ms < 200)
+        // It cannot beat the publish lag (window not on-screen before it).
+        t.check(String(format: "second window respected the 30ms publish lag (>= 25ms, got %.0fms)", ms), ms >= 25)
+    } else {
+        t.check("second window reached final position", false)
+    }
+
+    print("\n[headless-coldstartwarm] \(t.passed) passed, \(t.failed) failed")
+    exit(t.summaryExitCode)
+}
+

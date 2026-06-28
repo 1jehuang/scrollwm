@@ -26,6 +26,20 @@ import AppKit
 final class WindowEventObserver {
     /// One AXObserver per observed app PID.
     private var observers: [pid_t: AXObserver] = [:]
+    /// The notifications each observed pid still needs ATTACHED. Populated in
+    /// `register(app:)` and drained by `attachNotifications` as each
+    /// `AXObserverAddNotification` succeeds; a transiently-failed attach (the
+    /// app's AX server not ready the instant it launched) stays here and is
+    /// retried with a bounded backoff. Empty / absent = fully attached. Keeping
+    /// it per-pid means a retry only re-adds the MISSING notifications, never
+    /// double-registering one that already took.
+    private var pendingNotes: [pid_t: [String]] = [:]
+    /// The notifications we attach to every observed app element: a created
+    /// window (warm fast-adopt) and any element teardown (fast removal).
+    private static let observedNotifications: [String] = [
+        kAXWindowCreatedNotification as String,
+        kAXUIElementDestroyedNotification as String,
+    ]
     private var workspaceObservers: [NSObjectProtocol] = []
     /// Called with the PIDs that fired a window-created event since the last
     /// delivery, IN FIRE ORDER (deduped), so the monitor can do a SCOPED
@@ -178,6 +192,7 @@ final class WindowEventObserver {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
         }
         observers.removeAll()
+        pendingNotes.removeAll()
         let center = NSWorkspace.shared.notificationCenter
         for o in workspaceObservers { center.removeObserver(o) }
         workspaceObservers.removeAll()
@@ -218,18 +233,66 @@ final class WindowEventObserver {
 
         let box = FireBox(owner: self, pid: pid)
         fireBoxes[pid] = box
-        let appElement = AXUIElementCreateApplication(pid)
-        let refcon = Unmanaged.passUnretained(box).toOpaque()
-        // Window created -> fast adoption. Window destroyed (fired on the app
-        // element for a child window's teardown) -> fast removal, so a closed
-        // window's gap closes immediately instead of lingering until the poll.
-        AXObserverAddNotification(observer, appElement, kAXWindowCreatedNotification as CFString, refcon)
-        AXObserverAddNotification(observer, appElement, kAXUIElementDestroyedNotification as CFString, refcon)
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         observers[pid] = observer
+        // Every notification still needs attaching. `attachNotifications` adds
+        // the ones that take and leaves any that transiently fail in
+        // `pendingNotes` for a bounded retry (see below).
+        pendingNotes[pid] = Self.observedNotifications
+        attachNotifications(pid: pid, attempt: 0)
+    }
+
+    /// Attach every still-pending notification for `pid`'s observer. Window
+    /// created -> fast adoption; element destroyed (fired on the app element for
+    /// a child window's teardown) -> fast removal, so a closed window's gap
+    /// closes immediately instead of lingering until the poll.
+    ///
+    /// The robustness this adds: a brand-new process registers its observer the
+    /// INSTANT it launches (so any SUBSEQUENT window rides the warm fast path),
+    /// but at that instant the process's AX server may not be ready yet, so
+    /// `AXObserverAddNotification` can fail (e.g. `cannotComplete`). The old code
+    /// fired-and-forgot, recording the observer as if attached; the notification
+    /// never took and the warm fast path was silently dead for that app. Here we
+    /// only DROP a notification from `pendingNotes` once its add returns
+    /// `.success` (or a terminal, non-retryable error), and re-schedule a bounded
+    /// backoff for the rest. Re-entry is safe: an already-attached notification
+    /// is never re-added because it was removed from `pendingNotes`.
+    private func attachNotifications(pid: pid_t, attempt: Int) {
+        guard let observer = observers[pid], let box = fireBoxes[pid] else { return }
+        guard let pending = pendingNotes[pid], !pending.isEmpty else {
+            pendingNotes[pid] = nil
+            return
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        let refcon = Unmanaged.passUnretained(box).toOpaque()
+        var stillPending: [String] = []
+        for note in pending {
+            let err = AXObserverAddNotification(observer, appElement, note as CFString, refcon)
+            if !ObserverRegistration.attachSucceeded(err) {
+                // Retryable failure (the AX server is not ready yet): keep it so
+                // the next attempt re-adds ONLY this notification.
+                stillPending.append(note)
+            }
+        }
+        if stillPending.isEmpty {
+            pendingNotes[pid] = nil
+            return
+        }
+        pendingNotes[pid] = stillPending
+        // Bounded backoff: schedule the next retry if any budget remains. When
+        // it lapses we simply give up the warm fast path for this app and rely
+        // on the safety-net poll - never a leak or a hang.
+        guard let delay = ObserverRegistration.retryDelay(forAttempt: attempt) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            // The app may have quit (unregister cleared its observer) in the
+            // meantime; `attachNotifications` no-ops safely if so.
+            self.attachNotifications(pid: pid, attempt: attempt + 1)
+        }
     }
 
     private func unregister(pid: pid_t) {
+        pendingNotes[pid] = nil
         guard let obs = observers.removeValue(forKey: pid) else { return }
         CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
         fireBoxes[pid] = nil
@@ -288,6 +351,49 @@ final class WindowEventObserver {
             guard let self else { return }
             self.destroyScheduled = false
             self.onWindowDestroyed()
+        }
+    }
+}
+
+/// PURE policy for the robust observer-attach retry (no AX, no AppKit), so the
+/// cold-start "register the instant the process launches" decision is unit
+/// testable without a live AX server. Two questions, both deterministic:
+///   - did an `AXObserverAddNotification` actually TAKE? and
+///   - if not, how long until the next bounded retry (nil = give up)?
+enum ObserverRegistration {
+    /// Backoff schedule (seconds) between attach attempts. Index `attempt` is the
+    /// wait BEFORE attempt `attempt + 1`; running off the end means the budget is
+    /// exhausted and we give up the warm fast path (the safety-net poll still
+    /// adopts the app's windows). Tight at first because a just-launched process
+    /// usually has its AX server ready within a frame or two, widening for a slow
+    /// one; total budget ~1.0s, comfortably under the 2s poll so a stuck app
+    /// never hangs registration.
+    static let retryDelays: [TimeInterval] =
+        [0.01, 0.02, 0.04, 0.08, 0.12, 0.18, 0.25, 0.3]
+
+    /// The wait before the next attempt, or nil once the bounded budget is spent.
+    /// `attempt` is the count of attach passes already made (0 = the immediate
+    /// first attempt that just failed).
+    static func retryDelay(forAttempt attempt: Int) -> TimeInterval? {
+        guard attempt >= 0, attempt < retryDelays.count else { return nil }
+        return retryDelays[attempt]
+    }
+
+    /// Did the attach take? `.success` obviously did. A handful of errors are
+    /// TERMINAL (retrying can never help): the notification is already
+    /// registered (it took on a prior pass), or the element/observer is invalid
+    /// (the app is gone) - treat those as "done, stop retrying" so we never spin.
+    /// Everything else (notably `cannotComplete` / `failure` from an AX server
+    /// that has not finished spinning up) is RETRYABLE.
+    static func attachSucceeded(_ err: AXError) -> Bool {
+        switch err {
+        case .success,
+             .notificationAlreadyRegistered,
+             .invalidUIElement,
+             .invalidUIElementObserver:
+            return true
+        default:
+            return false
         }
     }
 }

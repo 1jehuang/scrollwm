@@ -282,6 +282,11 @@ case "coldstarttest":
     // FIRST window is adopted fast (and lands right of focus) with the launch
     // fast path on, and is markedly slower with it off. Always headless.
     runHeadlessColdStartTest()
+case "coldstartwarmtest":
+    // Headless guard for the OTHER half of the cold-start fix: registering the
+    // per-app observer the instant a process launches must let that cold app's
+    // SECOND window ride the WARM kAXWindowCreated fast path (not the poll).
+    runHeadlessColdStartWarmSecondTest()
 case "spawnvalidate":
     // Headless property validator: EVERY spawn (across a named edge-case matrix
     // + randomized fuzz) must land in the column right of focus, at its exact
