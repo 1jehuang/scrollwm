@@ -121,6 +121,16 @@ final class ScrollWMController: NSObject {
     override init() {
         guard NSScreen.main != nil else { fatalError("no screen") }
         config = ScrollWMConfig.load()
+        // Headless hermeticity: a controller built for a test runs against the
+        // in-memory `SimWindowWorld` (`AXSource.backend != nil`) but still reads
+        // the user's REAL on-disk config. Per-Space strips materially change
+        // freeze/adopt behavior, so a developer who enabled them in their own
+        // config must not silently flip every controller-based headless suite
+        // into per-Space mode (e.g. `fullscreentest`, which asserts the single-
+        // strip strand/freeze behavior). Force the feature OFF under a test
+        // backend; the two suites that exercise it opt in via
+        // `debugEnablePerSpaceStrips()`. No effect in production (backend nil).
+        if AXSource.backend != nil { config.layout.perSpaceStrips = false }
         // [md-select] Bind the strip to the display the user configured
         // (layout.stripDisplay), defaulting to NSScreen.main. Falls back to main
         // if the spec is unknown / out of range.
