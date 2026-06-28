@@ -878,6 +878,163 @@ func runHeadlessRevealTest() {
     exit(t.summaryExitCode)
 }
 
+// MARK: - hiddentest (headless): exhaustive hidden/minimized edge cases
+//
+// Complements `revealtest` (the happy path) with the edge cases the
+// hidden-windows audit surfaced: Cmd+H app reveal end-to-end, EVERY window
+// hidden (dormant -> managing only via the deferred adopt), a slow reveal
+// animation (the immediate adopt sees nothing; the bounded retry catches it),
+// release() cancelling an in-flight reveal follow-up, a window the user
+// re-minimizes staying managed, a partial reveal failure, and the reveal-aware
+// `scrollwm arrange` CLI reply. All headless: no real window/Space/keystroke.
+func runHeadlessHiddenWindowsTest() {
+    RestoreStore.subdirectory = "ScrollWM-Sandbox"
+    RestoreStore.clear()
+    var t = TestCounter()
+
+    // ---- Case 1: Cmd+H HIDDEN APP is revealed + adopted by a plain arrange ----
+    do {
+        let world = Headless.install()
+        defer { Headless.uninstall(); RestoreStore.clear() }
+        let controller = ScrollWMController()
+        scrollWMControllerKeepAlive = controller
+        let frame = controller.debugScreenFrame
+        let (pids, _) = Headless.seedWindows(world, count: 3, startPID: 7000,
+                                             within: frame, width: 300, height: 280)
+        controller.sandboxPIDs = Set(pids)
+        // Hide ONE app entirely (Cmd+H): all its windows leave the on-screen list.
+        world.setAppHidden(pids[0], true)
+        t.check("case1: hidden app drops out of the on-screen list",
+                CGWindowSource.listWindows(onscreenOnly: true).filter { $0.ownerPID == pids[0] }.isEmpty)
+        controller.arrange()
+        Headless.pump(1.0) // reveal + bounded retry series
+        t.check("case1: plain arrange un-hides the Cmd+H app and adopts all 3",
+                controller.debugSlotCount == 3)
+        t.check("case1: the previously-hidden app is no longer hidden",
+                !world.appIsHidden(pid: pids[0]))
+        t.check("case1: arrange recorded the unhidden app in its reveal result",
+                controller.lastRevealResult.unhiddenApps == 1)
+        controller.release()
+    }
+
+    // ---- Case 2: EVERY window hidden/minimized -> managing only via deferred ----
+    // With a reveal-settle delay the immediate adopt finds NOTHING on-screen, so
+    // the controller must reach `isManaging` via the bounded retry. Proves the
+    // dormant else-branch (and that the CLI reply is not a false error).
+    do {
+        let world = Headless.install()
+        defer { Headless.uninstall(); RestoreStore.clear() }
+        world.revealSettleDelay = 0.25
+        let controller = ScrollWMController()
+        scrollWMControllerKeepAlive = controller
+        let frame = controller.debugScreenFrame
+        let (pids, els) = Headless.seedWindows(world, count: 3, startPID: 7100,
+                                               within: frame, width: 300, height: 280)
+        controller.sandboxPIDs = Set(pids)
+        for el in els { world.setMinimized(el, true) }       // ALL minimized
+        let reply = controller.handleControlCommand("arrange")
+        // Synchronous reply: nothing on-screen yet, but a reveal is pending, so
+        // it must NOT be the false "nothing to arrange" error (and not exit 2).
+        t.check("case2: CLI reply is success-in-progress, not a false error",
+                reply.hasPrefix("ok:") && reply.contains("revealing"))
+        t.check("case2: reply surfaces the revealed minimized count",
+                reply.contains("3 minimized window(s)"))
+        t.check("case2: not yet managing at the synchronous reply (settle delay)",
+                controller.debugSlotCount == 0)
+        Headless.pump(1.2) // let the settle delay + bounded retry land
+        t.check("case2: deferred retry adopts all 3 once they materialize",
+                controller.debugSlotCount == 3)
+        t.check("case2: reveal-pending flag cleared after the retry series",
+                controller.revealAdoptPending == false)
+        controller.release()
+    }
+
+    // ---- Case 3: release() during the reveal settle CANCELS the follow-up ----
+    // The epoch guard must stop a deferred adopt from resurrecting management (or
+    // stealing focus) after the user toggled off mid-animation.
+    do {
+        let world = Headless.install()
+        defer { Headless.uninstall(); RestoreStore.clear() }
+        world.revealSettleDelay = 0.35
+        let controller = ScrollWMController()
+        scrollWMControllerKeepAlive = controller
+        let frame = controller.debugScreenFrame
+        let (pids, els) = Headless.seedWindows(world, count: 3, startPID: 7200,
+                                               within: frame, width: 300, height: 280)
+        controller.sandboxPIDs = Set(pids)
+        // Two visible (so the immediate adopt starts managing) + one minimized
+        // (so a reveal follow-up is scheduled).
+        world.setMinimized(els[0], true)
+        controller.arrange()
+        Headless.pump(0.05)
+        t.check("case3: immediate adopt started managing the 2 visible windows",
+                controller.isManaging && controller.debugSlotCount == 2)
+        controller.release()           // user toggles OFF mid-animation
+        t.check("case3: released immediately", !controller.isManaging)
+        Headless.pump(1.2)             // the would-be deferred adopt fires here
+        t.check("case3: deferred follow-up did NOT resurrect management",
+                !controller.isManaging)
+        t.check("case3: strip stays empty after a cancelled reveal follow-up",
+                controller.debugSlotCount == 0)
+    }
+
+    // ---- Case 4: a managed window the user RE-MINIMIZES stays in the strip ----
+    // The resync removal gate keys on role (AXWindow), which is stable across
+    // minimize even though macOS flips the subrole to AXDialog in the Dock (the
+    // sim models that flip). The column must survive the 2s safety-net poll.
+    do {
+        let world = Headless.install()
+        defer { Headless.uninstall(); RestoreStore.clear() }
+        let controller = ScrollWMController()
+        scrollWMControllerKeepAlive = controller
+        let frame = controller.debugScreenFrame
+        let (pids, els) = Headless.seedWindows(world, count: 3, startPID: 7300,
+                                               within: frame, width: 300, height: 280)
+        controller.sandboxPIDs = Set(pids)
+        controller.arrange()
+        Headless.pump(0.2)
+        t.check("case4: arranged 3 visible windows", controller.debugSlotCount == 3)
+        // Sanity: minimize flips the live subrole but NOT the role.
+        world.setMinimized(els[1], true)
+        let info = AXSource.windows(forPID: pids[1]).first
+        t.check("case4: minimized window's live subrole flipped to AXDialog",
+                info?.subrole == kAXDialogSubrole as String)
+        t.check("case4: minimized window's role stays AXWindow",
+                info?.role == kAXWindowRole as String)
+        Headless.pump(2.3) // 2s safety-net poll
+        t.check("case4: re-minimized managed window stays in the strip (role-keyed removal)",
+                controller.debugSlotCount == 3)
+        world.setMinimized(els[1], false)
+        controller.release()
+    }
+
+    // ---- Case 5: partial reveal FAILURE is tolerated (rest still adopt) ----
+    do {
+        let world = Headless.install()
+        defer { Headless.uninstall(); RestoreStore.clear() }
+        let controller = ScrollWMController()
+        scrollWMControllerKeepAlive = controller
+        let frame = controller.debugScreenFrame
+        let (pids, els) = Headless.seedWindows(world, count: 3, startPID: 7400,
+                                               within: frame, width: 300, height: 280)
+        controller.sandboxPIDs = Set(pids)
+        for el in els { world.setMinimized(el, true) }
+        // The app refuses to un-minimize ONE window; the other two reveal fine.
+        world.failUnminimizeFor = [els[0]]
+        controller.arrange()
+        Headless.pump(1.0)
+        t.check("case5: the two revealable windows are adopted despite one failure",
+                controller.debugSlotCount == 2)
+        t.check("case5: the stubborn window stays minimized (reveal tolerated the failure)",
+                AXSource.windows(forPID: pids[0]).first?.isMinimized == true)
+        world.failUnminimizeFor = nil
+        controller.release()
+    }
+
+    print("\n[headless-hiddentest] \(t.passed) passed, \(t.failed) failed")
+    exit(t.summaryExitCode)
+}
+
 // MARK: - spawnlatency (headless): new-window adoption via the AX-observer fast path
 
 func runHeadlessSpawnLatencyTest() {

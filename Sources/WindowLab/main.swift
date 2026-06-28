@@ -371,6 +371,11 @@ case "e2etest":
     args.contains("--live") ? runE2EKeybindingTest() : runHeadlessE2ETest()
 case "revealtest":
     args.contains("--live") ? runWindowRevealTest() : runHeadlessRevealTest()
+case "hiddentest":
+    // Headless hidden/minimized-window EDGE cases (Cmd+H app reveal, all-hidden
+    // deferred adopt, slow-reveal bounded retry, release-cancels-followup,
+    // re-minimize survival, partial reveal failure). Always headless.
+    runHeadlessHiddenWindowsTest()
 case "spacetest":
     // Headless native-Space membership + switching test (Track 5 sim-Space
     // infra). Always headless: never touches a real window/Space/keyboard.
