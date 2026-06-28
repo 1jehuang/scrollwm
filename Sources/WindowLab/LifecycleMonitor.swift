@@ -281,16 +281,29 @@ final class LifecycleMonitor {
             // minimized/fullscreen window still exists and must not be silently
             // dropped from the strip; only newly-adopted windows need to be visible
             // and manageable on the current Space.
-            let standardExisting = current.filter {
+            //
+            // EXISTENCE keys on ROLE (`AXWindow` = a genuine top-level window),
+            // NOT subrole: macOS MUTATES a window's subrole while it is minimized
+            // (a standard window can report `AXDialog` in the Dock - the exact
+            // reason `WindowReveal.shouldUnminimize` also keys on role). A
+            // subrole-keyed existence set would therefore make a managed window
+            // that the user merely MINIMIZED vanish from the set and get dropped
+            // from the strip the instant it minimized. Role is stable across
+            // minimize, so a managed window survives until it is genuinely closed.
+            let existing = current.filter { $0.role == kAXWindowRole as String }
+            // ADOPTABILITY still keys on subrole (+ not minimized/fullscreen): a
+            // brand-new window is only auto-tiled when it is a real standard
+            // window visible on the current Space.
+            let standard = existing.filter {
                 $0.subrole == kAXStandardWindowSubrole as String
+                    && !$0.isMinimized && !$0.isFullscreen
             }
-            let standard = standardExisting.filter { !$0.isMinimized && !$0.isFullscreen }
             let cg = CGWindowSource.listWindows(onscreenOnly: true)
 
             // --- Main: cheap diff + apply against the live engine ---
             DispatchQueue.main.async {
                 self.enumerating = false
-                self.applyResync(standardExisting: standardExisting,
+                self.applyResync(existing: existing,
                                  standardAdoptable: standard,
                                  cg: cg)
                 // Floating list uses the FULL enumeration (dialogs/panels too),
@@ -303,7 +316,7 @@ final class LifecycleMonitor {
 
     /// Apply an enumerated snapshot to the engine. MUST run on the main thread
     /// (mutates engine state). Cheap: matching/diff over a handful of windows.
-    private func applyResync(standardExisting: [AXWindowInfo],
+    private func applyResync(existing: [AXWindowInfo],
                              standardAdoptable: [AXWindowInfo],
                              cg: [CGWindowInfo]) {
         let start = Clock.nowAbsNs()
@@ -314,11 +327,11 @@ final class LifecycleMonitor {
         // fuse it with AX exactly as `arrange` does (PID+frame+title scoring).
         // A window we manage that sits on another Space still appears in `ax`
         // but NOT here, which is precisely what drives the Space-freeze rule.
-        let matched = IdentityMatcher.match(axWindows: standardExisting, cgWindows: cg)
+        let matched = IdentityMatcher.match(axWindows: existing, cgWindows: cg)
 
-        // Map each window to an opaque token (= index into `standard`) so the
+        // Map each window to an opaque token (= index into `existing`) so the
         // pure planner can reason without touching AXUIElements.
-        let axIDs = Array(standardExisting.indices)
+        let axIDs = Array(existing.indices)
         var currentSpaceIDs = Set<Int>()
         for (i, m) in matched.enumerated() where m.cg != nil { currentSpaceIDs.insert(i) }
 
@@ -330,7 +343,7 @@ final class LifecycleMonitor {
         // it shows up in the current-Space set) from being re-adopted into the
         // active workspace as if it were brand new.
         let stripIDs: [Int] = engine.allManagedSlots.enumerated().map { (s, slot) in
-            standardExisting.firstIndex { CFEqual($0.element, slot.window.element) } ?? -(s + 1)
+            existing.firstIndex { CFEqual($0.element, slot.window.element) } ?? -(s + 1)
         }
 
         let decision = ResyncPlanner.decide(
@@ -348,11 +361,13 @@ final class LifecycleMonitor {
         }
 
         // Removals: strip windows whose AX element no longer exists among
-        // current standard windows. CFEqual matches AXUIElements of the same
-        // underlying window, so a closed window simply stops matching. Windows
-        // merely on another Space still exist in AX, so they are NOT removed.
+        // current top-level windows (role `AXWindow`). CFEqual matches
+        // AXUIElements of the same underlying window, so a closed window simply
+        // stops matching. Windows merely on another Space - or MINIMIZED (whose
+        // subrole macOS may flip) - still exist in AX with role `AXWindow`, so
+        // they are NOT removed.
         let removed = engine.removeSlots { slot in
-            !standardExisting.contains { CFEqual($0.element, slot.window.element) }
+            !existing.contains { CFEqual($0.element, slot.window.element) }
         }
 
         // Fullscreen suspension: a managed window in native macOS fullscreen owns
@@ -362,10 +377,10 @@ final class LifecycleMonitor {
         // pull the full-display size in as that column's width, exploding the
         // strip. Marking it `suspended` keeps it in the strip (so it re-attaches
         // in place on exit) but excludes it from layout + every AX write. We read
-        // fullscreen straight from the fresh AX enumeration (`standardExisting`
+        // fullscreen straight from the fresh AX enumeration (`existing`
         // carries fullscreen windows; only the *adoptable* set filters them out),
         // and clear the flag the moment a column is no longer fullscreen.
-        let suspensionChanged = engine.reconcileFullscreenSuspension(from: standardExisting)
+        let suspensionChanged = engine.reconcileFullscreenSuspension(from: existing)
 
         // Eviction: a managed column the user DRAGGED onto another physical
         // display still exists in AX (so `removeSlots` kept it) and is still on
@@ -377,7 +392,7 @@ final class LifecycleMonitor {
         // `AdoptionScope.evictedFromStripDisplay`). Evicted windows are left
         // exactly where the user put them - we remove the slot WITHOUT moving it.
         let evicted = engine.evictDraggedOffDisplay { ref in
-            standardExisting.first { CFEqual($0.element, ref.element) }?.frame
+            existing.first { CFEqual($0.element, ref.element) }?.frame
         }
 
         // Additions: new windows ON THE CURRENT SPACE (per the planner). Insert
@@ -389,7 +404,7 @@ final class LifecycleMonitor {
         // under the default `stripDisplay` scope so a window opened on the
         // external monitor is not yanked onto the strip. Same pure rule as
         // `arrange` (`engine.filterByAdoptScope`).
-        let addExisting = addTokens.map { standardExisting[$0] }
+        let addExisting = addTokens.map { existing[$0] }
         let addAdoptable = addExisting.filter { candidate in
             standardAdoptable.contains { CFEqual($0.element, candidate.element) }
         }

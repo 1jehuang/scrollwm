@@ -37,6 +37,13 @@ final class SimWindowWorld: WindowBackend {
         var title: String
         var role: String
         var subrole: String
+        /// The subrole the window reports while NOT minimized. macOS mutates a
+        /// minimized standard window's LIVE subrole (a standard window reports
+        /// `AXDialog` in the Dock); `subrole` above carries that live value while
+        /// this remembers the real one so de-miniaturizing restores it. Modeling
+        /// the flip is what lets a headless test prove the resync removal gate
+        /// keys on ROLE, not the mutating subrole.
+        var baseSubrole: String
         var frame: CGRect
         /// Hard minimum the "app" enforces; `setSize` never shrinks below it.
         var minSize: CGSize
@@ -90,6 +97,7 @@ final class SimWindowWorld: WindowBackend {
             self.title = title
             self.role = role
             self.subrole = subrole
+            self.baseSubrole = subrole
             self.frame = frame
             self.minSize = minSize
             self.fixedAspectRatio = fixedAspectRatio
@@ -256,7 +264,26 @@ final class SimWindowWorld: WindowBackend {
     }
 
     func setMinimized(_ element: AXUIElement, _ value: Bool) {
-        lock.lock(); find(element)?.minimized = value; lock.unlock()
+        lock.lock(); if let w = find(element) { applyMinimized(w, value) }; lock.unlock()
+    }
+
+    /// Apply a minimize/de-miniaturize, modeling the macOS subrole FLIP: a
+    /// minimized standard window reports `AXDialog` as its LIVE subrole while in
+    /// the Dock (its role stays `AXWindow`), and reverts to its real subrole on
+    /// restore. Caller holds `lock`. This is what makes the resync removal gate's
+    /// role-keying (vs the mutating subrole) observable to headless tests.
+    private func applyMinimized(_ w: Win, _ value: Bool) {
+        w.minimized = value
+        if value {
+            // Only a genuine top-level window flips; a real dialog/panel keeps its
+            // own subrole. We remember the pre-minimize subrole in `baseSubrole`.
+            if w.role == kAXWindowRole as String,
+               w.baseSubrole == kAXStandardWindowSubrole as String {
+                w.subrole = kAXDialogSubrole as String
+            }
+        } else {
+            w.subrole = w.baseSubrole
+        }
     }
 
     func setAppHidden(_ pid: pid_t, _ value: Bool) {
@@ -532,7 +559,7 @@ final class SimWindowWorld: WindowBackend {
         case kAXFocusedAttribute as String:
             if value { focused = w }
         case kAXMinimizedAttribute as String:
-            w.minimized = value
+            applyMinimized(w, value)
         default:
             break // kAXMain etc. — no observable state needed
         }
