@@ -102,10 +102,17 @@ final class TeleportEngine {
         return out
     }
 
-    /// True if `element` is managed in ANY workspace (active or stashed). The
-    /// lifecycle monitor uses this so a window parked in an inactive workspace
-    /// is never re-adopted into the active one (it is still on-screen as the
-    /// shared parking sliver, so the naive current-Space test would re-add it).
+    /// True if `element` is managed in ANY workspace (active or stashed) of the
+    /// CURRENT native Space. The lifecycle monitor uses this so a window parked in
+    /// an inactive workspace is never re-adopted into the active one (it is still
+    /// on-screen as the shared parking sliver, so the naive current-Space test
+    /// would re-add it).
+    ///
+    /// Deliberately scoped to the active Space, NOT the stashed Space layers: a
+    /// window stashed in another native Space is by construction off-screen (its
+    /// Desktop is not the active one), so it never appears in the on-screen set
+    /// that `fastAdopt`/`resync` consider. Scoping here keeps a stashed-Space
+    /// window from poisoning the current Space's adopt/dedup decisions.
     func isManaged(_ element: AXUIElement) -> Bool {
         for i in workspaces.indices {
             if workspaceSlots(i).contains(where: { CFEqual($0.window.element, element) }) {
@@ -113,6 +120,119 @@ final class TeleportEngine {
             }
         }
         return false
+    }
+
+    // MARK: - Native macOS Spaces (per-Space strips, Model B)
+    //
+    // Each native Space (Mission Control "Desktop") gets its OWN independent strip
+    // on this display: its own vertical workspaces, viewport, and focus. The
+    // ACTIVE Space's strip IS the live state above (`slots`/`viewportX`/
+    // `focusIndex`/`workspaces`/`activeWorkspace`), so every existing path keeps
+    // working unchanged and pays no extra cost. Inactive Spaces are stashed here,
+    // keyed by their stable native-Space id (`SpaceProbe`).
+    //
+    // The load-bearing invariant: we NEVER move a window across a native Space.
+    // macOS already isolates each Desktop (it physically keeps a Space's windows
+    // on that Space), so a Space switch only RE-POINTS which in-memory strip is
+    // live and re-asserts that strip's layout - it never parks/teleports the
+    // outgoing Space's windows (unlike vertical workspaces, which DO park because
+    // they share one Space/screen). This is the orthogonal-axes design from
+    // docs/spaces/02_ownership.md: vertical workspaces = "scroll within a Space",
+    // native Spaces = "which Desktop am I on."
+    struct SpaceLayer {
+        var workspaces: [Workspace]
+        var activeWorkspace: Int
+    }
+    /// Stashed strips for every native Space OTHER than the active one, by id.
+    private var spaceLayers: [Int: SpaceLayer] = [:]
+
+    /// The native-Space id the live strip currently belongs to, or `nil` when
+    /// per-Space tracking is OFF (the feature is disabled, or no stable Space id
+    /// is available). While `nil` the engine ignores native Spaces entirely and
+    /// behaves byte-for-byte as the historical single-strip model.
+    private(set) var activeSpaceID: Int?
+
+    /// Native-Space ids that currently have a strip (the active one plus every
+    /// stashed layer). For introspection / tests.
+    var trackedSpaceIDs: Set<Int> {
+        var ids = Set(spaceLayers.keys)
+        if let a = activeSpaceID { ids.insert(a) }
+        return ids
+    }
+
+    /// Every managed window across the ACTIVE Space AND every stashed native
+    /// Space, in a deterministic (Space-id, workspace, strip) order. Used by
+    /// crash-recovery persistence and intentional Release so windows on Spaces
+    /// the user is not currently viewing are still saved/put back. When no Space
+    /// is stashed (single-Space mode, the default) this equals `allManagedSlots`.
+    var allSpacesManagedSlots: [Slot] {
+        var out = allManagedSlots                       // active Space, all workspaces
+        for id in spaceLayers.keys.sorted() {           // stable order for tests
+            guard let layer = spaceLayers[id] else { continue }
+            for ws in layer.workspaces { out += ws.slots }
+        }
+        return out
+    }
+
+    /// Begin per-Space strip tracking, binding the CURRENT live strip to native
+    /// Space `id`. Called by the controller right after the initial arrange, once
+    /// the Space id is known. Idempotent; safe to call repeatedly with the same
+    /// id. Switching to a different id while already tracking re-labels the live
+    /// strip (it does not stash/reload), which is what we want when arrange runs
+    /// fresh on whatever Space the user is on.
+    func beginSpaceTracking(spaceID id: Int) {
+        activeSpaceID = id
+    }
+
+    /// Switch the live strip to native Space `id`: stash the current live strip
+    /// under its own Space id, then load `id`'s stashed strip (or a fresh empty
+    /// one if this Space has never been seen) into the live state and re-commit
+    /// its layout. Windows are NEVER moved across Spaces - macOS owns that - so
+    /// this only re-points in-memory state and re-asserts the destination strip's
+    /// positions (invariant: re-commit on Space-enter). No-op if tracking is off
+    /// (`activeSpaceID == nil`) or already on `id`. Returns true if it switched.
+    @discardableResult
+    func switchToSpace(_ id: Int) -> Bool {
+        guard let current = activeSpaceID, current != id else { return false }
+
+        // 1. Stash the live strip under its current Space id. Fold the live
+        //    active-workspace triple back into its workspace slot first so the
+        //    stash is complete (mirrors `activateWorkspace` step 1).
+        workspaces[activeWorkspace] = Workspace(slots: slots, viewportX: viewportX, focusIndex: focusIndex)
+        spaceLayers[current] = SpaceLayer(workspaces: workspaces, activeWorkspace: activeWorkspace)
+
+        // 2. Load the destination strip (a previously-stashed one, or a fresh
+        //    empty strip the first time we visit this Space).
+        let dest = spaceLayers[id] ?? SpaceLayer(workspaces: [Workspace()], activeWorkspace: 0)
+        spaceLayers.removeValue(forKey: id)
+        workspaces = dest.workspaces
+        activeWorkspace = max(0, min(dest.activeWorkspace, dest.workspaces.count - 1))
+        let live = workspaces[activeWorkspace]
+        slots = live.slots
+        viewportX = live.viewportX
+        focusIndex = live.focusIndex
+        activeSpaceID = id
+
+        // 3. Re-assert the destination strip's layout. We do NOT raise/activate
+        //    any window (macOS already shows this Space's windows; activating
+        //    would be redundant) and we do NOT park the outgoing Space (its
+        //    windows live on their own Desktop). We only re-commit positions so
+        //    the model matches what is on screen, and pull the viewport into
+        //    range in case the display geometry changed while we were away.
+        compactStrip()
+        viewportX = clampViewportX(viewportX)
+        teleport()
+        onLayoutChange?()
+        return true
+    }
+
+    /// Drop a stashed native-Space strip whose Space no longer exists (the user
+    /// removed that Desktop in Mission Control). The windows are not touched
+    /// (macOS already relocated them); we only forget the empty stash so it is
+    /// not persisted or restored. No-op for the active Space or an unknown id.
+    func forgetSpace(_ id: Int) {
+        guard id != activeSpaceID else { return }
+        spaceLayers.removeValue(forKey: id)
     }
 
     /// Visible frame of the strip's display, AX coordinates (top-left origin).
@@ -281,6 +401,12 @@ final class TeleportEngine {
         // A fresh arrange starts from a single workspace.
         workspaces = [Workspace()]
         activeWorkspace = 0
+        // A fresh arrange also discards any stashed native-Space strips: arrange
+        // rebuilds the strip from the windows on the CURRENT Space, and the
+        // controller re-binds the live Space id (`beginSpaceTracking`) right
+        // after. `activeSpaceID` is left as-is so a re-arrange while managing
+        // keeps the same live-Space label until the controller refreshes it.
+        spaceLayers.removeAll()
         // Snap every adopted column to the configured spawn width (e.g. 50%) so
         // "Arrange Windows into Strip" lands the EXISTING windows at a tidy
         // column just like a freshly opened one - the recurring "arrange did not
@@ -1082,9 +1208,12 @@ final class TeleportEngine {
 
     /// PURE plan consumed by intentional `releaseAll`: every managed window gets a
     /// readable, non-overlapping frame on the strip display (or the first available
-    /// display if that display disappeared).
+    /// display if that display disappeared). Spans every native Space the engine
+    /// tracks (`allSpacesManagedSlots`), so a window stashed on another Desktop is
+    /// also put back instead of left wherever it sat; with per-Space tracking off
+    /// this is exactly `allManagedSlots`.
     func releasePlan(displays: [CGRect]) -> [(window: ManagedWindowRef, target: CGRect)] {
-        let managed = allManagedSlots.map { $0.window }
+        let managed = allSpacesManagedSlots.map { $0.window }
         guard !managed.isEmpty else { return [] }
         let preferred = stripDisplayFrame ?? screenFrame
         let targetDisplay = displays.first { DisplayGeometry.overlapArea($0, preferred) > 0 }
@@ -1135,6 +1264,11 @@ final class TeleportEngine {
         activeWorkspace = 0
         focusIndex = 0
         viewportX = 0
+        // Forget every stashed native-Space strip and stop per-Space tracking;
+        // Release ends management entirely, so the next arrange rebinds Spaces
+        // fresh. No windows are touched here (they were placed by the plan above).
+        spaceLayers.removeAll()
+        activeSpaceID = nil
         onLayoutChange?()
         return failures
     }
