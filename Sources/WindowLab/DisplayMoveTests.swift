@@ -58,6 +58,22 @@ func runHeadlessDisplayMoveTest() {
     // The active strip starts on the primary (display 0).
     t.check("active strip starts on display 0", controller.debugActiveStripIndex == 0)
 
+    // === 0. Cross-strip floating scope: each strip's "floating" set must NOT
+    // include windows the OTHER monitor's strip already manages (the bug where
+    // the active monitor listed all of the other display's tiled windows as
+    // floating, and "Tile All Floating" would yank them across). Resync both
+    // strips so each recomputes its floating set, then assert no overlap. ===
+    controller.debugResyncAllStrips()
+    Headless.pump(0.1)
+    let floating = controller.debugStripFloatingTitles
+    let managedAll = Set(controller.debugStripTitles.flatMap { $0 })
+    t.check("strip 0 floating excludes the other display's managed windows",
+            floating[0].allSatisfy { !managedAll.contains($0) || titles[0].contains($0) })
+    t.check("strip 1 floating excludes the other display's managed windows",
+            !Set(floating[1]).contains("A0") && !Set(floating[1]).contains("B0"))
+    t.check("strip 0 does not list display 1's window C1 as floating",
+            !Set(floating[0]).contains("C1"))
+
     // === 1. focusDisplayNext moves the active strip to display 1. ===
     world.resetActivateSpy()
     controller.debugFocusDisplay(by: 1)
@@ -199,6 +215,54 @@ func runHeadlessDisplayMoveTest() {
     Headless.pump(0.05)
     t.check("active strip (display 0) layout change refreshed the menu bar",
             controller.debugMenuBarRefreshCount > before1)
+
+    // === 9. Hotplug reconciliation: unplug a managed monitor, then replug it. ===
+    // State here: two strips (display 0 = [A0, B0], display 1 = [C1]), active 0.
+    // The display ids debugEnableMultiDisplay assigned are 1000 + index.
+    t.check("pre-hotplug: two strips", controller.debugStripTitles.count == 2)
+    let d0 = (full: d0Full, visible: d0Vis, id: CGDirectDisplayID?.some(1000))
+    let d1 = (full: d1Full, visible: d1Vis, id: CGDirectDisplayID?.some(1001))
+
+    // Unplug display 1: its strip would otherwise migrate onto display 0 (which
+    // already has a strip) and the two would fight. The reconciler must MERGE.
+    controller.debugApplyDisplayChange([d0])
+    Headless.pump(0.1)
+    let afterUnplug = controller.debugStripTitles
+    t.check("unplug: strips reconciled to one (no two strips on one display)",
+            afterUnplug.count == 1)
+    t.check("unplug: the gone display's window was merged onto the survivor",
+            afterUnplug.first.map { Set($0) == ["A0", "B0", "C1"] } ?? false)
+    t.check("unplug: active strip index stays valid",
+            controller.debugActiveStripIndex == 0)
+    // Focus the merged column on the survivor: the viewport must be able to
+    // reveal C1 on display 0 (proving it is a real column of the survivor strip,
+    // not stranded on the gone monitor). Off-focus it could be legitimately
+    // PARKED off the right edge (x >= 1600, the sliver macOS clamps back), so we
+    // focus it before checking its physical position.
+    if let c1Index = afterUnplug.first?.firstIndex(of: "C1") {
+        controller.focus(index: c1Index)
+        Headless.pump(0.1)
+        if let c1 = world.snapshot().first(where: { $0.pid == pidC }) {
+            t.check("unplug: merged window C1 reachable on the survivor (0 <= x < 1600)",
+                    c1.frame.origin.x >= 0 && c1.frame.origin.x < 1600)
+        } else {
+            t.check("unplug: C1 located", false)
+        }
+    } else {
+        t.check("unplug: C1 is a column of the survivor strip", false)
+    }
+
+    // Re-plug display 1: a fresh (empty) strip is created for it so a window
+    // opened there later is adopted; the merged windows stay on the survivor.
+    controller.debugApplyDisplayChange([d0, d1])
+    Headless.pump(0.1)
+    let afterReplug = controller.debugStripTitles
+    t.check("replug: a strip is recreated for the returned display",
+            afterReplug.count == 2)
+    t.check("replug: survivor keeps the merged windows",
+            Set(afterReplug[0]) == ["A0", "B0", "C1"])
+    t.check("replug: the recreated strip starts empty",
+            afterReplug[1].isEmpty)
 
     controller.release()
     Headless.pump(0.1)

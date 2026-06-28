@@ -257,17 +257,22 @@ final class ScrollWMController: NSObject {
     /// all displays share one configuration (the config is global, not per
     /// display). On a single-display setup this touches the one strip.
     private func applyConfigToEngine() {
-        for strip in strips {
-            let engine = strip.engine
-            engine.gap = config.layout.columnGap
-            engine.minColumnWidth = config.layout.minColumnWidth
-            engine.peekInset = config.layout.peekInset
-            engine.widthPresets = config.layout.widthPresets
-            engine.spawnWidthFraction = config.layout.spawnWidth
-            engine.fillHeight = config.layout.fillHeight
-            engine.focusMode = config.focusMode
-            engine.adoptScope = config.layout.adoptScope
-        }
+        for strip in strips { applyConfig(to: strip.engine) }
+    }
+
+    /// Push the global layout/focus settings into ONE engine. Factored out of
+    /// `applyConfigToEngine` so a strip created mid-session (e.g. a display
+    /// hot-plugged while managing, see `reconcileMultiDisplayStrips`) is seeded
+    /// identically to the ones built at arrange.
+    private func applyConfig(to engine: TeleportEngine) {
+        engine.gap = config.layout.columnGap
+        engine.minColumnWidth = config.layout.minColumnWidth
+        engine.peekInset = config.layout.peekInset
+        engine.widthPresets = config.layout.widthPresets
+        engine.spawnWidthFraction = config.layout.spawnWidth
+        engine.fillHeight = config.layout.fillHeight
+        engine.focusMode = config.focusMode
+        engine.adoptScope = config.layout.adoptScope
     }
 
     /// Point EVERY current strip engine's `onLayoutChange` at the menu-bar
@@ -344,7 +349,8 @@ final class ScrollWMController: NSObject {
     private func refreshDisplayGeometry(for strip: DisplayStrip,
                                         displays: [DisplaySnapshot],
                                         stripIndex: Int,
-                                        relayout: Bool = false) {
+                                        relayout: Bool = false,
+                                        updateDisplayID: Bool = true) {
         guard displays.indices.contains(stripIndex) else { return }
         let engine = strip.engine
         let primaryHeight = Self.primaryHeight(of: displays)
@@ -361,7 +367,11 @@ final class ScrollWMController: NSObject {
             .map { axFull(displays[$0]) }
         // Remember which PHYSICAL display the strip is bound to, so a later
         // hotplug can follow it by stable id across arrangement/resolution change.
-        strip.displayID = stripDisplay.id
+        // SKIPPED when the strip was force-MIGRATED onto a survivor because its own
+        // display vanished (`updateDisplayID == false`): keeping its original id
+        // lets the resolver re-home it when its real display is plugged back in,
+        // instead of permanently adopting the survivor's id.
+        if updateDisplayID { strip.displayID = stripDisplay.id }
 
         // Re-bind the strip's own usable area to the live visible frame so a
         // resolution/scale change (or the strip moving displays) relays the
@@ -421,6 +431,19 @@ final class ScrollWMController: NSObject {
         // geometry untouched until one reappears (resolver case 3).
         guard !displays.isEmpty else { return }
 
+        // Per-display-strip mode (multiDisplay + actively managing): the strips
+        // array must track the LIVE display set, not just rebind a fixed-size
+        // array. A monitor unplugged while managing would otherwise migrate its
+        // strip onto a survivor that ALREADY has a strip (two engines fighting one
+        // display), and a newly-attached monitor would get no strip at all. The
+        // reconciler merges colliding strips and additively creates strips for new
+        // displays so the one-strip-per-physical-display invariant always holds.
+        if isManaging && config.layout.multiDisplay {
+            reconcileMultiDisplayStrips(displays: displays)
+            menuBar.refresh()
+            return
+        }
+
         let primaryHeight = Self.primaryHeight(of: displays)
         // Visible AX frames of every available display, parallel to `displays`.
         let visibleFrames = displays.map {
@@ -434,12 +457,10 @@ final class ScrollWMController: NSObject {
         let displayIDs: [CGDirectDisplayID]? = ids.allSatisfy { $0 != nil }
             ? ids.compactMap { $0 } : nil
 
-        // Rebind EVERY strip to its resolved display, not just the active one. On
-        // a multi-display setup a BACKGROUND monitor's strip must also follow its
-        // own physical display (by stable id) across a hotplug / rearrange /
-        // resolution change, or its geometry (and parking) goes stale until it
-        // happens to become active. Each strip resolves independently from its own
-        // frame + displayID via the same pure `StripDisplayResolver`.
+        // Single-strip path: rebind the (one) strip to its resolved display. A
+        // BACKGROUND monitor's strip must also follow its own physical display
+        // (by stable id) across a hotplug / rearrange / resolution change, or its
+        // geometry (and parking) goes stale until it happens to become active.
         for strip in strips {
             let decision = StripDisplayResolver.resolve(
                 stripFrame: strip.engine.screenFrame,
@@ -451,8 +472,11 @@ final class ScrollWMController: NSObject {
                 print("display change: strip's display gone; migrating strip to "
                       + "\(displays[idx].name)")
             }
+            // On a forced migration KEEP the strip's home id (updateDisplayID:
+            // false) so it re-homes onto its real display when it is plugged back.
             refreshDisplayGeometry(for: strip, displays: displays,
-                                   stripIndex: idx, relayout: true)
+                                   stripIndex: idx, relayout: true,
+                                   updateDisplayID: !decision.migrated)
         }
 
         // ALWAYS repaint the menu bar at the end, even when nothing relaid out
@@ -463,6 +487,129 @@ final class ScrollWMController: NSObject {
         // `refreshDisplayGeometry`'s relayout+managing-gated refresh does not
         // guarantee. Idempotent and cheap.
         menuBar.refresh()
+    }
+
+    /// Reconcile the `strips` array to the LIVE display set after a settled
+    /// display change, maintaining the invariant of exactly one strip per
+    /// physical display. Only used while actively managing in multiDisplay mode
+    /// (the single-strip path rebinds in place above).
+    ///
+    /// Three things the in-place rebind could not do:
+    ///   1. **Merge collisions.** A strip whose display was unplugged migrates
+    ///      (via `StripDisplayResolver`) onto a survivor that ALREADY hosts a
+    ///      strip. Two engines on one display fight over its windows. We fold the
+    ///      migrated strip's windows into the survivor's strip and drop it.
+    ///   2. **Adopt new displays.** A monitor plugged in (or woken) while managing
+    ///      gets a fresh dormant strip + its own lifecycle, so a window opened
+    ///      there is adopted by its own monitor instead of being orphaned.
+    ///   3. **Re-validate `activeStripIndex`.** Hotkeys must keep targeting a live
+    ///      strip even when the previously-active one was merged away.
+    private func reconcileMultiDisplayStrips(displays: [DisplaySnapshot]) {
+        let primaryHeight = Self.primaryHeight(of: displays)
+        let visibleFrames = displays.map {
+            DisplayGeometry.axFrame(appKitFrame: $0.visibleAppKit, primaryHeight: primaryHeight)
+        }
+        let ids = displays.map { $0.id }
+        let displayIDs: [CGDirectDisplayID]? = ids.allSatisfy { $0 != nil }
+            ? ids.compactMap { $0 } : nil
+
+        // The strip hotkeys currently act on; restore the pointer to it (or its
+        // keeper) once the array is rebuilt.
+        let priorActive = strips.indices.contains(activeStripIndex) ? strips[activeStripIndex] : nil
+
+        // Resolve every existing strip's target display index up front.
+        let resolved: [(strip: DisplayStrip, idx: Int, migrated: Bool)] = strips.compactMap { strip in
+            let d = StripDisplayResolver.resolve(
+                stripFrame: strip.engine.screenFrame,
+                displays: visibleFrames,
+                stripDisplayID: strip.displayID,
+                displayIDs: displayIDs)
+            guard let idx = d.displayIndex else { return nil }
+            return (strip, idx, d.migrated)
+        }
+
+        // `keeper[displayIndex]` = the strip that owns that display. Owners
+        // (non-migrated, id still present) claim first so a force-migrated strip
+        // always merges INTO the real owner, never the other way around.
+        var keeper: [Int: DisplayStrip] = [:]
+        var survivors: [DisplayStrip] = []
+        var order: [(strip: DisplayStrip, idx: Int, migrated: Bool)] = []
+
+        for r in resolved where !r.migrated {
+            if let existing = keeper[r.idx] {
+                // Two non-migrated strips on one display id can only happen if the
+                // resolver double-bound (it should not, ids are unique); be safe.
+                mergeStrip(r.strip, into: existing)
+            } else {
+                keeper[r.idx] = r.strip
+                survivors.append(r.strip)
+                order.append(r)
+            }
+        }
+        for r in resolved where r.migrated {
+            if let existing = keeper[r.idx] {
+                mergeStrip(r.strip, into: existing)   // collision -> fold + drop
+            } else {
+                keeper[r.idx] = r.strip
+                survivors.append(r.strip)
+                order.append(r)
+            }
+        }
+
+        // Rebind each surviving (kept) strip to its display. Done AFTER merges so
+        // a keeper that absorbed windows relays the full set onto its display.
+        for r in order {
+            refreshDisplayGeometry(for: r.strip, displays: displays,
+                                   stripIndex: r.idx, relayout: true,
+                                   updateDisplayID: !r.migrated)
+        }
+
+        // Newly-present displays with no strip: create one, seed config, wire the
+        // menu callback, bind geometry, and start its lifecycle so windows opened
+        // there are adopted by their own monitor.
+        for i in displays.indices where keeper[i] == nil {
+            let strip = DisplayStrip(engine: TeleportEngine(screenFrame: .zero))
+            applyConfig(to: strip.engine)
+            strip.engine.onLayoutChange = { [weak self] in
+                DispatchQueue.main.async { self?.menuBar?.refresh() }
+            }
+            refreshDisplayGeometry(for: strip, displays: displays, stripIndex: i,
+                                   relayout: false, updateDisplayID: true)
+            strip.isManaging = true
+            startLifecycle(for: strip, filter: sandboxPIDs)
+            keeper[i] = strip
+            survivors.append(strip)
+        }
+
+        strips = survivors
+
+        // Restore the active pointer: the same strip if it survived, else the one
+        // that absorbed it, else the main display's strip, else clamp to 0.
+        if let priorActive, let idx = strips.firstIndex(where: { $0 === priorActive }) {
+            activeStripIndex = idx
+        } else if let mainID = NSScreen.main?.displayID,
+                  let idx = strips.firstIndex(where: { $0.displayID == mainID }) {
+            activeStripIndex = idx
+        } else {
+            activeStripIndex = 0
+        }
+
+        RestoreStore.save(engines: strips.map { $0.engine })
+    }
+
+    /// Fold every managed window from `loser` into `keeper` (a hotplug collapsed
+    /// two strips onto one physical display). Window identity/size is preserved;
+    /// the keeper re-lays them out on its next rebind. The loser's lifecycle is
+    /// stopped and it is left empty for the caller to drop from `strips`.
+    private func mergeStrip(_ loser: DisplayStrip, into keeper: DisplayStrip) {
+        // `allManagedSlots` spans every vertical workspace; they collapse into the
+        // keeper's active workspace (a hotplug is already a disruptive relayout).
+        for slot in loser.engine.allManagedSlots {
+            keeper.engine.adoptDetachedSlot(slot, at: keeper.engine.slots.count)
+        }
+        loser.lifecycle?.stop()
+        loser.lifecycle = nil
+        loser.isManaging = false
     }
 
     /// React to a native macOS Space (Desktop) switch by repainting the menu-bar
@@ -577,8 +724,7 @@ final class ScrollWMController: NSObject {
             return idx
         }
         // Fallback (no id, or the id is gone): best geometry overlap.
-        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
-                             ?? NSScreen.main)?.frame.height ?? engine.screenFrame.height
+        let primaryHeight = DisplayGeometry.primaryHeight()
         let target = engine.screenFrame
         var best: Int?
         var bestArea: CGFloat = -1
@@ -609,8 +755,7 @@ final class ScrollWMController: NSObject {
         if !isManaging {
             // Dormant: refreshDisplayGeometry skips the rebind, so do it here so a
             // subsequent arrange uses the new display's visible frame.
-            let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero }
-                                 ?? NSScreen.main ?? target).frame.height
+            let primaryHeight = DisplayGeometry.primaryHeight()
             engine.rebindStripDisplay(to: DisplayGeometry.axFrame(
                 appKitFrame: target.visibleFrame, primaryHeight: primaryHeight))
         }
@@ -655,8 +800,7 @@ final class ScrollWMController: NSObject {
         guard config.menuBar.showExternalDisplayIndicator else { return [] }
         let screens = NSScreen.screens
         guard screens.count > 1 else { return [] }
-        let primaryHeight = (screens.first { $0.frame.origin == .zero }
-                             ?? NSScreen.main ?? screens[0]).frame.height
+        let primaryHeight = DisplayGeometry.primaryHeight(of: screens)
 
         // Map each NSScreen to a strip (by best display overlap) so we know if it
         // is managing and which strip state to draw on it.
@@ -1026,6 +1170,18 @@ final class ScrollWMController: NSObject {
         // give EVERY monitor its own auto-adopting strip, so this guarantee holds
         // on external monitors too, not just the strip's own display.
         monitor.autoTileEnabled = config.layout.autoTileNewWindows
+        // Multi-display: a window managed by ANOTHER monitor's strip is not
+        // "floating" here. Span every OTHER strip's engine so the floating set
+        // (and "Tile All Floating") never claims a different display's tiled
+        // windows. Compares the live strips array each call, so it stays correct
+        // across a strip rebuild.
+        monitor.isManagedElsewhere = { [weak self, weak strip] element in
+            guard let self else { return false }
+            for other in self.strips where other !== strip {
+                if other.engine.isManaged(element) { return true }
+            }
+            return false
+        }
         monitor.start()
         strip.lifecycle = monitor
     }
@@ -1078,8 +1234,7 @@ final class ScrollWMController: NSObject {
         if let override = debugManagedDisplaysOverride { return override }
         let screens = NSScreen.screens
         guard !screens.isEmpty else { return [] }
-        let primaryHeight = (screens.first { $0.frame.origin == .zero }
-                             ?? NSScreen.main ?? screens[0]).frame.height
+        let primaryHeight = DisplayGeometry.primaryHeight(of: screens)
         let main = NSScreen.main
         return screens.map { s in
             ManagedDisplay(
@@ -1228,15 +1383,23 @@ final class ScrollWMController: NSObject {
         for (i, strip) in strips.enumerated() {
             let slice = buckets[i].map { onscreen[$0] }
             strip.engine.adopt(matched: slice)
-            guard !strip.engine.slots.isEmpty else { continue }
-            strip.isManaging = true
-            startLifecycle(for: strip, filter: filter)
-            strip.engine.focus(index: 0)
             totalAdopted += strip.engine.slots.count
         }
-        guard isManaging else {
+        // Nothing manageable on ANY display: stay fully dormant (no strip starts a
+        // lifecycle), matching the single-strip "no windows found" bias.
+        guard totalAdopted > 0 else {
             print("arrange: no manageable windows found")
             return
+        }
+        // At least one window somewhere -> EVERY display's strip starts managing,
+        // including empty ones. An empty strip with a running lifecycle is the
+        // whole point of per-display strips: a window opened later on that monitor
+        // is auto-adopted by ITS strip (and focus routing can target it), instead
+        // of being orphaned until a manual re-arrange.
+        for strip in strips {
+            strip.isManaging = true
+            startLifecycle(for: strip, filter: filter)
+            if !strip.engine.slots.isEmpty { strip.engine.focus(index: 0) }
         }
         RestoreStore.save(engines: strips.map { $0.engine })
         registerManagementHotkeys()
@@ -1654,6 +1817,9 @@ final class ScrollWMController: NSObject {
     /// floating-recompute + auto-tile sweep deterministically instead of waiting
     /// on the timer. No-op while dormant.
     func debugTriggerResync() { lifecycle?.resync() }
+    /// Resync EVERY managing strip (so each recomputes its floating set), for the
+    /// multi-display floating-scope test.
+    func debugResyncAllStrips() { for s in strips where s.isManaging { s.lifecycle?.resync() } }
     /// Widen/replace the active strip lifecycle monitor's PID filter at runtime.
     /// Headless tests use it to bring a stray sim window (opened after arrange,
     /// with a different PID) into the monitor's scope so the auto-tile sweep can
@@ -1681,6 +1847,12 @@ final class ScrollWMController: NSObject {
     /// Per-strip slot titles (display order), for the multi-display focus/move
     /// integration test. Reads the SAME engines production drives.
     var debugStripTitles: [[String]] { strips.map { $0.engine.slots.map { $0.window.title } } }
+    /// Per-strip floating-window titles (the windows that strip lists as "not on
+    /// the strip"). Used to assert a strip never lists ANOTHER monitor's tiled
+    /// windows as floating (the cross-strip floating bug).
+    var debugStripFloatingTitles: [[String]] {
+        strips.map { ($0.lifecycle?.floatingWindows ?? []).map { $0.title } }
+    }
     /// Index of the strip global hotkeys currently act on (focus-follows-display).
     var debugActiveStripIndex: Int { activeStripIndex }
     /// Drive the cross-display focus verb (Ctrl+Opt+Cmd+J/K) in a headless test.

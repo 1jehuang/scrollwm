@@ -95,6 +95,15 @@ final class LifecycleMonitor {
     /// bar / status item can refresh.
     var onFloatingChange: (() -> Void)?
 
+    /// Optional predicate: true if `element` is already managed by ANOTHER
+    /// strip's engine (a different monitor's strip). On a multi-display setup the
+    /// "floating" set must exclude windows other monitors' strips own, or each
+    /// strip would mislabel every other display's tiled window as "floating here"
+    /// (and "Tile All Floating" would try to yank them across monitors). The
+    /// controller installs it spanning all strips; nil (single-strip / tests)
+    /// means "only this engine manages anything", the historical behavior.
+    var isManagedElsewhere: ((AXUIElement) -> Bool)?
+
     /// BENCHMARK-ONLY: when false, the app-launch fast path (`onAppLaunched`) is
     /// suppressed, so a brand-new app's first window is adopted ONLY by the
     /// slower launch-resync / safety-net poll - reproducing the pre-optimization
@@ -442,12 +451,27 @@ final class LifecycleMonitor {
     /// when the set actually changes, so the menu bar refresh is not spammed.
     private func refreshFloating(all: [AXWindowInfo], cg: [CGWindowInfo]) {
         let managed = engine.slots.map { $0.window.element }
-        let next = FloatingWindows.compute(
+        var next = FloatingWindows.compute(
             axWindows: all,
             cgWindows: cg,
             managed: managed,
             selfPID: getpid()
         )
+        // Multi-display: drop windows ANOTHER monitor's strip already manages, so
+        // they are not mislabeled as "floating" on this strip (and so "Tile All
+        // Floating" never tries to yank another display's tiled windows across).
+        // No-op on a single-strip setup (predicate nil).
+        if let isManagedElsewhere {
+            next = next.filter { !isManagedElsewhere($0.element) }
+        }
+        // Display-scope: a floating window the user could tile here should belong
+        // to THIS strip's display under the active adopt scope. Without this, the
+        // active monitor's menu would list every OTHER monitor's not-yet-tiled
+        // windows too. Dialogs/panels keep showing (they are tile-here targets
+        // only on their own display). No-op when the engine has no display
+        // geometry (single-display / bare engine).
+        let scoped = engine.filterByAdoptScope(next) { $0.info.frame }
+        next = scoped
         // Cheap identity diff: same windows in the same order -> no refresh.
         let changed = next.count != floatingWindows.count
             || zip(next, floatingWindows).contains { !CFEqual($0.element, $1.element) }
