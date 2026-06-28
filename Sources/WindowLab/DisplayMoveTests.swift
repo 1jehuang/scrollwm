@@ -179,6 +179,27 @@ func runHeadlessDisplayMoveTest() {
         t.check("status: displays array present + well-formed", false)
     }
 
+    // === 8. LIVE indicator wiring: a layout change on a BACKGROUND strip (the
+    // monitor the user is NOT focused on) must drive a menu-bar refresh, so the
+    // external-monitor floating indicator updates promptly instead of going
+    // stale until the next hotkey. This is the regression guard for "the
+    // external monitor status icon doesn't update very quickly": the multi-
+    // display arrange rebuilds every engine, and only re-wiring ALL of them
+    // keeps background changes flowing to the menu bar. ===
+    t.check("active strip is display 0 before background-change test",
+            controller.debugActiveStripIndex == 0)
+    let before0 = controller.debugMenuBarRefreshCount
+    controller.debugFireLayoutChange(strip: 1)   // the NON-active monitor
+    Headless.pump(0.05)
+    t.check("background strip (display 1) layout change refreshed the menu bar",
+            controller.debugMenuBarRefreshCount > before0)
+    // And the active strip stays wired too.
+    let before1 = controller.debugMenuBarRefreshCount
+    controller.debugFireLayoutChange(strip: 0)
+    Headless.pump(0.05)
+    t.check("active strip (display 0) layout change refreshed the menu bar",
+            controller.debugMenuBarRefreshCount > before1)
+
     controller.release()
     Headless.pump(0.1)
 

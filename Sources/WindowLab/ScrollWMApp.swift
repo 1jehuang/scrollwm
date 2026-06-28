@@ -103,6 +103,12 @@ final class ScrollWMController: NSObject {
     /// monitor's strip is live, matching the historical single-strip semantics.
     var isManaging: Bool { strips.contains { $0.isManaging } }
 
+    /// Live mini-map state for the menu-bar status item: the ACTIVE strip's
+    /// engine state (the monitor the user's focus is on). Read fresh every
+    /// refresh so the icon stays correct even after a multi-display arrange
+    /// swapped every engine out from under the menu bar.
+    var menuBarStripState: TeleportEngine.StripState { activeStrip.engine.stripState }
+
     /// Sandbox lock. When set, the controller can ONLY ever adopt/manage these
     /// PIDs: `toggle()` and the menu/hotkey arrange path force this filter, so
     /// no code path can touch the user's real windows. Used by `sandbox` mode
@@ -168,7 +174,13 @@ final class ScrollWMController: NSObject {
             }
         }
 
-        menuBar = ProductionMenuBar(controller: self, engine: engine)
+        menuBar = ProductionMenuBar(controller: self)
+        // Route EVERY strip's layout-change callback to the menu bar so the
+        // status item + floating per-display indicators refresh the instant any
+        // display's strip changes (not just the initial engine). The multi-
+        // display arrange path swaps the engines out, so this is re-applied
+        // whenever strips are (re)built; see `wireStripLayoutCallbacks`.
+        wireStripLayoutCallbacks()
         installHotkeys()
         installSignalHandlers()
 
@@ -198,6 +210,24 @@ final class ScrollWMController: NSObject {
             engine.fillHeight = config.layout.fillHeight
             engine.focusMode = config.focusMode
             engine.adoptScope = config.layout.adoptScope
+        }
+    }
+
+    /// Point EVERY current strip engine's `onLayoutChange` at the menu-bar
+    /// refresh, so a change on ANY display (a poll-driven resync, an auto-tiled
+    /// new window, a size reconcile, a focus move) immediately repaints the
+    /// status item AND the floating per-display indicators.
+    ///
+    /// This must be re-called whenever `strips` is rebuilt (the multi-display
+    /// arrange path creates fresh engines): without it, only the very first
+    /// engine - discarded on rebuild - was ever wired, so the external-monitor
+    /// indicator went stale until the next explicit `menuBar.refresh()` from a
+    /// hotkey. Idempotent: it simply overwrites each engine's callback.
+    private func wireStripLayoutCallbacks() {
+        for strip in strips {
+            strip.engine.onLayoutChange = { [weak self] in
+                DispatchQueue.main.async { self?.menuBar?.refresh() }
+            }
         }
     }
 
@@ -924,6 +954,10 @@ final class ScrollWMController: NSObject {
             DisplayStrip(engine: TeleportEngine(screenFrame: .zero))
         }
         applyConfigToEngine()
+        // The previous engines (and their menu-bar callbacks) are gone; re-point
+        // every fresh engine's `onLayoutChange` at the menu bar so the status
+        // item + external-monitor indicators keep updating live.
+        wireStripLayoutCallbacks()
         for (i, d) in displays.enumerated() {
             bindStrip(strips[i], to: d)
         }
@@ -1598,6 +1632,20 @@ final class ScrollWMController: NSObject {
     /// The key-hint text the menu-bar icon is currently flashing (nil if idle).
     var debugHintText: String? { menuBar.debugHintText }
 
+    /// How many times the menu bar has refreshed (status item + floating
+    /// indicators). A regression seam: a layout change on ANY strip - including
+    /// a non-active background monitor's - must bump this, proving the engine ->
+    /// menu-bar callback is wired on every strip, not just the original engine.
+    var debugMenuBarRefreshCount: Int { menuBar.refreshCount }
+
+    /// Fire a layout change on a SPECIFIC strip's engine (as a background poll /
+    /// auto-tile would), to verify it drives a menu-bar refresh even when that
+    /// strip is not the active one.
+    func debugFireLayoutChange(strip s: Int) {
+        guard strips.indices.contains(s) else { return }
+        strips[s].engine.debugFireLayoutChange()
+    }
+
     /// Headless test seam: deliver a key chord exactly as a real keypress would
     /// route through ScrollWM, with NO CGEvent injected (so nothing leaks to the
     /// user's focused app). Routing mirrors production precedence: the management
@@ -1842,7 +1890,11 @@ final class ScrollWMController: NSObject {
 final class ProductionMenuBar: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private unowned let controller: ScrollWMController
-    private let engine: TeleportEngine
+
+    /// The live mini-map state to draw: always the controller's ACTIVE strip,
+    /// read fresh (NOT a captured engine, which the multi-display arrange path
+    /// swaps out). This kept the external-monitor indicator stale before.
+    private var stripState: TeleportEngine.StripState { controller.menuBarStripState }
 
     /// High-refresh animated mini-map hosted inside the status button.
     private let stripView = MenuBarStripView(frame: NSRect(x: 0, y: 0, width: 30, height: 22))
@@ -1879,9 +1931,8 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
     /// is the LAST third-party item macOS hides when the bar runs out of room.
     static let priorityPosition: Double = 8.0
 
-    init(controller: ScrollWMController, engine: TeleportEngine) {
+    init(controller: ScrollWMController) {
         self.controller = controller
-        self.engine = engine
         super.init()
 
         // Seed the mini-map sizing from config and start at the configured floor.
@@ -1963,9 +2014,9 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
             }
         }
 
-        engine.onLayoutChange = { [weak self] in
-            DispatchQueue.main.async { self?.refresh() }
-        }
+        // The engine -> refresh wiring lives on the controller now
+        // (`wireStripLayoutCallbacks`), so it survives the multi-display engine
+        // swap and covers every per-display strip, not just one.
     }
 
     private func createStatusItem() {
@@ -2087,9 +2138,15 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         // Feed the live engine state into the animated view; it diffs against
         // the previous state and animates the change at the display's refresh
         // rate, then idles its display link once everything settles.
-        stripView.apply(state: engine.stripState, managing: controller.isManaging)
+        stripView.apply(state: stripState, managing: controller.isManaging)
         updateIndicators()
+        refreshCount &+= 1
     }
+
+    /// Number of times `refresh()` has run (headless-test introspection): lets a
+    /// regression test assert that a BACKGROUND strip's layout change actually
+    /// drove a menu-bar/indicator repaint, instead of going stale.
+    private(set) var refreshCount = 0
 
     /// Reconcile the floating per-display indicator panels against the current
     /// `controller.indicatorViews()`: create panels for newly-qualifying
@@ -2183,7 +2240,7 @@ final class ProductionMenuBar: NSObject, NSMenuDelegate {
         let managing = controller.isManaging
 
         if managing {
-            let state = engine.stripState
+            let state = stripState
             let wsSuffix = state.workspaceCount > 1
                 ? String(format: " · workspace %d/%d", state.activeWorkspace + 1, state.workspaceCount)
                 : ""

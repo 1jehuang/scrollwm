@@ -209,6 +209,11 @@ final class TeleportEngine {
 
     var onLayoutChange: (() -> Void)?
 
+    /// Headless test seam: fire `onLayoutChange` exactly as a background poll /
+    /// resize reconcile would, without mutating any slot. Used to verify the
+    /// menu bar refreshes on a change from a NON-active strip.
+    func debugFireLayoutChange() { onLayoutChange?() }
+
     init(screenFrame: CGRect) {
         self.screenFrame = screenFrame
     }
