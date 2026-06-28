@@ -232,6 +232,20 @@ final class SimWindowWorld: WindowBackend {
     /// The native Space the user is currently VIEWING (read-only). Defaults to 1.
     var activeSpace: Int { lock.lock(); defer { lock.unlock() }; return activeSpaceID }
 
+    /// `WindowBackend` Space-id probe: the modeled active Space, so the per-Space
+    /// strip logic runs against the sim exactly as it would against the live CGS
+    /// query. Set `spaceIDProbeUnavailable` to model a machine/OS where the
+    /// private symbol is missing (the controller must then stay single-strip).
+    func currentSpaceID() -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return spaceIDProbeUnavailable ? nil : activeSpaceID
+    }
+
+    /// Test lever: when true, `currentSpaceID()` returns nil, modeling a host
+    /// where the read-only CGS Space-id symbol could not be resolved. Lets a
+    /// headless test prove the graceful single-strip fallback.
+    var spaceIDProbeUnavailable = false
+
     /// The native Space a window currently lives on, or nil if unknown.
     func nativeSpace(of element: AXUIElement) -> Int? {
         lock.lock(); defer { lock.unlock() }; return find(element)?.nativeSpace
