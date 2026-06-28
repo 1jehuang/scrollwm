@@ -35,6 +35,9 @@ extension ScrollWMController {
             // Idempotent: while managing, this reconciles the current Space's
             // windows into the strip (same path as the menu-bar "Arrange
             // Windows into Strip" item), so the command and the menu match.
+            // arrange() also REVEALS hidden (Cmd+H) apps and minimized windows
+            // first, so the reply surfaces those counts and never reports a
+            // false error while a just-revealed window is still settling in.
             //
             // Optional trailing width arg: `arrange 50` (or any 25/50/75/100 or
             // 0.0-1.0 fraction) arranges THEN sizes every column to that width,
@@ -48,17 +51,34 @@ extension ScrollWMController {
             }
             let wasManaging = isManaging
             arrange()
+            // " (revealed N hidden, M minimized)" suffix when arrange un-hid /
+            // un-minimized anything this call, so the user knows it acted on
+            // windows that were not previously visible.
+            let revealed = lastRevealResult
+            let revealSuffix: String = {
+                guard revealed.didReveal else { return "" }
+                var parts: [String] = []
+                if revealed.unhiddenApps > 0 { parts.append("\(revealed.unhiddenApps) hidden app(s)") }
+                if revealed.unminimizedWindows > 0 { parts.append("\(revealed.unminimizedWindows) minimized window(s)") }
+                return " (revealed \(parts.joined(separator: ", ")))"
+            }()
             guard isManaging else {
+                // A reveal is animated: the just-revealed windows may not be
+                // on-screen yet, so the deferred adopt is still pending. That is
+                // success-in-progress, NOT "nothing to arrange".
+                if revealAdoptPending {
+                    return "ok: revealing windows, arranging as they appear" + revealSuffix
+                }
                 return "error: nothing to arrange (no manageable windows on this Space)"
             }
             if let widthArg {
                 let n = setAllWidthsFraction(widthArg)
                 let pct = Int((widthArg * 100).rounded())
                 let verb = wasManaging ? "re-arranged" : "arranged"
-                return "ok: \(verb) \(debugSlotCount) windows, set \(n) to \(pct)% width"
+                return "ok: \(verb) \(debugSlotCount) windows, set \(n) to \(pct)% width" + revealSuffix
             }
-            if wasManaging { return "ok: re-arranged \(debugSlotCount) windows" }
-            return "ok: arranged \(debugSlotCount) windows"
+            if wasManaging { return "ok: re-arranged \(debugSlotCount) windows" + revealSuffix }
+            return "ok: arranged \(debugSlotCount) windows" + revealSuffix
 
         case "release":
             if !isManaging { return "ok: already released (dormant)" }

@@ -162,6 +162,20 @@ final class ScrollWMController: NSObject {
     /// (spawned disposable windows) to test safely against a live session.
     var sandboxPIDs: Set<pid_t>?
 
+    /// Monotonic token bumped by EVERY arrange/release/toggle. The reveal path's
+    /// deferred follow-up captures the token at schedule time and bails if it no
+    /// longer matches, so a `release()` (or a second `arrange`) during the
+    /// post-reveal settle window can never resurrect management or steal focus
+    /// from under the user. See `arrange`.
+    private var arrangeEpoch = 0
+    /// True while a reveal-triggered deferred adopt/resync is still pending, so
+    /// the CLI reply can tell the user adoption is still settling rather than
+    /// reporting a stale (under)count. Cleared when the last retry fires.
+    private(set) var revealAdoptPending = false
+    /// Count of hidden apps + minimized windows the LAST arrange revealed, so the
+    /// CLI reply / status can surface "un-hid N, un-minimized M".
+    private(set) var lastRevealResult = WindowReveal.Result()
+
     /// All user settings, loaded from the config file (single source of truth).
     private(set) var config: ScrollWMConfig
 
@@ -1292,6 +1306,12 @@ final class ScrollWMController: NSObject {
             Log.warn("arrange: session locked/inactive, refusing", "arrange")
             return
         }
+        // Every arrange supersedes any in-flight reveal follow-up (and any
+        // release does too), so bump the epoch and capture it for the deferred
+        // passes below.
+        arrangeEpoch += 1
+        let epoch = arrangeEpoch
+
         // Reveal hidden apps (Cmd+H) and minimized windows up front so a plain
         // "arrange" tidies EVERYTHING on the current Space, not just what is
         // already visible: the user expects "arrange" to pull hidden/minimized
@@ -1300,28 +1320,58 @@ final class ScrollWMController: NSObject {
         // never reach into another Space). The sandbox/test lock flows straight
         // through, so this can only ever touch the locked pids.
         let reveal = WindowReveal.reveal(pidFilter: sandboxPIDs ?? pidFilter)
+        lastRevealResult = reveal
         if reveal.didReveal {
             Log.info("arrange: revealed \(reveal.unhiddenApps) hidden app(s), "
                      + "\(reveal.unminimizedWindows) minimized window(s)", "arrange")
-            // Adopt what is visible now, then resync after the unhide/
-            // de-miniaturize animation lands so the freshly-revealed windows are
-            // pulled in too (they are not in the WindowServer on-screen list
-            // until the animation finishes). The immediate adopt keeps the
-            // synchronous CLI reply meaningful; the deferred pass catches the
-            // rest (and starts management even when EVERY window was hidden).
-            arrangeAdoptNow(pidFilter: pidFilter)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+        }
+        // Adopt whatever is already on-screen right now. When a reveal happened,
+        // the un-hide / de-miniaturize is animated, so the just-revealed windows
+        // are NOT yet in the WindowServer on-screen list; this first pass adopts
+        // the already-visible ones (keeping the synchronous CLI reply meaningful)
+        // and the bounded retry below catches the revealed ones as they land.
+        arrangeAdoptNow(pidFilter: pidFilter)
+
+        guard reveal.didReveal else { return }
+        // Schedule a bounded, progressive series of follow-up passes so the
+        // revealed windows are adopted as soon as their animation lands -
+        // regardless of whether it finishes in 0.1s or 0.8s - instead of a single
+        // fixed 0.45s guess that could miss a slow un-minimize and strand the
+        // window floating. Each pass is epoch-guarded so a release() (or a newer
+        // arrange) cancels the whole series.
+        revealAdoptPending = true
+        scheduleRevealFollowups(pidFilter: pidFilter, epoch: epoch)
+    }
+
+    /// Progressive post-reveal adopt/resync passes. Fire at a few increasing
+    /// delays so a freshly un-hidden / de-miniaturized window is pulled in the
+    /// instant the WindowServer publishes it, not at one fixed guess. Every pass
+    /// is a no-op if the arrange epoch advanced (release/re-arrange), so this can
+    /// never resurrect management or steal focus after the user toggled off.
+    private func scheduleRevealFollowups(pidFilter: Set<pid_t>?, epoch: Int) {
+        // Spread across the ~0.1-0.8s window real un-hide/de-miniaturize
+        // animations take; the last tick clears the pending flag.
+        let delays: [TimeInterval] = [0.12, 0.30, 0.55, 0.85]
+        for (i, delay) in delays.enumerated() {
+            let isLast = (i == delays.count - 1)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
+                // Epoch guard: a release()/toggle/newer arrange invalidated us.
+                guard self.arrangeEpoch == epoch else { return }
                 if self.isManaging {
+                    // Pull in any newly-revealed current-Space windows on every
+                    // managing strip (one strip in the single-display case).
                     for strip in self.strips where strip.isManaging { strip.lifecycle?.resync() }
                     self.menuBar.refresh()
                 } else {
+                    // Still dormant (e.g. EVERY window was hidden, so the
+                    // immediate pass found nothing on-screen): try to start
+                    // managing now that the windows are landing.
                     self.arrangeAdoptNow(pidFilter: pidFilter)
                 }
+                if isLast { self.revealAdoptPending = false }
             }
-            return
         }
-        arrangeAdoptNow(pidFilter: pidFilter)
     }
 
     /// The adopt half of `arrange`: reconcile the current Space's windows into
@@ -1437,6 +1487,11 @@ final class ScrollWMController: NSObject {
 
     func release() {
         guard isManaging else { return }
+        // Invalidate any in-flight reveal follow-up so a deferred adopt cannot
+        // resurrect management (or steal focus) the instant after the user
+        // toggled off during the post-reveal settle window.
+        arrangeEpoch += 1
+        revealAdoptPending = false
         unregisterManagementHotkeys()
         var failures = 0
         for strip in strips where strip.isManaging {

@@ -283,6 +283,12 @@ final class SimWindowWorld: WindowBackend {
             }
         } else {
             w.subrole = w.baseSubrole
+            // Model the de-miniaturize animation: AX reports it un-minimized now,
+            // but the WindowServer on-screen list withholds it for the settle
+            // delay, so an immediate adopt cannot see it yet.
+            if revealSettleDelay > 0 {
+                w.cgPublishAt = Date().timeIntervalSinceReferenceDate + revealSettleDelay
+            }
         }
     }
 
@@ -512,6 +518,25 @@ final class SimWindowWorld: WindowBackend {
     /// are unaffected. The min-size / aspect clamps still apply on top.
     var constrainResizeToDisplay = false
 
+    /// Seconds a just-revealed window (un-minimized or un-hidden) is WITHHELD
+    /// from the WindowServer on-screen list before it lands, modeling the real
+    /// un-hide / de-miniaturize ANIMATION: AX reports the window as no longer
+    /// minimized/hidden immediately, but `CGWindowListCopyWindowInfo(onScreenOnly)`
+    /// (and thus `arrange`'s current-Space gate) does not see it until the
+    /// animation finishes a beat later. With a non-zero value an immediate adopt
+    /// right after `reveal` finds the window NOT on-screen yet, so the controller
+    /// must rely on its bounded post-reveal retry to adopt it. Zero (default) =
+    /// windows reappear instantly, preserving every existing suite's behavior.
+    var revealSettleDelay: TimeInterval = 0
+
+    /// Test lever: when non-nil, the NEXT `setBool(kAXMinimized,false)` (the
+    /// de-miniaturize the reveal pass issues) FAILS for matching windows,
+    /// modeling an app that refuses/ignores the un-minimize. Lets a headless
+    /// test prove the reveal pass tolerates a partial failure (the window simply
+    /// stays minimized, no crash, the rest still adopt). A set of element tokens;
+    /// empty/nil = never fail. Cleared by the test when done.
+    var failUnminimizeFor: Set<AXUIElement>? = nil
+
     func setSize(_ element: AXUIElement, _ size: CGSize) -> AXError {
         lock.lock(); defer { lock.unlock() }
         guard let w = find(element) else { return .invalidUIElement }
@@ -559,6 +584,13 @@ final class SimWindowWorld: WindowBackend {
         case kAXFocusedAttribute as String:
             if value { focused = w }
         case kAXMinimizedAttribute as String:
+            // Failure injection: model an app that ignores the un-minimize the
+            // reveal pass issues (the window stays minimized, AX returns an
+            // error). Only applies to de-miniaturize (value==false), matching
+            // what `WindowReveal.reveal` writes.
+            if value == false, failUnminimizeFor?.contains(w.element) == true {
+                return .cannotComplete
+            }
             applyMinimized(w, value)
         default:
             break // kAXMain etc. — no observable state needed
@@ -616,6 +648,12 @@ final class SimWindowWorld: WindowBackend {
         lock.lock(); defer { lock.unlock() }
         guard hiddenApps.contains(pid) else { return false }
         hiddenApps.remove(pid)
+        // Model the un-hide animation: the app's windows are withheld from the
+        // on-screen list for the settle delay, exactly like de-miniaturize.
+        if revealSettleDelay > 0 {
+            let until = Date().timeIntervalSinceReferenceDate + revealSettleDelay
+            for w in wins where w.pid == pid { w.cgPublishAt = until }
+        }
         return true
     }
 
