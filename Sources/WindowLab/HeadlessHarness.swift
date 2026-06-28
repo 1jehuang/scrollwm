@@ -142,7 +142,7 @@ enum Headless {
 /// child ever touches a real window or the keyboard.
 func runHeadlessSuite() -> Never {
     let exe = Bundle.main.executablePath ?? CommandLine.arguments.first ?? "WindowLab"
-    let verbs = ["opstest", "e2etest", "revealtest", "spawnlatency", "coldstarttest", "coldstartwarmtest", "displaytest", "dragofftest", "extadopttest", "parktest", "exthotplugtest", "clamshelltest", "spacetest", "spacedetecttest", "movetest", "fullscreentest", "spacefocustest", "displaymovetest", "autotiletest", "statusicontest"]
+    let verbs = ["opstest", "e2etest", "revealtest", "spawnlatency", "coldstarttest", "coldstartwarmtest", "coldstartbursttest", "displaytest", "dragofftest", "extadopttest", "parktest", "exthotplugtest", "clamshelltest", "spacetest", "spacedetecttest", "movetest", "fullscreentest", "spacefocustest", "displaymovetest", "autotiletest", "statusicontest"]
     var failures = 0
     for verb in verbs {
         print("\n========== headless \(verb) ==========")

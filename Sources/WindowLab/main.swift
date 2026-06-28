@@ -287,6 +287,12 @@ case "coldstartwarmtest":
     // per-app observer the instant a process launches must let that cold app's
     // SECOND window ride the WARM kAXWindowCreated fast path (not the poll).
     runHeadlessColdStartWarmSecondTest()
+case "coldstartbursttest":
+    // Headless regression guard for the cold-start BURST path ("jcode forest
+    // swarm"): launching MANY brand-NEW apps at once - each a distinct new pid -
+    // adopts EVERY first window fast, in strip order, exactly once (no
+    // double-adopt / no drop), ending with the strip == seed + N. Always headless.
+    runHeadlessColdStartBurstTest()
 case "spawnvalidate":
     // Headless property validator: EVERY spawn (across a named edge-case matrix
     // + randomized fuzz) must land in the column right of focus, at its exact
