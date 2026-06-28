@@ -505,11 +505,17 @@ private final class ControllerSession {
             let w = controller.debugFocusedWidth
             if !w.isFinite || w <= 0 { return bad("focused width not sane: \(w)") }
             // 6. Model-vs-reality width parity for the focused (healthy) window:
-            // the engine reads back the real frame, so model must equal the sim
-            // frame. A divergence is the desync class of bug we guard against.
+            // the engine reads back the real frame, so the model CONVERGES to the
+            // sim frame - but width reconcile is ASYNC. `scheduleWidthReconcile`
+            // polls + re-fits until the resize settles (up to a ~1.6s deadline),
+            // and the fuzz only pumps 0.04s between ops, so a divergence sampled
+            // here is usually a reconcile still in flight, not a real desync.
+            // Distinguish the two: drain the async work in small steps and fail
+            // ONLY if the model never reaches reality (a genuinely stuck desync,
+            // the class of bug we guard against). A transient lag settles fast.
             let ft = controller.debugFocusedTitle
             if let realW = simWidth(forTitle: ft), abs(realW - w) > 2.0 {
-                return bad("width desync for \(ft): model \(w) vs real \(realW)")
+                if let stuck = drainWidthDesync(initialTitle: ft) { return bad(stuck) }
             }
         }
 
@@ -533,6 +539,34 @@ private final class ControllerSession {
             for w in AXSource.windows(forPID: pid) where w.title == title { return w.frame.width }
         }
         return nil
+    }
+
+    /// A focused-column width divergence was just observed. The engine's width
+    /// reconcile is ASYNC (`scheduleWidthReconcile` polls until the resize
+    /// settles), so a divergence sampled right after an op is normally just a
+    /// reconcile in flight that the fuzz's 0.04s inter-op pump did not let drain.
+    ///
+    /// Drain the main run loop in short slices (well within the engine's ~1.6s
+    /// reconcile deadline) and re-sample. Return nil the instant the focused
+    /// column's model width matches reality (the transient settled), or a
+    /// failure string if it is STILL diverged after the full budget - a
+    /// genuinely STUCK desync, which is the real bug class this invariant guards.
+    /// Re-reads the focused title each pass because draining can change focus
+    /// (a settling resize re-fits / re-packs the strip).
+    private func drainWidthDesync(initialTitle: String) -> String? {
+        let deadline = Date().addingTimeInterval(2.0)
+        var lastModel = controller.debugFocusedWidth
+        var lastReal = simWidth(forTitle: initialTitle) ?? -1
+        while Date() < deadline {
+            Headless.pump(0.05)
+            let ft = controller.debugFocusedTitle
+            let model = controller.debugFocusedWidth
+            guard let real = simWidth(forTitle: ft) else { return nil } // window gone -> no parity claim
+            if abs(real - model) <= 2.0 { return nil } // settled: transient, not a bug
+            lastModel = model
+            lastReal = real
+        }
+        return "width desync did not settle: model \(lastModel) vs real \(lastReal)"
     }
 }
 
