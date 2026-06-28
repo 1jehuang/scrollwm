@@ -46,6 +46,20 @@ GATE-F, persistent) floating. **Severity: P1.** **Fix sketch:** observe
 `NSWorkspace.didLaunchApplication` and register the AX observer immediately, then
 fast-adopt that PID.
 
+> **FIXED (commit 3c62bd6).** `WindowEventObserver.start()` now, on
+> `didLaunchApplicationNotification`, (a) registers the per-app AX observer
+> IMMEDIATELY (not after a flat 0.4s) so any subsequent window rides the warm
+> path, and (b) fires `onAppLaunched(pid)` ->
+> `LifecycleMonitor.fastAdopt(pids:[pid], coldStart:true)`, a bounded PROGRESSIVE
+> retry on a longer-tailed schedule (`coldStartRetryDelays`, ~1.8s budget, still
+> < the 2s poll) that adopts the first window the instant the WindowServer
+> publishes it. Modeled headlessly by `SimWindowWorld.coldStartModel` (a brand-
+> new pid's first window fires a LAUNCH stand-in, not the warm create sink) and
+> guarded by `coldstarttest`; the A/B win is measured by `coldstartbench`
+> (cold-start p50 ~517ms -> ~57ms, ~9x). A foreign-Space window still exhausts
+> the retries harmlessly and is left to the poll, preserving Space-freeze.
+
+
 ### FAST-G4 (P2) — `stripIsOnCurrentSpace` bail mid-burst
 **Where:** `fastAdopt` bails if the strip has slots but none are on the current
 Space (`LifecycleMonitor.swift:458`). **Trigger:** during a burst, if the managed
@@ -72,7 +86,7 @@ mode concern).
 |---|---|---|---|---|---|---|
 | FAST-G1 | Bounded retries lapse to a freezable poll | `LifecycleMonitor.swift:442-453` | WindowServer publish lags beyond retry budget under burst | window floats until a healthy resync | P1 | extend SpawnLatencyTest with publish lag + frozen poll |
 | FAST-G2 | `enumerating` coalesce loses burst coverage | `LifecycleMonitor.swift:197` | many created events during one enumeration | some new windows skipped | P1 | reentrancy churn test |
-| FAST-G3 | New process not observed until registration | `WindowEventObserver.swift` | launching a brand-new PID (each `open -na` Ghostty) | first window misses fast path | P1 | NewWindowAdoptTest with fresh PID |
+| FAST-G3 | New process not observed until registration | `WindowEventObserver.swift` | launching a brand-new PID (each `open -na` Ghostty) | first window misses fast path | P1 (FIXED 3c62bd6: immediate register + `onAppLaunched` cold-start fast-adopt; see `coldstarttest`/`coldstartbench`) | NewWindowAdoptTest with fresh PID |
 | FAST-G4 | `stripIsOnCurrentSpace` bail mid-burst | `LifecycleMonitor.swift:458` | managed columns transiently off current-Space (GATE-C/B) | new windows deferred | P2 | shares GATE-F1 repro |
 | FAST-G5 | Stale destroyed-slot blocks re-adoption | `LifecycleMonitor.swift:419` | destroy-event race, recycled element | new window seen as already-managed | P2 | code trace |
 | FAST-G6 | pidFilter/observer scope drift | `LifecycleMonitor.swift:406,63,97` | filter/observer mismatch | in-scope events dropped | P2 | code trace |
